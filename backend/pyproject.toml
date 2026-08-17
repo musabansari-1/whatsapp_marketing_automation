@@ -13,6 +13,7 @@ dependencies = [
     "alembic>=1.14",
     "structlog>=24.4",
     "httpx>=0.27",
+    "pgvector>=0.5.0",
 ]
 
 [dependency-groups]
@@ -81,7 +82,12 @@ minversion = "8.0"
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+# Session scope so the session-scoped database engine fixture and the
+# function-scoped connection fixtures that depend on it share one event loop.
+# asyncpg connections are bound to the loop that created them, so mixing scopes
+# produces a ScopeMismatch rather than a subtle runtime failure.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 addopts = "-ra --strict-markers --strict-config"
 markers = [
     "integration: requires external services (database, etc.)",

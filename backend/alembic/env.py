@@ -18,10 +18,12 @@ from sqlalchemy.pool import NullPool
 
 from alembic import context
 from app.core.config import get_settings
-
-# Importing Base registers whatever models exist. Phase 2 adds them; until then the
-# metadata is intentionally empty and autogenerate produces no changes.
 from app.persistence.base import Base
+
+# Importing the models package registers every table on Base.metadata, which is what
+# autogenerate diffs against. Without this import Alembic would see an empty schema
+# and propose dropping everything.
+import app.persistence.models  # noqa: F401  # isort: skip
 
 config = context.config
 
