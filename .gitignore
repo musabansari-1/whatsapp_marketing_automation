@@ -1,0 +1,49 @@
+# ---------- Secrets and environment ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+service-account*.json
+google-credentials*.json
+client_secret*.json
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ---------- Node / Next.js ----------
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ---------- Local data and uploads ----------
+/data/
+/uploads/
+*.sqlite
+*.db
+
+# ---------- Editors and OS ----------
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
