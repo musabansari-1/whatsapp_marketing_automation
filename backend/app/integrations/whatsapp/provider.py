@@ -13,25 +13,21 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
 
+# Canonical definitions live in the domain layer so persistence and integrations
+# agree on one set of states. Re-exported here for callers of this package.
+from app.domain.enums import MessageStatus, TemplateCategory
 
-class MessageStatus(StrEnum):
-    """Specification §8 message statuses."""
-
-    QUEUED = "QUEUED"
-    SENT = "SENT"
-    DELIVERED = "DELIVERED"
-    READ = "READ"
-    FAILED = "FAILED"
-
-
-class TemplateCategory(StrEnum):
-    """Meta template categories. Marketing broadcasts require MARKETING ([D6])."""
-
-    MARKETING = "MARKETING"
-    UTILITY = "UTILITY"
-    AUTHENTICATION = "AUTHENTICATION"
+__all__ = [
+    "ApprovedTemplate",
+    "InboundMessage",
+    "MessageStatus",
+    "OutboundTemplateMessage",
+    "OutboundTextMessage",
+    "SentMessage",
+    "TemplateCategory",
+    "WhatsAppProvider",
+]
 
 
 @dataclass(frozen=True, slots=True)
