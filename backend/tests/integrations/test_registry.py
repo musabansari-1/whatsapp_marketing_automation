@@ -1,0 +1,111 @@
+"""Provider selection tests.
+
+The registry is the only place allowed to name a concrete provider, so this is where
+the CLAUDE.md rule is enforced and where premature selection must fail loudly.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.core.config import Settings
+from app.core.errors import ProviderNotImplementedError
+from app.integrations.calendar import CalendarProvider, FakeCalendarProvider
+from app.integrations.crm import CRMProvider, FakeCRMProvider
+from app.integrations.embedding import EmbeddingProvider, FakeEmbeddingProvider
+from app.integrations.llm import FakeLLMProvider, LLMProvider
+from app.integrations.queue import InMemoryQueueProvider, QueueProvider
+from app.integrations.registry import (
+    build_calendar_provider,
+    build_crm_provider,
+    build_embedding_provider,
+    build_llm_provider,
+    build_providers,
+    build_queue_provider,
+    build_whatsapp_provider,
+)
+from app.integrations.whatsapp import FakeWhatsAppProvider, WhatsAppProvider
+
+
+class TestFakeSelection:
+    def test_builds_all_six_fakes(self, settings: Settings) -> None:
+        providers = build_providers(settings)
+        assert isinstance(providers.whatsapp, FakeWhatsAppProvider)
+        assert isinstance(providers.llm, FakeLLMProvider)
+        assert isinstance(providers.embedding, FakeEmbeddingProvider)
+        assert isinstance(providers.calendar, FakeCalendarProvider)
+        assert isinstance(providers.crm, FakeCRMProvider)
+        assert isinstance(providers.queue, InMemoryQueueProvider)
+
+    def test_fakes_satisfy_their_interfaces(self, settings: Settings) -> None:
+        providers = build_providers(settings)
+        assert isinstance(providers.whatsapp, WhatsAppProvider)
+        assert isinstance(providers.llm, LLMProvider)
+        assert isinstance(providers.embedding, EmbeddingProvider)
+        assert isinstance(providers.calendar, CalendarProvider)
+        assert isinstance(providers.crm, CRMProvider)
+        assert isinstance(providers.queue, QueueProvider)
+
+    def test_embedding_dimension_follows_configuration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """[D1]: the fake must match the configured pgvector width."""
+        monkeypatch.setenv("EMBEDDING_DIMENSION", "512")
+        assert build_embedding_provider(Settings()).dimension == 512
+
+
+class TestUnimplementedProvidersFailLoudly:
+    @pytest.mark.parametrize(
+        ("env_var", "value", "builder", "expected_phase"),
+        [
+            ("WHATSAPP_PROVIDER", "meta", "whatsapp", "Phase 6"),
+            ("LLM_PROVIDER", "openrouter", "llm", "Phase 10"),
+            ("EMBEDDING_PROVIDER", "local_sentence_transformer", "embedding", "Phase 8"),
+            ("CALENDAR_PROVIDER", "google", "calendar", "Phase 11"),
+            ("CRM_PROVIDER", "hubspot", "crm", "Phase 12"),
+            ("QUEUE_PROVIDER", "cloud_tasks", "queue", "Phase 7"),
+        ],
+    )
+    def test_selecting_a_future_provider_names_its_phase(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        env_var: str,
+        value: str,
+        builder: str,
+        expected_phase: str,
+    ) -> None:
+        monkeypatch.setenv(env_var, value)
+        # Satisfy the config validators so the failure comes from the registry.
+        monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+        monkeypatch.setenv("OPENROUTER_MODEL", "vendor/model")
+        monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "1")
+        monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "v")
+        monkeypatch.setenv("GOOGLE_CALENDAR_ID", "cal")
+        monkeypatch.setenv("GOOGLE_SECRET_MANAGER_PROJECT", "proj")
+        monkeypatch.setenv("GOOGLE_CALENDAR_TOKEN_SECRET_NAME", "secret")
+        monkeypatch.setenv("HUBSPOT_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "proj")
+        monkeypatch.setenv("GOOGLE_CLOUD_TASKS_QUEUE", "queue")
+        monkeypatch.setenv("WORKER_BASE_URL", "https://worker.example.com")
+
+        builders = {
+            "whatsapp": build_whatsapp_provider,
+            "llm": build_llm_provider,
+            "embedding": build_embedding_provider,
+            "calendar": build_calendar_provider,
+            "crm": build_crm_provider,
+            "queue": build_queue_provider,
+        }
+
+        with pytest.raises(ProviderNotImplementedError) as exc_info:
+            builders[builder](Settings())
+
+        assert expected_phase in str(exc_info.value)
+
+    def test_invalid_provider_name_is_rejected_at_config_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CRM_PROVIDER", "salesforce")
+        with pytest.raises(ValueError, match="crm_provider"):
+            Settings()
