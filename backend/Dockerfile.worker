@@ -1,0 +1,36 @@
+# Worker service image (Cloud Run).
+#
+# Separate from the API image because the two services scale independently and,
+# from Phase 8, differ substantially in size: the worker will carry the local
+# Sentence Transformers model and PyTorch ([D1]) while the API stays slim.
+#
+# Phase 8 note: the model weights must be baked into this image at build time, not
+# downloaded at startup. A cold-starting Cloud Run instance that fetches weights on
+# first request would add latency to every scale-up and depend on network at boot.
+
+FROM python:3.11-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY app ./app
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+USER appuser
+
+ENV PORT=8080
+EXPOSE 8080
+
+CMD ["sh", "-c", "exec uvicorn app.worker.main:app --host 0.0.0.0 --port ${PORT}"]

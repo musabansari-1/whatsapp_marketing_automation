@@ -1,0 +1,62 @@
+# Local development stack.
+#
+# Contains the API, the worker and a pgvector-enabled PostgreSQL. The frontend is not
+# here: it runs via `npm run dev` and deploys to Vercel ([D12]).
+#
+# Cloud Tasks has no local emulator, so the queue provider defaults to the in-process
+# inline implementation here. Real Cloud Tasks arrives in Phase 7.
+
+name: whatsapp-marketing
+
+services:
+  postgres:
+    # pgvector is required from Phase 2 onward (§15), so the local database ships
+    # with the extension available rather than plain postgres.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: whatsapp_marketing
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d whatsapp_marketing']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.api
+    environment:
+      APP_ENV: local
+      LOG_FORMAT: console
+      PORT: 8000
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/whatsapp_marketing
+      FRONTEND_URL: http://localhost:3000
+    ports:
+      - '8000:8000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    environment:
+      APP_ENV: local
+      LOG_FORMAT: console
+      PORT: 8001
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/whatsapp_marketing
+    ports:
+      - '8001:8001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
