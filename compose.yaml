@@ -18,7 +18,10 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: whatsapp_marketing
     ports:
-      - '5432:5432'
+      # Host port is overridable: a locally installed PostgreSQL service will
+      # already own 5432 and silently shadow this mapping, producing confusing
+      # authentication failures. Set POSTGRES_PORT to something free in that case.
+      - '${POSTGRES_PORT:-5432}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

@@ -4,7 +4,7 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 1 (Foundation and abstractions) complete.** No business features
+**Current state: Phase 2 (Database) complete.** The schema exists; no business features
 are implemented yet.
 
 ## Layout
@@ -18,8 +18,9 @@ backend/
     domain/         Business rules (populated from Phase 2 onward)
     persistence/    Database engine and session management
     integrations/   The six provider abstractions, each with a fake
-  alembic/          Migrations (first migration lands in Phase 2)
+  alembic/          Migrations
   tests/
+    integration/    Tests requiring real PostgreSQL (skip when unavailable)
 frontend/
   app/              Next.js App Router
     api/[...path]/  Server-side BFF proxy — the browser's only route to the API
@@ -47,6 +48,7 @@ docker compose up -d postgres
 # Backend
 cd backend
 uv sync
+uv run alembic upgrade head
 uv run uvicorn app.api.main:app --reload --port 8000
 uv run uvicorn app.worker.main:app --reload --port 8001   # separate terminal
 
@@ -61,6 +63,46 @@ Frontend on <http://localhost:3000>, API on <http://localhost:8000>.
 
 Defaults select **fake providers**, so the stack runs with no credentials and cannot
 reach any external service.
+
+**Port 5432 already in use?** A locally installed PostgreSQL service will shadow the
+container's published port and produce confusing `password authentication failed`
+errors. Pick a free port instead:
+
+```bash
+echo "POSTGRES_PORT=5442" > .env       # repository root
+docker compose up -d postgres
+# then point DATABASE_URL at localhost:5442 in backend/.env
+```
+
+## Database
+
+```bash
+cd backend
+uv run alembic upgrade head              # apply migrations
+uv run alembic downgrade base            # roll everything back
+uv run alembic check                     # fail if models have drifted from migrations
+uv run alembic revision --autogenerate -m "description"
+```
+
+19 tables: the 18 in specification §15 plus `whatsapp_suppressions` ([D16]). The
+`knowledge_chunks.embedding` column is `vector(384)`, matching `all-MiniLM-L6-v2`
+([D1]) and driven by `EMBEDDING_DIMENSION`. Changing the embedding model means a new
+migration plus a full re-embed — vectors from different models must never share the
+column.
+
+On Neon, run migrations against the **direct** endpoint and the application against
+the **pooled** one.
+
+### Integration tests
+
+Tests under `backend/tests/integration/` need a real PostgreSQL with pgvector and skip
+when none is reachable. Create the test database once:
+
+```bash
+docker compose exec postgres psql -U postgres -c "CREATE DATABASE whatsapp_marketing_test;"
+TEST_DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5442/whatsapp_marketing_test" \
+  uv run pytest tests/integration
+```
 
 ## Checks
 
