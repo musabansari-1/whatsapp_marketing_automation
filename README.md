@@ -4,8 +4,8 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 2 (Database) complete.** The schema exists; no business features
-are implemented yet.
+**Current state: Phase 3 (Authentication) complete.** Login, sessions, role-based
+authorization and user management work. No marketing features yet.
 
 ## Layout
 
@@ -15,7 +15,7 @@ backend/
     api/            FastAPI service (Cloud Run) — HTTP layer only
     worker/         Worker service (Cloud Run) — background task execution
     core/           Configuration, logging, correlation IDs, error taxonomy
-    domain/         Business rules (populated from Phase 2 onward)
+    domain/         Business rules — state enums, auth policy
     persistence/    Database engine and session management
     integrations/   The six provider abstractions, each with a fake
   alembic/          Migrations
@@ -24,7 +24,9 @@ backend/
 frontend/
   app/              Next.js App Router
     api/[...path]/  Server-side BFF proxy — the browser's only route to the API
-  lib/              Proxy helpers
+    login/          Login page
+  lib/              Proxy, session and route-protection helpers
+  middleware.ts     Redirects unauthenticated navigation to /login
   tests/
 compose.yaml        Local Postgres (pgvector) + API + worker
 .env.example        Every configuration variable
@@ -49,6 +51,13 @@ docker compose up -d postgres
 cd backend
 uv sync
 uv run alembic upgrade head
+
+# Create the first ADMIN (there is no public registration).
+# Idempotent: re-running it when an admin exists changes nothing.
+export BOOTSTRAP_ADMIN_EMAIL=you@example.com
+export BOOTSTRAP_ADMIN_PASSWORD='a-long-password'
+uv run python -m app.cli bootstrap-admin
+
 uv run uvicorn app.api.main:app --reload --port 8000
 uv run uvicorn app.worker.main:app --reload --port 8001   # separate terminal
 
@@ -84,7 +93,8 @@ uv run alembic check                     # fail if models have drifted from migr
 uv run alembic revision --autogenerate -m "description"
 ```
 
-19 tables: the 18 in specification §15 plus `whatsapp_suppressions` ([D16]). The
+20 tables: the 18 in specification §15, plus `whatsapp_suppressions` ([D16]) and
+`sessions` ([D2], a documented deviation — see §15 of the specification). The
 `knowledge_chunks.embedding` column is `vector(384)`, matching `all-MiniLM-L6-v2`
 ([D1]) and driven by `EMBEDDING_DIMENSION`. Changing the embedding model means a new
 migration plus a full re-embed — vectors from different models must never share the
@@ -122,6 +132,30 @@ npm run typecheck                # types
 npm run format:check             # formatting
 npm run build                    # production build
 ```
+
+## Authentication
+
+Secure HttpOnly session cookies ([D2]); no JWT. Passwords are hashed with **Argon2id**.
+Sessions are server-side, so logout and account deactivation revoke access immediately
+rather than waiting for expiry — only the SHA-256 digest of each token is stored.
+
+Two roles: `ADMIN` and `SALESPERSON`. There is **no public registration** — the first
+admin comes from the bootstrap command above, and every other account is created by an
+admin through `POST /api/v1/users`.
+
+```text
+POST   /api/v1/auth/login     email + password  → session cookie
+POST   /api/v1/auth/logout    revokes the session
+GET    /api/v1/auth/me        the current user
+POST   /api/v1/users          ADMIN only
+GET    /api/v1/users          ADMIN only
+GET    /api/v1/users/{id}     ADMIN only
+PATCH  /api/v1/users/{id}     ADMIN only
+```
+
+The browser reaches all of these through the same-origin BFF proxy ([D13]), never
+directly. The API sets the cookie without a `Domain` attribute so the proxy can pass it
+through and the browser scopes it to the frontend origin.
 
 ## Provider abstractions
 

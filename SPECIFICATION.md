@@ -707,6 +707,7 @@ Tables:
 
 ```text
 users
+sessions
 audiences
 audience_contacts
 leads
@@ -769,6 +770,14 @@ Add indexes for lead/campaign/booking lookups, notifications and vector similari
 
 Vector storage **[D1]**: the `knowledge_chunks` vector column dimension is driven by the configured embedding model — 384 for the initial `all-MiniLM-L6-v2`. The dimension is fixed at migration time; changing the embedding model requires a migration and full re-embedding, and vectors from incompatible models must never coexist in the same column.
 
+### Addition: `sessions` (implementation, not a new requirement)
+
+Phase 3 adds a `sessions` table, bringing the total to 20. It is the storage mechanism behind **[D2]**, recorded here rather than introduced silently.
+
+A self-contained signed cookie was rejected: it is JWT in all but encoding, which **[D2]** excludes, and it cannot be revoked. `POST /auth/logout` would then only clear the browser's copy while a captured cookie stayed valid until expiry, and deactivating a user — a real operation, since **[D3]** fans notifications out to *active* users — would not end their access.
+
+Server-side sessions make revocation real. Only the SHA-256 digest of each token is stored, so a database leak yields no usable sessions.
+
 ## 16. API
 
 Base:
@@ -786,6 +795,8 @@ GET /auth/me
 ```
 
 Authentication uses secure HTTP-only session cookies **[D2]**, reached through the same-origin BFF proxy (§19 **[D13]**). JWT is not used for user authentication unless a concrete architectural requirement appears later. (Service-to-service task authentication in §18 uses Google-issued OIDC tokens; that is unrelated to this decision.)
+
+Passwords are hashed with **Argon2id** (product owner decision, 2026-08-18). Login failures are indistinguishable — unknown address and wrong password return the same status and body, and cost comparable time — so the endpoint cannot be used to enumerate accounts.
 
 User management — ADMIN only, approved **[D14]**:
 
