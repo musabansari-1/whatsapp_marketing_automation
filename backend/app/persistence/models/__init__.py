@@ -29,6 +29,7 @@ from app.persistence.models.knowledge import (
 )
 from app.persistence.models.lead import Lead, WhatsAppSuppression
 from app.persistence.models.notification import Notification
+from app.persistence.models.session import Session
 from app.persistence.models.user import User
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "Lead",
     "Message",
     "Notification",
+    "Session",
     "User",
     "WebhookEvent",
     "WhatsAppSuppression",

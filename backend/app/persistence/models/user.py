@@ -14,6 +14,7 @@ from app.persistence.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 if TYPE_CHECKING:
     from app.persistence.models.campaign import Campaign
     from app.persistence.models.notification import Notification
+    from app.persistence.models.session import Session
 
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -36,6 +37,10 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     notifications: Mapped[list[Notification]] = relationship(back_populates="user")
+    # Cascade so deleting a user cannot leave live sessions behind.
+    sessions: Mapped[list[Session]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
     created_campaigns: Mapped[list[Campaign]] = relationship(back_populates="created_by")
 
     __table_args__ = (
