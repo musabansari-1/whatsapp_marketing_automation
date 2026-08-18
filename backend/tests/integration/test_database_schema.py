@@ -65,14 +65,14 @@ class TestExtensionAndTables:
         )
         assert result.scalar_one() == "vector"
 
-    async def test_all_nineteen_tables_exist(self, session: AsyncSession) -> None:
+    async def test_all_tables_exist(self, session: AsyncSession) -> None:
         result = await session.execute(
             text(
                 "SELECT count(*) FROM information_schema.tables "
                 "WHERE table_schema='public' AND table_name <> 'alembic_version'"
             )
         )
-        assert result.scalar_one() == 19
+        assert result.scalar_one() == 20
 
 
 class TestDefaultsAndEnums:

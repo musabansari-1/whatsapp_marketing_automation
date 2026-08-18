@@ -14,9 +14,11 @@ from sqlalchemy import Table, UniqueConstraint
 from app.persistence.base import Base
 from app.persistence.models import EMBEDDING_DIMENSION
 
-# Specification §15 lists 18 tables; [D16] adds whatsapp_suppressions.
+# Specification §15 lists 18 tables; [D16] adds whatsapp_suppressions, and [D2]'s
+# server-side sessions add `sessions` (a documented deviation from the §15 list).
 EXPECTED_TABLES = {
     "users",
+    "sessions",
     "audiences",
     "audience_contacts",
     "leads",
@@ -63,7 +65,7 @@ class TestTables:
         assert set(Base.metadata.tables) == EXPECTED_TABLES
 
     def test_table_count(self) -> None:
-        assert len(Base.metadata.tables) == 19
+        assert len(Base.metadata.tables) == 20
 
 
 class TestIdentityAndDeduplication:
