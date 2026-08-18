@@ -93,7 +93,16 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- session [D2]
     session_cookie_name: str = "wam_session"
     session_cookie_secure: bool = True
+    # Lax, not None. [D13] routes the browser through the same-origin BFF, so the
+    # cookie is same-site and never needs the SameSite=None that [D2] rejects.
+    session_cookie_samesite: Literal["lax", "strict"] = "lax"
     session_ttl_seconds: int = 60 * 60 * 8
+
+    # ---------------------------------------------------------------- bootstrap [D15]
+    # Credentials for the one-time first-ADMIN command. Absent in normal operation;
+    # supplied from secret storage only while bootstrapping.
+    bootstrap_admin_email: str | None = None
+    bootstrap_admin_password: SecretStr | None = None
 
     # ---------------------------------------------------------------- provider selection
     whatsapp_provider: WhatsAppProviderName = WhatsAppProviderName.FAKE
