@@ -6,9 +6,11 @@
  * and that the BFF proxy can reach the API — and shows which phases are pending.
  */
 
+import { LogoutButton } from '@/app/logout-button';
 import { getInternalApiBaseUrl } from '@/lib/bff';
+import { getCurrentUser } from '@/lib/session';
 
-// Reflects live API state, so it must not be prerendered at build time.
+// Reflects live API and session state, so it must not be prerendered at build time.
 export const dynamic = 'force-dynamic';
 
 type ApiStatus = { reachable: true; environment: string } | { reachable: false; detail: string };
@@ -45,14 +47,28 @@ const PHASES = [
 ];
 
 export default async function HomePage() {
-  const status = await fetchApiStatus();
+  const [status, user] = await Promise.all([fetchApiStatus(), getCurrentUser()]);
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-16">
-      <h1 className="text-2xl font-semibold tracking-tight">WhatsApp AI Marketing Platform</h1>
-      <p className="mt-2 text-sm text-slate-600">
-        Internal platform. The dashboard arrives in Phase 13.
-      </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">WhatsApp AI Marketing Platform</h1>
+          <p className="mt-2 text-sm text-slate-600">
+            Internal platform. The dashboard arrives in Phase 13.
+          </p>
+        </div>
+        {user && <LogoutButton />}
+      </div>
+
+      {user && (
+        <section className="mt-8 rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-medium text-slate-900">Signed in</h2>
+          <p className="mt-2 text-sm text-slate-700">
+            {user.email} — <span className="font-mono text-xs">{user.role}</span>
+          </p>
+        </section>
+      )}
 
       <section className="mt-8 rounded-lg border border-slate-200 bg-white p-5">
         <h2 className="text-sm font-medium text-slate-900">API connectivity</h2>
