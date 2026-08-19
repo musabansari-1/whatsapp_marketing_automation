@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.domain.enums import UserRole
+from app.domain.enums import AudienceStatus, ContactValidationStatus, UserRole
 
 # Long enough to resist guessing, capped because Argon2 hashes the whole input and an
 # unbounded body would be a cheap denial-of-service.
@@ -69,3 +70,76 @@ class UpdateUserRequest(BaseModel):
 
 class MessageResponse(BaseModel):
     detail: str
+
+
+# ---------------------------------------------------------------- audiences (§6)
+
+
+class AudienceSummaryResponse(BaseModel):
+    """An audience in list and detail views, with the §6 preview counts."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    source_filename: str | None
+    status: AudienceStatus
+    total_rows: int
+    valid_rows: int
+    invalid_rows: int
+    duplicate_rows: int
+    created_at: datetime
+
+
+class AudienceContactResponse(BaseModel):
+    """One parsed row. Invalid and duplicate rows are included by design (§6)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    row_number: int
+    full_name: str | None
+    phone_e164: str | None
+    email: str | None
+    validation_status: ContactValidationStatus
+    validation_error: str | None
+    raw_row: dict[str, Any]
+
+
+class AudienceContactPage(BaseModel):
+    """A page of contacts; an audience can hold tens of thousands of rows."""
+
+    total: int
+    limit: int
+    offset: int
+    items: list[AudienceContactResponse]
+
+
+class AudienceUploadResponse(BaseModel):
+    """The preview returned by upload.
+
+    The audience is stored but unconfirmed: §6 requires an admin to review the preview
+    before it can be used, and nothing is sent as a result of uploading.
+    """
+
+    audience: AudienceSummaryResponse
+    sample: list[AudienceContactResponse]
+
+
+class AudienceConfirmResponse(BaseModel):
+    audience: AudienceSummaryResponse
+    leads_upserted: int
+
+
+class AudienceSchemaResponse(BaseModel):
+    """The configured column schema, so the UI can tell the user what file to upload.
+
+    `is_placeholder` surfaces that the client's real schema has not been supplied yet
+    ([D4]/[D20]) rather than letting a development default look authoritative.
+    """
+
+    columns: list[dict[str, Any]]
+    is_placeholder: bool
+    phone_default_region: str
+    max_file_bytes: int
+    max_rows: int
