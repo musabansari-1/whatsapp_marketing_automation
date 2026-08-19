@@ -6,6 +6,8 @@
  * and that the BFF proxy can reach the API — and shows which phases are pending.
  */
 
+import Link from 'next/link';
+
 import { LogoutButton } from '@/app/logout-button';
 import { getInternalApiBaseUrl } from '@/lib/bff';
 import { getCurrentUser } from '@/lib/session';
@@ -30,9 +32,9 @@ async function fetchApiStatus(): Promise<ApiStatus> {
 
 const PHASES = [
   { phase: 1, name: 'Foundation and abstractions', done: true },
-  { phase: 2, name: 'Database and pgvector', done: false },
-  { phase: 3, name: 'Authentication', done: false },
-  { phase: 4, name: 'Excel audience', done: false },
+  { phase: 2, name: 'Database and pgvector', done: true },
+  { phase: 3, name: 'Authentication', done: true },
+  { phase: 4, name: 'Excel audience', done: true },
   { phase: 5, name: 'Campaigns', done: false },
   { phase: 6, name: 'WhatsApp', done: false },
   { phase: 7, name: 'Cloud Tasks and worker', done: false },
@@ -67,6 +69,9 @@ export default async function HomePage() {
           <p className="mt-2 text-sm text-slate-700">
             {user.email} — <span className="font-mono text-xs">{user.role}</span>
           </p>
+          <Link href="/audiences" className="mt-3 inline-block text-sm underline">
+            Audiences
+          </Link>
         </section>
       )}
 
