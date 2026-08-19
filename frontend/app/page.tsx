@@ -35,7 +35,7 @@ const PHASES = [
   { phase: 2, name: 'Database and pgvector', done: true },
   { phase: 3, name: 'Authentication', done: true },
   { phase: 4, name: 'Excel audience', done: true },
-  { phase: 5, name: 'Campaigns', done: false },
+  { phase: 5, name: 'Campaigns', done: true },
   { phase: 6, name: 'WhatsApp', done: false },
   { phase: 7, name: 'Cloud Tasks and worker', done: false },
   { phase: 8, name: 'RAG knowledge base', done: false },
@@ -69,9 +69,14 @@ export default async function HomePage() {
           <p className="mt-2 text-sm text-slate-700">
             {user.email} — <span className="font-mono text-xs">{user.role}</span>
           </p>
-          <Link href="/audiences" className="mt-3 inline-block text-sm underline">
-            Audiences
-          </Link>
+          <div className="mt-3 flex gap-4">
+            <Link href="/audiences" className="text-sm underline">
+              Audiences
+            </Link>
+            <Link href="/campaigns" className="text-sm underline">
+              Campaigns
+            </Link>
+          </div>
         </section>
       )}
 

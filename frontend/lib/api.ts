@@ -7,6 +7,10 @@
  */
 
 export type AudienceStatus = 'PENDING_CONFIRMATION' | 'CONFIRMED';
+export type CampaignStatus =
+  'DRAFT' | 'READY' | 'SCHEDULED' | 'PROCESSING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+export type RecipientStatus =
+  'PENDING' | 'QUEUED' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED' | 'SKIPPED';
 export type ValidationStatus = 'VALID' | 'INVALID' | 'DUPLICATE';
 
 export interface AudienceSummary {
@@ -45,6 +49,54 @@ export interface AudienceSchema {
   phone_default_region: string;
   max_file_bytes: number;
   max_rows: number;
+}
+
+export interface WhatsAppTemplate {
+  id: string;
+  name: string;
+  language: string;
+  category: string;
+  provider_status: string;
+  variable_count: number;
+  body_preview: string | null;
+}
+
+export interface Campaign {
+  id: string;
+  name: string;
+  status: CampaignStatus;
+  audience_id: string;
+  template_id: string;
+  total_recipients: number;
+  sent_count: number;
+  delivered_count: number;
+  read_count: number;
+  failed_count: number;
+  skipped_count: number;
+  created_at: string;
+}
+
+export interface CampaignDetail {
+  campaign: Campaign;
+  template: WhatsAppTemplate;
+  pending_recipients: number;
+}
+
+export interface CampaignRecipient {
+  id: string;
+  lead_id: string;
+  phone_e164: string;
+  status: RecipientStatus;
+  attempts: number;
+  provider_message_id: string | null;
+  error_message: string | null;
+}
+
+export interface CampaignRecipientPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: CampaignRecipient[];
 }
 
 export class ApiError extends Error {
@@ -111,4 +163,33 @@ export const api = {
     request<{ audience: AudienceSummary; leads_upserted: number }>(`/audiences/${id}/confirm`, {
       method: 'POST',
     }),
+
+  // Templates are read-only: [D6] puts approval with Meta, and the sync arrives in
+  // Phase 6. Until then this list is empty and no campaign can be created.
+  listTemplates: () => request<WhatsAppTemplate[]>('/whatsapp-templates'),
+
+  listCampaigns: () => request<Campaign[]>('/campaigns'),
+
+  getCampaign: (id: string) => request<CampaignDetail>(`/campaigns/${id}`),
+
+  createCampaign: (name: string, audienceId: string, templateId: string) =>
+    request<CampaignDetail>('/campaigns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, audience_id: audienceId, template_id: templateId }),
+    }),
+
+  listCampaignRecipients: (id: string, status?: RecipientStatus, limit = 50, offset = 0) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (status) {
+      params.set('recipient_status', status);
+    }
+    return request<CampaignRecipientPage>(`/campaigns/${id}/recipients?${params}`);
+  },
+
+  sendCampaign: (id: string) =>
+    request<{ campaign: Campaign; queued: number; skipped_as_suppressed: number }>(
+      `/campaigns/${id}/send`,
+      { method: 'POST' },
+    ),
 };
