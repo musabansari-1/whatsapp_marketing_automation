@@ -115,6 +115,36 @@ class TestEmbeddingConfig:
             Settings()
 
 
+class TestAudienceSchema:
+    def test_placeholder_is_flagged(self, settings: Settings) -> None:
+        """[D20]: a development default must never look authoritative."""
+        assert settings.audience_schema_is_placeholder is True
+
+    def test_schema_parses_into_column_mappings(self, settings: Settings) -> None:
+        schema = settings.audience_schema()
+        assert any(column.field.value == "phone" and column.required for column in schema.columns)
+
+    def test_client_schema_replaces_it_without_code_changes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "AUDIENCE_COLUMN_SCHEMA", '[{"source": "Mobile", "field": "phone", "required": true}]'
+        )
+        settings = Settings()
+        assert [c.source for c in settings.audience_schema().columns] == ["Mobile"]
+        assert settings.audience_schema_is_placeholder is False
+
+    def test_a_schema_without_a_phone_column_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "AUDIENCE_COLUMN_SCHEMA",
+            '[{"source": "Name", "field": "full_name", "required": true}]',
+        )
+        with pytest.raises(ValueError, match="phone column"):
+            Settings().audience_schema()
+
+
 class TestSlotPolicy:
     def test_defaults_match_d8(self, settings: Settings) -> None:
         assert settings.demo_duration_minutes == 30
@@ -169,12 +199,29 @@ class TestProductionHardening:
         with pytest.raises(ValueError, match="SESSION_COOKIE_SECURE"):
             Settings()
 
+    def test_production_requires_a_real_audience_schema(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """[D4]/[D20]: the development placeholder must never reach production.
+
+        This is what makes it safe to build the audience pipeline before the client
+        confirms their column names.
+        """
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_SECRET", "a-real-secret")
+        with pytest.raises(ValueError, match="AUDIENCE_COLUMN_SCHEMA"):
+            Settings()
+
     def test_production_accepts_hardened_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("APP_ENV", "production")
         monkeypatch.setenv("APP_SECRET", "a-real-secret")
+        monkeypatch.setenv(
+            "AUDIENCE_COLUMN_SCHEMA", '[{"source": "Mobile", "field": "phone", "required": true}]'
+        )
         settings = Settings()
         assert settings.is_production
         assert settings.app_env is AppEnv.PRODUCTION
+        assert settings.audience_schema_is_placeholder is False
 
 
 class TestSettingsCache:
