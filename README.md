@@ -4,8 +4,9 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 4 (Excel audience) complete.** Auth plus Excel upload,
-validation, preview and confirmation. No campaigns or messaging yet.
+**Current state: Phase 5 (Campaigns) complete.** Auth, Excel audiences, and campaign
+preparation with the Send Broadcast confirmation. No messages are sent yet — the
+WhatsApp integration is Phase 6 and the worker that consumes the queue is Phase 7.
 
 ## Layout
 
@@ -192,6 +193,31 @@ be built before the client confirmed their columns without inventing names ([D4]
 
 Fields are `phone` (mandatory, and must be required), `email` and `full_name`.
 Unmapped columns are still preserved in each row's stored `raw_row`.
+
+## Campaigns
+
+```text
+GET    /api/v1/whatsapp-templates            approved marketing templates (read-only)
+POST   /api/v1/campaigns                     create + freeze the recipient snapshot
+GET    /api/v1/campaigns                     list
+GET    /api/v1/campaigns/{id}                detail, with template preview
+GET    /api/v1/campaigns/{id}/recipients     the frozen snapshot, paged
+POST   /api/v1/campaigns/{id}/send           the Send Broadcast confirmation
+```
+
+Creating a campaign **prepares** it: the recipient list is frozen at creation so later
+audience changes cannot alter a campaign already made (§7), and numbers on the global
+suppression list are recorded `SKIPPED` rather than `PENDING` ([D16]). Sending is a
+separate, explicit confirmation that re-checks suppression, enqueues one task per
+pending recipient and returns — the worker does the actual delivery (§4).
+
+**Nothing is sent yet.** No handler is registered for the send task until Phase 7, and
+the WhatsApp integration itself is Phase 6, so the queue records the work and stops
+there.
+
+**Templates come from Meta, not from here.** There is no endpoint that creates or
+approves a template ([D6]); `whatsapp_templates` is populated by the Phase 6
+synchronization. Until that exists the list is empty and no campaign can be created.
 
 ## Provider abstractions
 

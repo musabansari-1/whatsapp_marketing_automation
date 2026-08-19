@@ -850,6 +850,24 @@ GET /campaigns/{id}
 POST /campaigns/{id}/send
 ```
 
+Derived, since §16 lists no route for reading the §7 recipient snapshot or for
+selecting a template:
+
+```text
+GET /campaigns/{id}/recipients
+GET /whatsapp-templates
+```
+
+`GET /whatsapp-templates` is read-only and returns only APPROVED MARKETING templates.
+There is deliberately no endpoint that creates or approves a template: **[D6]** puts
+approval with Meta, and rows appear only from the Phase 6 synchronization.
+
+Creating a campaign freezes its recipient snapshot immediately, so the preview an
+admin confirms against is exactly the set that will be messaged. `POST
+/campaigns/{id}/send` is the human confirmation §7 requires; it re-checks suppression
+**[D16]**, enqueues one task per pending recipient and returns. Sending itself happens
+in the worker (§4, §18).
+
 Leads:
 
 ```text
