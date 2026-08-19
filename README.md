@@ -4,8 +4,8 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 3 (Authentication) complete.** Login, sessions, role-based
-authorization and user management work. No marketing features yet.
+**Current state: Phase 4 (Excel audience) complete.** Auth plus Excel upload,
+validation, preview and confirmation. No campaigns or messaging yet.
 
 ## Layout
 
@@ -156,6 +156,42 @@ PATCH  /api/v1/users/{id}     ADMIN only
 The browser reaches all of these through the same-origin BFF proxy ([D13]), never
 directly. The API sets the cookie without a `Domain` attribute so the proxy can pass it
 through and the browser scopes it to the frontend origin.
+
+## Audiences
+
+Upload an .xlsx, review the preview, then confirm. Uploading validates and stores
+only — it never sends a message and never invokes the AI (§6).
+
+```text
+GET    /api/v1/audiences/schema        the expected columns
+POST   /api/v1/audiences/upload        validate + store, returns the preview
+GET    /api/v1/audiences               list
+GET    /api/v1/audiences/{id}          detail
+GET    /api/v1/audiences/{id}/contacts paged rows, filterable by status
+POST   /api/v1/audiences/{id}/confirm  confirm, upserting valid rows into leads
+```
+
+Rows are marked `VALID`, `INVALID` or `DUPLICATE` and **all three are kept**, so the
+preview can show what was rejected and why. Phone numbers are normalized to E.164
+using `AUDIENCE_PHONE_DEFAULT_REGION` (`IN` by default), and duplicates are detected
+after normalization, so two spellings of one number are caught.
+
+### The column schema is configuration
+
+`AUDIENCE_COLUMN_SCHEMA` maps the client's spreadsheet headers onto platform fields:
+
+```json
+[{ "source": "Mobile Number", "field": "phone", "required": true },
+ { "source": "Customer Name", "field": "full_name", "required": false }]
+```
+
+The value shipped in `.env.example` is a **development placeholder**, not a client
+format. Production refuses to start while it is still in place, so the pipeline could
+be built before the client confirmed their columns without inventing names ([D4],
+[D20]). Swapping in the real headers needs no code change.
+
+Fields are `phone` (mandatory, and must be required), `email` and `full_name`.
+Unmapped columns are still preserved in each row's stored `raw_row`.
 
 ## Provider abstractions
 

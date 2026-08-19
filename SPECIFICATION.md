@@ -826,6 +826,21 @@ GET /audiences/{id}
 GET /audiences/{id}/contacts
 ```
 
+Derived from §6's admin-confirmation step, which §16 does not give a route:
+
+```text
+POST /audiences/{id}/confirm
+GET /audiences/schema
+```
+
+Confirmation upserts the audience's valid contacts into `leads`, deduplicated by
+normalized phone **[D11]**. It sends nothing: a broadcast is a separate, explicitly
+triggered action (§7).
+
+`GET /audiences/schema` reports the configured column mapping so the dashboard can
+state the expected format, and flags when the development placeholder is still in
+force **[D20]**.
+
 Campaigns:
 
 ```text
