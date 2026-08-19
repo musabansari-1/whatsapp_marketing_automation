@@ -1,0 +1,255 @@
+"""Campaign endpoints (specification §7, §16, [D6], [D16]).
+
+A broadcast is human-initiated (§7): creating a campaign prepares it, and a separate
+explicit confirmation triggers the send. Sending itself is asynchronous — this module
+enqueues work and returns, because §4 forbids long-running work inside a request.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, HTTPException, Query, status
+
+from app.api.deps import CurrentUser, DbSession, Queue
+from app.api.schemas import (
+    CampaignDetailResponse,
+    CampaignRecipientPage,
+    CampaignRecipientResponse,
+    CampaignResponse,
+    CreateCampaignRequest,
+    SendCampaignResponse,
+    WhatsAppTemplateResponse,
+)
+from app.core.logging import get_logger
+from app.domain.campaign import (
+    CampaignNotSendableError,
+    TemplateFacts,
+    TemplateNotApprovedError,
+    assert_sendable,
+    assert_template_usable,
+    assert_transition,
+)
+from app.domain.enums import (
+    AudienceStatus,
+    CampaignStatus,
+    RecipientStatus,
+    TemplateCategory,
+)
+from app.integrations.queue import TaskRequest, TaskType
+from app.persistence.models import Campaign
+from app.persistence.repositories import audiences as audience_repo
+from app.persistence.repositories import campaigns as campaign_repo
+
+router = APIRouter(tags=["campaigns"])
+logger = get_logger(__name__)
+
+
+@router.get("/whatsapp-templates", response_model=list[WhatsAppTemplateResponse])
+async def list_templates(user: CurrentUser, session: DbSession) -> list[WhatsAppTemplateResponse]:
+    """Approved marketing templates available to a campaign.
+
+    Read-only and derived: §16 lists no template route, but a campaign has to select
+    one and [D6] forbids the application creating or approving templates itself. Rows
+    appear here only once the Phase 6 synchronization has pulled them from Meta, so
+    this list is empty until then.
+    """
+    templates = await campaign_repo.list_approved_marketing_templates(session)
+    return [WhatsAppTemplateResponse.model_validate(template) for template in templates]
+
+
+@router.post(
+    "/campaigns", response_model=CampaignDetailResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_campaign(
+    payload: CreateCampaignRequest, user: CurrentUser, session: DbSession
+) -> CampaignDetailResponse:
+    """Create a campaign and freeze its recipients.
+
+    The snapshot is taken now rather than at send time, so the preview the admin
+    confirms against is exactly the set that will be messaged (§7). Nothing is sent.
+    """
+    audience = await audience_repo.get_by_id(session, payload.audience_id)
+    if audience is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audience not found")
+    if audience.status is not AudienceStatus.CONFIRMED:
+        # §6 puts admin confirmation before use; an unconfirmed audience has not been
+        # reviewed and its leads do not exist yet.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="This audience has not been confirmed yet",
+        )
+
+    template = await campaign_repo.get_template(session, payload.template_id)
+    if template is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    try:
+        assert_template_usable(
+            TemplateFacts(
+                provider_status=template.provider_status,
+                is_marketing=template.category is TemplateCategory.MARKETING,
+            )
+        )
+    except TemplateNotApprovedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+
+    campaign = await campaign_repo.create(
+        session,
+        name=payload.name,
+        audience_id=payload.audience_id,
+        template_id=payload.template_id,
+        created_by_id=user.id,
+    )
+
+    snapshot_size = await campaign_repo.build_snapshot(session, campaign)
+    pending = await campaign_repo.count_recipients(
+        session, campaign.id, status=RecipientStatus.PENDING
+    )
+
+    if pending > 0:
+        assert_transition(campaign.status, CampaignStatus.READY)
+        campaign.status = CampaignStatus.READY
+        await session.flush()
+
+    logger.info(
+        "campaign_created",
+        campaign_id=str(campaign.id),
+        recipients=snapshot_size,
+        pending=pending,
+        status=campaign.status.value,
+    )
+    return await _detail(session, campaign)
+
+
+@router.get("/campaigns", response_model=list[CampaignResponse])
+async def list_campaigns(user: CurrentUser, session: DbSession) -> list[CampaignResponse]:
+    campaigns = await campaign_repo.list_campaigns(session)
+    return [CampaignResponse.model_validate(campaign) for campaign in campaigns]
+
+
+@router.get("/campaigns/{campaign_id}", response_model=CampaignDetailResponse)
+async def get_campaign(
+    campaign_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> CampaignDetailResponse:
+    return await _detail(session, await _require_campaign(session, campaign_id))
+
+
+@router.get("/campaigns/{campaign_id}/recipients", response_model=CampaignRecipientPage)
+async def list_recipients(
+    campaign_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    recipient_status: RecipientStatus | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> CampaignRecipientPage:
+    """The frozen recipient snapshot, paged and filterable.
+
+    Derived from §7's snapshot requirement: without a way to read it, an admin cannot
+    see who a campaign will message or why someone was skipped.
+    """
+    await _require_campaign(session, campaign_id)
+
+    recipients = await campaign_repo.list_recipients(
+        session, campaign_id, status=recipient_status, limit=limit, offset=offset
+    )
+    total = await campaign_repo.count_recipients(session, campaign_id, status=recipient_status)
+
+    return CampaignRecipientPage(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=[CampaignRecipientResponse.model_validate(r) for r in recipients],
+    )
+
+
+@router.post("/campaigns/{campaign_id}/send", response_model=SendCampaignResponse)
+async def send_campaign(
+    campaign_id: uuid.UUID, user: CurrentUser, session: DbSession, queue: Queue
+) -> SendCampaignResponse:
+    """Confirm Send Broadcast (§7).
+
+    This is the human-initiated moment the specification requires. It validates,
+    re-checks suppression, enqueues one task per pending recipient and returns; the
+    worker performs the actual sending (§4, §18).
+
+    Idempotent: only PENDING recipients are enqueued, so re-triggering a broadcast
+    cannot message anyone twice. Each task carries a deterministic ID derived from the
+    recipient, so a redelivered task is recognizable as a repeat (§20).
+    """
+    campaign = await _require_campaign(session, campaign_id)
+
+    # [D16]: re-check immediately before sending, because a customer can opt out
+    # between the snapshot and this moment.
+    newly_suppressed = await campaign_repo.suppress_recipients_now_opted_out(session, campaign.id)
+
+    pending = await campaign_repo.list_pending_recipients(session, campaign.id)
+
+    try:
+        assert_sendable(campaign.status, len(pending))
+    except CampaignNotSendableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    assert_transition(campaign.status, CampaignStatus.PROCESSING)
+
+    for recipient in pending:
+        await queue.enqueue(
+            TaskRequest(
+                task_type=TaskType.SEND_CAMPAIGN_MESSAGE,
+                # Deterministic, so a duplicate enqueue collapses rather than sending
+                # twice (§20).
+                task_id=f"send-{recipient.id}",
+                payload={
+                    "campaign_id": str(campaign.id),
+                    "recipient_id": str(recipient.id),
+                    "lead_id": str(recipient.lead_id),
+                },
+            )
+        )
+
+    # Only after the queue accepted the work: a failure above leaves recipients
+    # PENDING so a retry picks them up rather than losing them.
+    await campaign_repo.mark_queued(session, pending)
+
+    campaign.status = CampaignStatus.PROCESSING
+    campaign.started_at = datetime.now(UTC)
+    await campaign_repo.refresh_counts(session, campaign)
+
+    logger.info(
+        "campaign_send_confirmed",
+        campaign_id=str(campaign.id),
+        queued=len(pending),
+        skipped_as_suppressed=newly_suppressed,
+        by_user_id=str(user.id),
+    )
+    return SendCampaignResponse(
+        campaign=CampaignResponse.model_validate(campaign),
+        queued=len(pending),
+        skipped_as_suppressed=newly_suppressed,
+    )
+
+
+async def _require_campaign(session: DbSession, campaign_id: uuid.UUID) -> Campaign:
+    campaign = await campaign_repo.get_by_id(session, campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+    return campaign
+
+
+async def _detail(session: DbSession, campaign: Campaign) -> CampaignDetailResponse:
+    template = await campaign_repo.get_template(session, campaign.template_id)
+    if template is None:  # pragma: no cover - the foreign key prevents this
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    pending = await campaign_repo.count_recipients(
+        session, campaign.id, status=RecipientStatus.PENDING
+    )
+    return CampaignDetailResponse(
+        campaign=CampaignResponse.model_validate(campaign),
+        template=WhatsAppTemplateResponse.model_validate(template),
+        pending_recipients=pending,
+    )

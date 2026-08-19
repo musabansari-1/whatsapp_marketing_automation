@@ -16,6 +16,8 @@ from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.security import hash_session_token
 from app.domain.auth import SessionState, can_manage_users, is_session_valid
+from app.integrations.queue import QueueProvider
+from app.integrations.registry import build_queue_provider
 from app.persistence.database import get_session_factory
 from app.persistence.models import User
 from app.persistence.repositories import sessions as session_repo
@@ -100,3 +102,24 @@ async def require_admin(user: CurrentUser) -> User:
 
 
 AdminUser = Annotated[User, Depends(require_admin)]
+
+
+# Built once per process rather than per request, so the in-memory implementation
+# used before Phase 7 retains what was enqueued and tests can inspect it. Reset via
+# `reset_queue_provider` the same way the database singletons are.
+_queue_provider: QueueProvider | None = None
+
+
+def get_queue_provider(settings: SettingsDep) -> QueueProvider:
+    global _queue_provider
+    if _queue_provider is None:
+        _queue_provider = build_queue_provider(settings)
+    return _queue_provider
+
+
+def reset_queue_provider() -> None:
+    global _queue_provider
+    _queue_provider = None
+
+
+Queue = Annotated[QueueProvider, Depends(get_queue_provider)]

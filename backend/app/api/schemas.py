@@ -13,7 +13,14 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.domain.enums import AudienceStatus, ContactValidationStatus, UserRole
+from app.domain.enums import (
+    AudienceStatus,
+    CampaignStatus,
+    ContactValidationStatus,
+    RecipientStatus,
+    TemplateCategory,
+    UserRole,
+)
 
 # Long enough to resist guessing, capped because Argon2 hashes the whole input and an
 # unbounded body would be a cheap denial-of-service.
@@ -143,3 +150,95 @@ class AudienceSchemaResponse(BaseModel):
     phone_default_region: str
     max_file_bytes: int
     max_rows: int
+
+
+# ---------------------------------------------------------------- campaigns (§7)
+
+
+class WhatsAppTemplateResponse(BaseModel):
+    """A template as synchronized from Meta ([D6]).
+
+    `provider_status` is Meta's own value, carried through unchanged. Nothing in this
+    application assigns approval.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    language: str
+    category: TemplateCategory
+    provider_status: str
+    variable_count: int
+    body_preview: str | None
+
+
+class CreateCampaignRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    audience_id: uuid.UUID
+    template_id: uuid.UUID
+
+
+class CampaignResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    status: CampaignStatus
+    audience_id: uuid.UUID
+    template_id: uuid.UUID
+    total_recipients: int
+    sent_count: int
+    delivered_count: int
+    read_count: int
+    failed_count: int
+    skipped_count: int
+    scheduled_for: datetime | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class CampaignDetailResponse(BaseModel):
+    """A campaign with the template it will send and its outstanding work.
+
+    `pending_recipients` is what the Send Broadcast confirmation is about, so the
+    admin sees the number before triggering it.
+    """
+
+    campaign: CampaignResponse
+    template: WhatsAppTemplateResponse
+    pending_recipients: int
+
+
+class CampaignRecipientResponse(BaseModel):
+    """One frozen recipient (§7 snapshot)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    phone_e164: str
+    status: RecipientStatus
+    attempts: int
+    provider_message_id: str | None
+    error_message: str | None
+
+
+class CampaignRecipientPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[CampaignRecipientResponse]
+
+
+class SendCampaignResponse(BaseModel):
+    """The result of confirming Send Broadcast.
+
+    `queued` counts tasks handed to the queue. Delivery happens asynchronously in the
+    worker; nothing is sent inside this request (§4).
+    """
+
+    campaign: CampaignResponse
+    queued: int
+    skipped_as_suppressed: int
