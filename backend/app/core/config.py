@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import functools
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from app.domain.audience import AudienceColumnSchema
 
 
 class AppEnv(StrEnum):
@@ -59,6 +62,14 @@ class QueueProviderName(StrEnum):
 # comma-separated lists work (`OPT_OUT_KEYWORDS=STOP,UNSUBSCRIBE`) rather than
 # requiring JSON. The `_parse_csv` validator below does the splitting.
 CommaSeparated = Annotated[list[str], NoDecode]
+
+# The development-only audience schema. Production must replace it; the value is named
+# here so the production guard can detect that it has not been.
+PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA = (
+    '[{"source": "Phone", "field": "phone", "required": true},'
+    ' {"source": "Name", "field": "full_name", "required": false},'
+    ' {"source": "Email", "field": "email", "required": false}]'
+)
 
 
 def _split_csv(value: object) -> object:
@@ -142,9 +153,15 @@ class Settings(BaseSettings):
     hubspot_access_token: SecretStr | None = None
 
     # ---------------------------------------------------------------- audience [D4][D20]
-    # The production Excel schema is deliberately absent; the client supplies it
-    # before Phase 4 and it must not be invented.
     audience_phone_default_region: str = "IN"
+
+    # The client's real column names are deliberately absent. This placeholder exists
+    # so local development and tests have a schema to run against; production refuses
+    # to start without an explicit one (see _validate_production_hardening), which is
+    # what keeps [D20] honest while the pipeline is built ahead of the client's file.
+    audience_column_schema: str = PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA
+    audience_max_file_bytes: int = 5 * 1024 * 1024
+    audience_max_rows: int = 50_000
 
     # ---------------------------------------------------------------- opt-out [D5]
     opt_out_keywords: CommaSeparated = Field(
@@ -261,9 +278,32 @@ class Settings(BaseSettings):
             raise ValueError("APP_SECRET must be set to a real secret in production")
         if not self.session_cookie_secure:
             raise ValueError("SESSION_COOKIE_SECURE cannot be disabled in production")
+        if self.audience_column_schema == PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA:
+            raise ValueError(
+                "AUDIENCE_COLUMN_SCHEMA is still the development placeholder. "
+                "Set the client's confirmed Excel column schema before production "
+                "([D4]/[D20])."
+            )
         return self
 
     # ---------------------------------------------------------------- helpers
+
+    def audience_schema(self) -> AudienceColumnSchema:
+        """Parse the configured column schema.
+
+        Imported locally to keep `app.core` free of a dependency on `app.domain`,
+        which would otherwise invert the layering.
+        """
+        import json
+
+        from app.domain.audience import AudienceColumnSchema
+
+        return AudienceColumnSchema(columns=json.loads(self.audience_column_schema))
+
+    @property
+    def audience_schema_is_placeholder(self) -> bool:
+        """True while the development placeholder is still in force ([D20])."""
+        return self.audience_column_schema == PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA
 
     @property
     def is_production(self) -> bool:
