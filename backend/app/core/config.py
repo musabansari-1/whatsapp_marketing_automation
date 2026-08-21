@@ -66,9 +66,12 @@ CommaSeparated = Annotated[list[str], NoDecode]
 # The development-only audience schema. Production must replace it; the value is named
 # here so the production guard can detect that it has not been.
 PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA = (
-    '[{"source": "Phone", "field": "phone", "required": true},'
-    ' {"source": "Name", "field": "full_name", "required": false},'
-    ' {"source": "Email", "field": "email", "required": false}]'
+    '[{"source": "Name", "field": "name", "required": true},'
+    ' {"source": "Phone", "field": "phone", "required": true},'
+    ' {"source": "Email", "field": "email", "required": false},'
+    ' {"source": "Company", "field": "company", "required": false},'
+    ' {"source": "Designation", "field": "designation", "required": false},'
+    ' {"source": "City", "field": "city", "required": false}]'
 )
 
 
@@ -165,10 +168,11 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- audience [D4][D20]
     audience_phone_default_region: str = "IN"
 
-    # The client's real column names are deliberately absent. This placeholder exists
-    # so local development and tests have a schema to run against; production refuses
-    # to start without an explicit one (see _validate_production_hardening), which is
-    # what keeps [D20] honest while the pipeline is built ahead of the client's file.
+    # Maps the client's spreadsheet headers onto the canonical fields ([D25]). The
+    # canonical set is fixed; only this mapping varies per client. The value below uses
+    # the canonical names as headers, which suits development and tests; production
+    # refuses to start with it (see _validate_production_hardening), so a real mapping
+    # must always be supplied ([D32]).
     audience_column_schema: str = PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA
     audience_max_file_bytes: int = 5 * 1024 * 1024
     audience_max_rows: int = 50_000
@@ -201,6 +205,29 @@ class Settings(BaseSettings):
     msg_booking_confirmation: str = "Your demo is confirmed for {start_time} ({timezone})."
     msg_opt_out_response: str = "You have been unsubscribed and will not receive further messages."
 
+    # ---------------------------------------------------------------- retries [D27]
+    # Maximum attempts per recipient, counting the first. Configuration, never a
+    # literal, so operations can tune it without a deploy.
+    send_max_attempts: int = 5
+    send_backoff_base_seconds: float = 2.0
+    send_backoff_max_seconds: float = 300.0
+    # Fraction of the delay applied as random jitter. Without it, a batch that fails
+    # together retries together, reproducing the same spike that caused the failure.
+    send_backoff_jitter: float = 0.25
+
+    # ---------------------------------------------------------------- dispatch [D28]
+    # No default: [D28] forbids assuming a messaging tier. Unset means no client-side
+    # pacing, which is correct for development and for a queue configured to pace
+    # itself. Production sets it from the WhatsApp account's actual limits.
+    dispatch_rate_per_second: float | None = None
+    dispatch_max_concurrent: int = 10
+
+    # ---------------------------------------------------------------- templates [D24]
+    # Purpose -> approved template name. Names only: the content is written and
+    # approved by the client through Meta and synchronized in ([D6]).
+    template_booking_confirmation: str | None = None
+    template_window_fallback: str | None = None
+
     # ---------------------------------------------------------------- messaging window
     # Meta only permits free-form (non-template) replies within 24 hours of the
     # customer's last inbound message. Configurable because Meta has changed it before.
@@ -232,6 +259,27 @@ class Settings(BaseSettings):
     def _positive_dimension(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("embedding_dimension must be positive")
+        return value
+
+    @field_validator("send_max_attempts")
+    @classmethod
+    def _at_least_one_attempt(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("send_max_attempts must be at least 1")
+        return value
+
+    @field_validator("send_backoff_jitter")
+    @classmethod
+    def _jitter_is_a_fraction(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("send_backoff_jitter must be between 0 and 1")
+        return value
+
+    @field_validator("dispatch_rate_per_second")
+    @classmethod
+    def _positive_rate(cls, value: float | None) -> float | None:
+        if value is not None and value <= 0:
+            raise ValueError("dispatch_rate_per_second must be positive when set")
         return value
 
     @model_validator(mode="after")
