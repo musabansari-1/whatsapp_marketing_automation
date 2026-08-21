@@ -23,13 +23,14 @@ from app.core.config import (
     WhatsAppProviderName,
     get_settings,
 )
-from app.core.errors import ProviderNotImplementedError
+from app.core.errors import ConfigurationError, ProviderNotImplementedError
 from app.integrations.calendar import CalendarProvider, FakeCalendarProvider
 from app.integrations.crm import CRMProvider, FakeCRMProvider
 from app.integrations.embedding import EmbeddingProvider, FakeEmbeddingProvider
 from app.integrations.llm import FakeLLMProvider, LLMProvider
 from app.integrations.queue import InMemoryQueueProvider, QueueProvider
 from app.integrations.whatsapp import FakeWhatsAppProvider, WhatsAppProvider
+from app.integrations.whatsapp.meta import MetaWhatsAppProvider
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +50,25 @@ def build_whatsapp_provider(settings: Settings) -> WhatsAppProvider:
         case WhatsAppProviderName.FAKE:
             return FakeWhatsAppProvider()
         case WhatsAppProviderName.META:
-            raise ProviderNotImplementedError("meta", "Phase 6 (WhatsApp)")
+            # Configuration validation already guarantees these are present when META
+            # is selected. Re-checked rather than asserted because `python -O` strips
+            # asserts, which would turn a misconfiguration into a confusing None.
+            if (
+                settings.whatsapp_access_token is None
+                or settings.whatsapp_phone_number_id is None
+                or settings.whatsapp_business_account_id is None
+            ):
+                raise ConfigurationError(
+                    "The Meta WhatsApp provider is selected but its credentials are missing"
+                )
+            return MetaWhatsAppProvider(
+                access_token=settings.whatsapp_access_token.get_secret_value(),
+                phone_number_id=settings.whatsapp_phone_number_id,
+                business_account_id=settings.whatsapp_business_account_id,
+                api_version=settings.whatsapp_api_version,
+                base_url=settings.whatsapp_api_base_url,
+                timeout_seconds=settings.whatsapp_timeout_seconds,
+            )
 
 
 def build_llm_provider(settings: Settings) -> LLMProvider:

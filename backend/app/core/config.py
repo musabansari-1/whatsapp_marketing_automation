@@ -127,6 +127,16 @@ class Settings(BaseSettings):
     whatsapp_access_token: SecretStr | None = None
     whatsapp_phone_number_id: str | None = None
     whatsapp_verify_token: SecretStr | None = None
+    # Meta signs webhook payloads with the App Secret (HMAC-SHA256). §19 requires
+    # webhooks to be authenticated, and §24 does not list this variable, so it is a
+    # documented addition rather than an invented requirement.
+    whatsapp_app_secret: SecretStr | None = None
+    # Needed to list message templates, which hang off the WABA rather than the
+    # phone number.
+    whatsapp_business_account_id: str | None = None
+    whatsapp_api_version: str = "v21.0"
+    whatsapp_api_base_url: str = "https://graph.facebook.com"
+    whatsapp_timeout_seconds: float = 15.0
 
     # ---------------------------------------------------------------- LLM [D10][D17]
     openrouter_api_key: SecretStr | None = None
@@ -191,6 +201,11 @@ class Settings(BaseSettings):
     msg_booking_confirmation: str = "Your demo is confirmed for {start_time} ({timezone})."
     msg_opt_out_response: str = "You have been unsubscribed and will not receive further messages."
 
+    # ---------------------------------------------------------------- messaging window
+    # Meta only permits free-form (non-template) replies within 24 hours of the
+    # customer's last inbound message. Configurable because Meta has changed it before.
+    customer_service_window_hours: int = 24
+
     # ---------------------------------------------------------------- validators
 
     @field_validator(
@@ -243,6 +258,12 @@ class Settings(BaseSettings):
                 missing.append("WHATSAPP_PHONE_NUMBER_ID")
             if not self.whatsapp_verify_token:
                 missing.append("WHATSAPP_VERIFY_TOKEN")
+            # Without it, webhook signatures cannot be verified and anyone could post
+            # forged inbound messages (§19).
+            if not self.whatsapp_app_secret:
+                missing.append("WHATSAPP_APP_SECRET")
+            if not self.whatsapp_business_account_id:
+                missing.append("WHATSAPP_BUSINESS_ACCOUNT_ID")
 
         if self.calendar_provider is CalendarProviderName.GOOGLE:
             if not self.google_calendar_id:

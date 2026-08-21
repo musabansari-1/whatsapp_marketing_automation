@@ -40,7 +40,12 @@ class SentMessage:
 
 @dataclass(frozen=True, slots=True)
 class ApprovedTemplate:
-    """Approved template metadata synchronized from Meta ([D6])."""
+    """Template metadata synchronized from Meta ([D6]).
+
+    `provider_status` carries Meta's own value through unchanged. The synchronization
+    stores every template it is given, status included, and callers filter on it —
+    nothing in this application decides approval.
+    """
 
     name: str
     language: str
@@ -48,6 +53,7 @@ class ApprovedTemplate:
     provider_template_id: str
     variable_count: int = 0
     body_preview: str | None = None
+    provider_status: str = ""
 
 
 @dataclass(frozen=True, slots=True)
