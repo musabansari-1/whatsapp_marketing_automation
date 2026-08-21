@@ -71,9 +71,15 @@ class AudienceContact(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     row_number: Mapped[int] = mapped_column(Integer, nullable=False)
 
     raw_row: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # The canonical V1 contact fields ([D25]). Nullable even for the required ones:
+    # §6 stores invalid rows too, and an INVALID row is precisely one where a required
+    # value was missing or unusable.
     full_name: Mapped[str | None] = mapped_column(String(255))
     phone_e164: Mapped[str | None] = mapped_column(String(20))
     email: Mapped[str | None] = mapped_column(String(320))
+    company: Mapped[str | None] = mapped_column(String(255))
+    designation: Mapped[str | None] = mapped_column(String(255))
+    city: Mapped[str | None] = mapped_column(String(255))
 
     validation_status: Mapped[ContactValidationStatus] = mapped_column(
         Enum(ContactValidationStatus, name="contact_validation_status", native_enum=True),

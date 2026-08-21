@@ -55,8 +55,11 @@ def _to_contact(audience_id: uuid.UUID, row: ValidatedRow) -> AudienceContact:
         row_number=row.row_number,
         raw_row=_jsonable(row.raw_row),
         phone_e164=row.phone_e164,
-        email=row.email,
         full_name=row.full_name,
+        email=row.email,
+        company=row.company,
+        designation=row.designation,
+        city=row.city,
         validation_status=row.status,
         validation_error=row.error,
     )
@@ -137,6 +140,9 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uu
     UPDATE` does this in one statement, which also makes the operation idempotent —
     confirming twice cannot double-create.
 
+    Every canonical field is carried across ([D25]): promotion must not discard
+    company, designation or city.
+
     Existing contact details are only overwritten when the upload actually carries a
     value, so a sparser later file cannot blank out what an earlier one supplied. A
     lead's `status` is never touched here: it belongs to the conversation lifecycle,
@@ -145,8 +151,11 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uu
     source = (
         select(
             AudienceContact.phone_e164,
-            func.max(AudienceContact.email).label("email"),
             func.max(AudienceContact.full_name).label("full_name"),
+            func.max(AudienceContact.email).label("email"),
+            func.max(AudienceContact.company).label("company"),
+            func.max(AudienceContact.designation).label("designation"),
+            func.max(AudienceContact.city).label("city"),
         )
         .where(
             AudienceContact.audience_id == audience_id,
@@ -165,8 +174,11 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uu
         [
             {
                 "phone_e164": row["phone_e164"],
-                "email": row["email"],
                 "full_name": row["full_name"],
+                "email": row["email"],
+                "company": row["company"],
+                "designation": row["designation"],
+                "city": row["city"],
                 "source_audience_id": audience_id,
             }
             for row in rows
@@ -175,8 +187,14 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uu
     statement = statement.on_conflict_do_update(
         index_elements=[Lead.phone_e164],
         set_={
-            "email": func.coalesce(statement.excluded.email, Lead.email),
+            # coalesce, so a sparser later upload cannot blank out detail an earlier
+            # one supplied ([D35]: the audience file is authoritative, but a missing
+            # value is not an instruction to erase).
             "full_name": func.coalesce(statement.excluded.full_name, Lead.full_name),
+            "email": func.coalesce(statement.excluded.email, Lead.email),
+            "company": func.coalesce(statement.excluded.company, Lead.company),
+            "designation": func.coalesce(statement.excluded.designation, Lead.designation),
+            "city": func.coalesce(statement.excluded.city, Lead.city),
         },
     )
     await session.execute(statement)

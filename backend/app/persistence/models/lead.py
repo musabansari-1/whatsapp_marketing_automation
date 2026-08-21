@@ -34,8 +34,12 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "leads"
 
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
-    email: Mapped[str | None] = mapped_column(String(320))
     full_name: Mapped[str | None] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(320))
+    # Carried through from the audience so promotion discards nothing ([D25]).
+    company: Mapped[str | None] = mapped_column(String(255))
+    designation: Mapped[str | None] = mapped_column(String(255))
+    city: Mapped[str | None] = mapped_column(String(255))
 
     status: Mapped[LeadStatus] = mapped_column(
         Enum(LeadStatus, name="lead_status", native_enum=True),

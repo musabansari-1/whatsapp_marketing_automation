@@ -21,15 +21,23 @@ from app.domain.phone import normalize_phone
 
 
 class AudienceField(StrEnum):
-    """Platform fields a spreadsheet column can map to.
+    """The canonical V1 contact fields ([D25]).
 
-    Deliberately small. Columns mapping to nothing are still preserved in the row's
-    `raw_row`, so no uploaded data is silently discarded.
+    Stable regardless of what the client names their spreadsheet columns; the mapping
+    between the two is configuration. Columns mapping to nothing are still preserved
+    in the row's `raw_row`, so no uploaded data is silently discarded.
     """
 
+    NAME = "name"
     PHONE = "phone"
     EMAIL = "email"
-    FULL_NAME = "full_name"
+    COMPANY = "company"
+    DESIGNATION = "designation"
+    CITY = "city"
+
+
+# [D25]: both must be present and populated for a row to be usable.
+REQUIRED_FIELDS = frozenset({AudienceField.NAME, AudienceField.PHONE})
 
 
 class ColumnMapping(BaseModel):
@@ -53,9 +61,9 @@ class ColumnMapping(BaseModel):
 class AudienceColumnSchema(BaseModel):
     """The configured mapping for the client's Excel format.
 
-    A phone column is mandatory and must be required: the phone number is the
-    platform's WhatsApp identity ([D11]), so a schema without one describes a file
-    this system cannot use.
+    Name and phone must both be mapped and marked required ([D25]). The phone is the
+    platform's WhatsApp identity ([D11]); the name is what every downstream surface
+    displays, and a contact the salesperson cannot identify is not usable.
     """
 
     columns: list[ColumnMapping]
@@ -75,11 +83,13 @@ class AudienceColumnSchema(BaseModel):
         if duplicate_sources:
             raise ValueError(f"duplicate source columns: {sorted(duplicate_sources)}")
 
-        phone = next((c for c in self.columns if c.field is AudienceField.PHONE), None)
-        if phone is None:
-            raise ValueError("audience column schema must map a phone column")
-        if not phone.required:
-            raise ValueError("the phone column must be required")
+        mapped = {column.field: column for column in self.columns}
+        for required in sorted(REQUIRED_FIELDS, key=lambda f: f.value):
+            column = mapped.get(required)
+            if column is None:
+                raise ValueError(f"audience column schema must map a {required.value} column")
+            if not column.required:
+                raise ValueError(f"the {required.value} column must be required")
 
         return self
 
@@ -113,8 +123,11 @@ class ValidatedRow:
     status: ContactValidationStatus
     error: str | None = None
     phone_e164: str | None = None
-    email: str | None = None
     full_name: str | None = None
+    email: str | None = None
+    company: str | None = None
+    designation: str | None = None
+    city: str | None = None
 
 
 @dataclass(slots=True)
@@ -189,6 +202,17 @@ def _validate_row(
     if not phone.ok:
         return ValidatedRow(row_number, raw_row, ContactValidationStatus.INVALID, phone.error)
 
+    # [D25] makes name required, so a row with a usable phone but no name is INVALID.
+    full_name = _text(_lookup(raw_row, schema.source_for(AudienceField.NAME))) or None
+    if full_name is None:
+        return ValidatedRow(
+            row_number,
+            raw_row,
+            ContactValidationStatus.INVALID,
+            "missing name",
+            phone_e164=phone.e164,
+        )
+
     email_raw = _text(_lookup(raw_row, schema.source_for(AudienceField.EMAIL)))
     email: str | None = None
     if email_raw:
@@ -202,7 +226,9 @@ def _validate_row(
             )
         email = email_raw.casefold()
 
-    full_name = _text(_lookup(raw_row, schema.source_for(AudienceField.FULL_NAME))) or None
+    company = _text(_lookup(raw_row, schema.source_for(AudienceField.COMPANY))) or None
+    designation = _text(_lookup(raw_row, schema.source_for(AudienceField.DESIGNATION))) or None
+    city = _text(_lookup(raw_row, schema.source_for(AudienceField.CITY))) or None
 
     if phone.e164 in seen:
         return ValidatedRow(
@@ -211,8 +237,11 @@ def _validate_row(
             ContactValidationStatus.DUPLICATE,
             "duplicate phone number in this file",
             phone_e164=phone.e164,
-            email=email,
             full_name=full_name,
+            email=email,
+            company=company,
+            designation=designation,
+            city=city,
         )
 
     return ValidatedRow(
@@ -221,8 +250,11 @@ def _validate_row(
         ContactValidationStatus.VALID,
         None,
         phone_e164=phone.e164,
-        email=email,
         full_name=full_name,
+        email=email,
+        company=company,
+        designation=designation,
+        city=city,
     )
 
 

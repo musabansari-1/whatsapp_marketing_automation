@@ -108,6 +108,9 @@ class AudienceContactResponse(BaseModel):
     full_name: str | None
     phone_e164: str | None
     email: str | None
+    company: str | None
+    designation: str | None
+    city: str | None
     validation_status: ContactValidationStatus
     validation_error: str | None
     raw_row: dict[str, Any]
