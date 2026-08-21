@@ -924,6 +924,30 @@ GET /webhooks/whatsapp
 POST /webhooks/whatsapp
 ```
 
+Both bypass the BFF **[D13]** — Meta calls them directly — so they authenticate
+themselves: the GET verifies `WHATSAPP_VERIFY_TOKEN` during Meta's subscription
+handshake, and the POST verifies an HMAC-SHA256 signature computed with the Meta App
+Secret over the raw request body (§19).
+
+The POST persists the delivery, enqueues processing and returns. It answers 200 for
+anything correctly signed, including payloads this platform does not model: Meta
+treats a non-2xx as failure and redelivers, so returning an error for an unmodelled
+event would produce an endless retry loop. A redelivery is reported as a duplicate
+rather than an error, enforced by the unique constraint on `webhook_events`.
+
+### Messaging window
+
+Meta permits free-form (non-template) messages only within 24 hours of the customer's
+last inbound message. Outside it, only an approved template can be delivered.
+
+This is not stated in the original specification and was flagged in the Phase 0
+report. `conversations.last_inbound_at` records when the window opened and
+`CUSTOMER_SERVICE_WINDOW_HOURS` configures its length.
+
+**Outstanding**: the approved *utility* templates to fall back to when the window has
+closed are not yet identified. Until they are, an AI reply or booking confirmation
+sent outside the window cannot be delivered.
+
 ## 17. Dashboard
 
 Sections:

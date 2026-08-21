@@ -4,9 +4,10 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 5 (Campaigns) complete.** Auth, Excel audiences, and campaign
-preparation with the Send Broadcast confirmation. No messages are sent yet — the
-WhatsApp integration is Phase 6 and the worker that consumes the queue is Phase 7.
+**Current state: Phase 6 (WhatsApp) complete.** Auth, Excel audiences, campaign
+preparation, and the Meta integration: webhooks, delivery tracking, opt-out handling
+and template synchronization. Outbound campaign sending still waits on Phase 7, which
+adds the worker that consumes the send queue.
 
 ## Layout
 
@@ -218,6 +219,50 @@ there.
 **Templates come from Meta, not from here.** There is no endpoint that creates or
 approves a template ([D6]); `whatsapp_templates` is populated by the Phase 6
 synchronization. Until that exists the list is empty and no campaign can be created.
+
+## WhatsApp
+
+```text
+GET    /api/v1/webhooks/whatsapp    Meta's subscription handshake
+POST   /api/v1/webhooks/whatsapp    inbound messages and delivery statuses
+```
+
+Both bypass the BFF — Meta calls them directly — so they authenticate themselves. The
+GET checks `WHATSAPP_VERIFY_TOKEN`; the POST verifies an HMAC-SHA256 signature over
+the raw body using the Meta **App Secret**. An unsigned or wrongly-signed delivery is
+rejected and never stored.
+
+The POST does the minimum: verify, persist, enqueue, return. Everything else happens
+in the worker, because Meta retries aggressively and a webhook that works inline turns
+a slow database into a flood of duplicate deliveries. A redelivery is reported as a
+duplicate rather than an error.
+
+**Inbound handling** creates the lead and conversation if needed (a customer can
+message without ever being in an audience), stores the message, and opens the 24-hour
+messaging window.
+
+**Opt-out** ([D5], [D16]): a message matching `OPT_OUT_KEYWORDS` writes a
+phone-level suppression row, marks the lead, cancels any pending or queued campaign
+sends to that number, and acknowledges the customer. Matching is on the whole message,
+so "STOP" opts out but "please don't stop sending these" does not.
+
+**Delivery statuses** update both the message and its campaign recipient. Out-of-order
+webhooks cannot walk a status backwards — a late `delivered` will not overwrite `read`.
+
+**Templates** are synchronized from Meta into `whatsapp_templates` with their status
+carried through unchanged. Campaigns filter on that value; nothing here decides
+approval ([D6]).
+
+### The 24-hour messaging window
+
+Meta only permits free-form replies within 24 hours of the customer's last inbound
+message. `conversations.last_inbound_at` records when the window opened and
+`CUSTOMER_SERVICE_WINDOW_HOURS` configures its length.
+
+**Still outstanding**: the approved *utility* templates to use when the window has
+closed have not been identified, so a reply sent outside the window cannot currently
+be delivered. This was flagged in the Phase 0 report and is not addressed in the
+original specification.
 
 ## Provider abstractions
 
