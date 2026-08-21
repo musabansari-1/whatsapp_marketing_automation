@@ -5,9 +5,11 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.campaign import META_STATUS_APPROVED, recipient_status_for
@@ -227,6 +229,29 @@ async def mark_queued(session: AsyncSession, recipients: Sequence[CampaignRecipi
         recipient.status = RecipientStatus.QUEUED
         recipient.queued_at = now
     await session.flush()
+
+
+async def stop_unsent_recipients(session: AsyncSession, campaign_id: uuid.UUID) -> int:
+    """Mark every not-yet-sent recipient SKIPPED when a campaign is cancelled ([D29]).
+
+    PENDING and QUEUED only: a recipient already SENT cannot be recalled, and one
+    already FAILED or SKIPPED has settled.
+
+    This is belt and braces rather than the whole mechanism — a task already dispatched
+    still reaches the worker, which re-checks the campaign state. Marking the rows here
+    means the dashboard reflects the cancellation immediately instead of waiting for
+    every queued task to drain.
+    """
+    result = await session.execute(
+        update(CampaignRecipient)
+        .where(
+            CampaignRecipient.campaign_id == campaign_id,
+            CampaignRecipient.status.in_([RecipientStatus.PENDING, RecipientStatus.QUEUED]),
+        )
+        .values(status=RecipientStatus.SKIPPED)
+    )
+    await session.flush()
+    return int(cast("CursorResult[Any]", result).rowcount or 0)
 
 
 async def refresh_counts(session: AsyncSession, campaign: Campaign) -> None:

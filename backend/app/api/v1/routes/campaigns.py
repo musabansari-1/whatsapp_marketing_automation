@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.api.deps import CurrentUser, DbSession, Queue
+from app.api.deps import AdminUser, CurrentUser, DbSession, Queue
 from app.api.schemas import (
     CampaignDetailResponse,
     CampaignRecipientPage,
@@ -25,6 +25,7 @@ from app.api.schemas import (
 from app.core.logging import get_logger
 from app.domain.campaign import (
     CampaignNotSendableError,
+    CampaignStateError,
     TemplateFacts,
     TemplateNotApprovedError,
     assert_sendable,
@@ -63,9 +64,11 @@ async def list_templates(user: CurrentUser, session: DbSession) -> list[WhatsApp
     "/campaigns", response_model=CampaignDetailResponse, status_code=status.HTTP_201_CREATED
 )
 async def create_campaign(
-    payload: CreateCampaignRequest, user: CurrentUser, session: DbSession
+    payload: CreateCampaignRequest, user: AdminUser, session: DbSession
 ) -> CampaignDetailResponse:
     """Create a campaign and freeze its recipients.
+
+    ADMIN-only ([D33]).
 
     The snapshot is taken now rather than at send time, so the preview the admin
     confirms against is exactly the set that will be messaged (§7). Nothing is sent.
@@ -169,9 +172,12 @@ async def list_recipients(
 
 @router.post("/campaigns/{campaign_id}/send", response_model=SendCampaignResponse)
 async def send_campaign(
-    campaign_id: uuid.UUID, user: CurrentUser, session: DbSession, queue: Queue
+    campaign_id: uuid.UUID, user: AdminUser, session: DbSession, queue: Queue
 ) -> SendCampaignResponse:
     """Confirm Send Broadcast (§7).
+
+    ADMIN-only ([D33]): a salesperson must never be able to trigger a mass broadcast,
+    accidentally or otherwise.
 
     This is the human-initiated moment the specification requires. It validates,
     re-checks suppression, enqueues one task per pending recipient and returns; the
@@ -231,6 +237,45 @@ async def send_campaign(
         queued=len(pending),
         skipped_as_suppressed=newly_suppressed,
     )
+
+
+@router.post("/campaigns/{campaign_id}/cancel", response_model=CampaignResponse)
+async def cancel_campaign(
+    campaign_id: uuid.UUID, user: AdminUser, session: DbSession
+) -> CampaignResponse:
+    """Cancel a campaign ([D29]). ADMIN-only.
+
+    Cancelling stops work that is already queued. Tasks dispatched before this point
+    still arrive at the worker, which re-reads the campaign state and declines to
+    send — so cancellation is effective without needing to purge the queue.
+
+    Idempotent: cancelling an already-cancelled campaign succeeds and changes nothing,
+    so a double click or a retried request is harmless.
+
+    Messages already delivered cannot be recalled; only unsent recipients are stopped.
+    """
+    campaign = await _require_campaign(session, campaign_id)
+
+    if campaign.status is CampaignStatus.CANCELLED:
+        return CampaignResponse.model_validate(campaign)
+
+    try:
+        assert_transition(campaign.status, CampaignStatus.CANCELLED)
+    except CampaignStateError as exc:
+        # A completed or failed campaign has nothing left to stop.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    stopped = await campaign_repo.stop_unsent_recipients(session, campaign.id)
+    campaign.status = CampaignStatus.CANCELLED
+    await campaign_repo.refresh_counts(session, campaign)
+
+    logger.info(
+        "campaign_cancelled",
+        campaign_id=str(campaign.id),
+        recipients_stopped=stopped,
+        by_user_id=str(user.id),
+    )
+    return CampaignResponse.model_validate(campaign)
 
 
 async def _require_campaign(session: DbSession, campaign_id: uuid.UUID) -> Campaign:
