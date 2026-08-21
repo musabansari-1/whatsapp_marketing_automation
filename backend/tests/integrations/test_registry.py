@@ -58,7 +58,6 @@ class TestUnimplementedProvidersFailLoudly:
     @pytest.mark.parametrize(
         ("env_var", "value", "builder", "expected_phase"),
         [
-            ("WHATSAPP_PROVIDER", "meta", "whatsapp", "Phase 6"),
             ("LLM_PROVIDER", "openrouter", "llm", "Phase 10"),
             ("EMBEDDING_PROVIDER", "local_sentence_transformer", "embedding", "Phase 8"),
             ("CALENDAR_PROVIDER", "google", "calendar", "Phase 11"),
@@ -102,6 +101,34 @@ class TestUnimplementedProvidersFailLoudly:
             builders[builder](Settings())
 
         assert expected_phase in str(exc_info.value)
+
+    def test_the_meta_provider_is_now_implemented(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Phase 6 replaced the placeholder. Selecting META builds the real provider,
+        which still performs no I/O until it is called."""
+        from app.integrations.whatsapp.meta import MetaWhatsAppProvider
+
+        monkeypatch.setenv("WHATSAPP_PROVIDER", "meta")
+        monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "1")
+        monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "v")
+        monkeypatch.setenv("WHATSAPP_APP_SECRET", "s")
+        monkeypatch.setenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "waba")
+
+        provider = build_whatsapp_provider(Settings())
+        assert isinstance(provider, MetaWhatsAppProvider)
+        assert isinstance(provider, WhatsAppProvider)
+
+    def test_meta_requires_its_webhook_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§19: webhook signatures cannot be verified without the app secret, so a
+        partial configuration must fail at startup rather than at the first webhook."""
+        monkeypatch.setenv("WHATSAPP_PROVIDER", "meta")
+        monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "1")
+        monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "v")
+        with pytest.raises(ValueError, match="WHATSAPP_APP_SECRET"):
+            Settings()
 
     def test_invalid_provider_name_is_rejected_at_config_load(
         self, monkeypatch: pytest.MonkeyPatch

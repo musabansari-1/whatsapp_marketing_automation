@@ -61,7 +61,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # asserts are the point of tests
+# S101: asserts are the point of tests.
+# S105/S106: test files legitimately contain literal placeholder credentials; the
+# rule is about production code, and per-line noqa on every fixture is noise.
+"tests/**" = ["S101", "S105", "S106"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

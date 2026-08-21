@@ -18,9 +18,13 @@ class TestWorkerHealth:
         assert body["status"] == "ok"
         assert body["service"] == "worker"
 
-    def test_no_handlers_registered_in_phase_one(self, worker_client: TestClient) -> None:
-        """Handlers arrive with the phases that own their tasks."""
-        assert worker_client.get("/health").json()["registered_task_types"] == []
+    def test_health_reports_the_registered_handlers(self, worker_client: TestClient) -> None:
+        """Handlers arrive with the phases that own their tasks. Phase 6 added the
+        WhatsApp ones; sending is still unregistered until Phase 7."""
+        registered = worker_client.get("/health").json()["registered_task_types"]
+        assert "process_inbound_message" in registered
+        assert "sync_whatsapp_templates" in registered
+        assert "send_campaign_message" not in registered
 
 
 class TestTaskRegistry:
@@ -85,14 +89,16 @@ class TestTaskEndpoint:
         async def handler(task: TaskRequest) -> None:
             seen.append(task.task_id)
 
-        task_registry.register(TaskType.PROCESS_INBOUND_MESSAGE, handler)
+        # A task type no phase has claimed yet, so this does not collide with the
+        # handlers the worker registers at startup.
+        task_registry.register(TaskType.GENERATE_EMBEDDINGS, handler)
 
         response = worker_client.post(
             "/internal/tasks",
             json={
-                "task_type": "process_inbound_message",
+                "task_type": "generate_embeddings",
                 "task_id": "task-1",
-                "payload": {"message_id": "m-1"},
+                "payload": {"document_id": "d-1"},
             },
         )
 
@@ -100,7 +106,7 @@ class TestTaskEndpoint:
         assert response.json() == {
             "status": "completed",
             "task_id": "task-1",
-            "task_type": "process_inbound_message",
+            "task_type": "generate_embeddings",
         }
         assert seen == ["task-1"]
 
