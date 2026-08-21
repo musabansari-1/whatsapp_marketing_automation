@@ -4,10 +4,10 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 6 (WhatsApp) complete.** Auth, Excel audiences, campaign
-preparation, and the Meta integration: webhooks, delivery tracking, opt-out handling
-and template synchronization. Outbound campaign sending still waits on Phase 7, which
-adds the worker that consumes the send queue.
+**Current state: Phase 7 (Cloud Tasks and worker) complete.** The pipeline now runs
+end to end: upload an audience, prepare a campaign, click Send Broadcast, and the
+worker delivers each message with retries, throttling and cancellation. Still needs
+real Meta credentials and approved templates to send anything outside tests.
 
 ## Layout
 
@@ -173,6 +173,21 @@ GET    /api/v1/audiences/{id}/contacts paged rows, filterable by status
 POST   /api/v1/audiences/{id}/confirm  confirm, upserting valid rows into leads
 ```
 
+### Canonical schema
+
+```text
+name          required
+phone         required
+email         optional
+company       optional
+designation   optional
+city          optional
+```
+
+These fields are fixed ([D25]); only the mapping from the client's spreadsheet headers
+varies, and that is configuration. All six are carried onto the lead at confirmation —
+promotion discards nothing.
+
 Rows are marked `VALID`, `INVALID` or `DUPLICATE` and **all three are kept**, so the
 preview can show what was rejected and why. Phone numbers are normalized to E.164
 using `AUDIENCE_PHONE_DEFAULT_REGION` (`IN` by default), and duplicates are detected
@@ -180,11 +195,16 @@ after normalization, so two spellings of one number are caught.
 
 ### The column schema is configuration
 
-`AUDIENCE_COLUMN_SCHEMA` maps the client's spreadsheet headers onto platform fields:
+`AUDIENCE_COLUMN_SCHEMA` maps the client's spreadsheet headers onto the canonical
+fields:
 
 ```json
-[{ "source": "Mobile Number", "field": "phone", "required": true },
- { "source": "Customer Name", "field": "full_name", "required": false }]
+[{ "source": "Full Name",     "field": "name",        "required": true },
+ { "source": "Mobile Number", "field": "phone",       "required": true },
+ { "source": "Email ID",      "field": "email",       "required": false },
+ { "source": "Organization",  "field": "company",     "required": false },
+ { "source": "Job Title",     "field": "designation", "required": false },
+ { "source": "Location",      "field": "city",        "required": false }]
 ```
 
 The value shipped in `.env.example` is a **development placeholder**, not a client
@@ -192,8 +212,8 @@ format. Production refuses to start while it is still in place, so the pipeline 
 be built before the client confirmed their columns without inventing names ([D4],
 [D20]). Swapping in the real headers needs no code change.
 
-Fields are `phone` (mandatory, and must be required), `email` and `full_name`.
-Unmapped columns are still preserved in each row's stored `raw_row`.
+`name` and `phone` must both be mapped and marked required. Unmapped columns are still
+preserved in each row's stored `raw_row`.
 
 ## Campaigns
 
@@ -263,6 +283,42 @@ message. `conversations.last_inbound_at` records when the window opened and
 closed have not been identified, so a reply sent outside the window cannot currently
 be delivered. This was flagged in the Phase 0 report and is not addressed in the
 original specification.
+
+## Asynchronous dispatch
+
+Send Broadcast enqueues one task per recipient; the worker delivers them.
+
+```text
+ADMIN clicks Send Broadcast
+ ↓
+one Cloud Task per pending recipient (deterministic name = idempotent)
+ ↓
+Cloud Run worker, authenticated by Google-issued OIDC
+ ↓
+re-check campaign state and suppression, then send
+```
+
+**Retries** ([D27]): 5 attempts, exponential backoff with jitter, all configurable.
+The three failure classes behave differently — transient retries, permanent fails
+immediately, rate-limited backs off. The worker signals a retry with `503` plus
+`Retry-After`; any `2xx` tells Cloud Tasks the task is finished.
+
+**Idempotency** is layered, because each layer catches a different failure: Cloud
+Tasks refuses a duplicate task name, the recipient row is locked and its status
+checked, and the outbound message carries a unique key so a worker that crashed after
+sending recovers rather than re-sends.
+
+**Throttling** ([D28]): `DISPATCH_RATE_PER_SECOND` spreads tasks over time so a large
+campaign trickles rather than floods. It has **no default** — assuming a Meta
+messaging tier is exactly what the decision forbids.
+
+**Cancellation** ([D29]): `POST /api/v1/campaigns/{id}/cancel` (ADMIN-only) stops
+unsent recipients, and the worker re-checks campaign state before every send, so tasks
+already dispatched send nothing. Idempotent. Messages already delivered cannot be
+recalled.
+
+A campaign with some failed recipients ends `COMPLETED`; `sent_count` and
+`failed_count` carry the breakdown. There is no `PARTIAL` state.
 
 ## Provider abstractions
 
