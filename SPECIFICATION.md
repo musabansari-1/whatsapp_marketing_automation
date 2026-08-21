@@ -1,7 +1,7 @@
 # WhatsApp AI Marketing Platform — Complete Specification
-Version 4 — Consolidated
+Version 5 — Consolidated
 
-Version 4 incorporates the product owner's resolution of the 12 open decisions raised in the Phase 0 readiness report, plus the second-pass architectural resolutions (both decided 2026-08-17). Resolved decisions are marked **[D1]**–**[D21]** at the point they apply and are summarized in §27.
+Version 5 incorporates the product owner's resolution of the 12 open decisions raised in the Phase 0 readiness report, the second-pass architectural resolutions (both 2026-08-17), and the pre-Phase-7 decisions of 2026-08-21. Resolved decisions are marked **[D1]**–**[D39]** at the point they apply and are summarized in §27.
 
 ## 1. Product Goal
 
@@ -196,19 +196,84 @@ Audience stored
 
 Store original row number, validation status, validation error and normalized values.
 
+The uploaded file is authoritative for contact display names **[D35]**. A WhatsApp profile name must never silently overwrite a name supplied by the audience file, and the source audience must remain traceable from the lead.
+
 Uploading an Excel file must not send messages or trigger AI. Upload must never automatically trigger a broadcast.
 
-Exact client-defined columns must be confirmed before Phase 4 and must not be invented **[D4]** **[D20]**. No production column names are to be invented in the meantime. The column schema must be defined in configuration so the pipeline can be pointed at the confirmed schema without code changes.
+### Canonical audience schema **[D25]**
 
-Regardless of the final column set, the pipeline must support:
+V1 defines a canonical set of contact fields. This is the application's schema and is
+independent of whatever headers the client's spreadsheet happens to use.
+
+```text
+name          REQUIRED
+phone         REQUIRED
+email         optional
+company       optional
+designation   optional
+city          optional
+```
+
+The canonical schema stays stable even when the client's Excel headers change.
+Supersedes **[D4]**/**[D20]**, which deferred the schema until the client supplied it.
+
+### Configurable column mapping **[D25]**
+
+An administrator configures the mapping from spreadsheet header to canonical field.
+The application is never hard-coded to the client's header names.
+
+```text
+"Full Name"      → name
+"Mobile Number"  → phone
+"Email ID"       → email
+"Organization"   → company
+"Job Title"      → designation
+"Location"       → city
+```
+
+**[D32]**: the canonical schema is the V1 production schema. A development placeholder
+may remain as a test fixture, but production must never silently fall back to it — the
+existing startup guard that refuses the placeholder in production stands.
+
+Validation requirements:
 - required-column validation
-- optional-column validation
+- optional-column handling
 - phone normalization
 - duplicate detection
 - invalid-row reporting
-- preview before import
+- preview before confirmation
 
-Phone normalization defaults to Indian numbers (region `IN`) unless the client specifies a different audience geography. The default region is configuration.
+Phone normalization defaults to Indian numbers (region `IN`) unless the client
+specifies a different audience geography. The default region is configuration.
+
+### End-to-end audience flow **[D25]**, **[D31]**
+
+```text
+Excel upload
+ ↓
+Parse
+ ↓
+Validate
+ ↓
+Normalize
+ ↓
+Show preview and errors
+ ↓
+User confirms
+ ↓
+Create/confirm audience
+ ↓
+Promote eligible records to leads
+ ↓
+Campaign can use the audience
+ ↓
+Campaign becomes READY when sendable recipients exist
+ ↓
+ADMIN explicitly clicks Send Broadcast
+```
+
+Uploading must never trigger a broadcast, and must never create permanent leads:
+records become leads only at audience confirmation **[D31]**.
 
 ## 7. Campaigns
 
@@ -231,10 +296,76 @@ Recipient records include campaign, lead, status, attempts, WhatsApp message ID,
 
 Use a recipient snapshot so later audience changes do not unexpectedly change an existing campaign.
 
+The snapshot is frozen at campaign creation and stays frozen **[D30]**. Leads added afterwards never silently enter an existing campaign; targeting them means creating a new audience or campaign. This is a campaign-auditability requirement.
+
 Marketing broadcast is human initiated:
 Upload audience → create campaign → preview → confirm Send Broadcast.
 
 Actual sending is automated asynchronously.
+
+### Permissions **[D33]**
+
+Mass broadcast sending is **ADMIN-only** in V1. A salesperson must not be able to
+accidentally trigger a mass WhatsApp broadcast.
+
+```text
+ADMIN         create, edit and review campaigns; send broadcasts; pause and cancel
+SALESPERSON   view campaigns; prepare and review campaign information; manage leads
+```
+
+This narrows the earlier position that campaign work followed the general internal-user
+permission of §3.
+
+### READY does not mean sending **[D34]**
+
+A campaign becomes READY automatically once it has at least one sendable recipient.
+READY is a state of preparedness, not an instruction to send.
+
+```text
+DRAFT
+ ↓
+READY
+ ↓
+ADMIN explicitly clicks Send Broadcast
+ ↓
+PROCESSING
+ ↓
+COMPLETED / FAILED / CANCELLED
+```
+
+Human initiation of broadcasts is a core V1 requirement.
+
+### Cancellation **[D29]**
+
+A running campaign must be cancellable, and cancelling must actually stop work already
+queued.
+
+```text
+Campaign PROCESSING
+ ↓
+ADMIN cancels
+ ↓
+Campaign CANCELLED
+ ↓
+A queued worker receives its task
+ ↓
+The worker re-checks campaign state
+ ↓
+No WhatsApp message is sent
+```
+
+Requirements:
+- the worker re-checks campaign state immediately before sending, because a task may
+  have been queued before the cancellation
+- cancellation is idempotent
+- messages already sent successfully cannot be undone
+
+### Scheduling is out of V1 **[D39]**
+
+`SCHEDULED` and `scheduled_for` exist in the domain model but nothing enters that state
+in V1. Specifically excluded: cron-based sending, automatic scheduled broadcasts and
+any autonomous campaign execution. Every broadcast begins with an explicit human
+action.
 
 ## 8. WhatsApp
 
@@ -285,6 +416,8 @@ Meta-approved templates are the source of truth. The application synchronizes ap
 
 The application must never invent or locally assign a Meta approval status. Campaigns may only use templates known to be approved, and marketing broadcasts must use the appropriate approved template type for marketing messages.
 
+Real Meta-approved templates are required before production broadcasting **[D23]**. Tests may continue to use fixtures and mocks, but the production campaign system admits only templates actually synchronized from Meta.
+
 Meta template synchronization is implemented in the WhatsApp integration phase (Phase 6), not earlier.
 
 Respect WhatsApp's messaging-window and template requirements.
@@ -302,7 +435,17 @@ When a customer opts out:
 
 `whatsapp_suppressions` is authoritative and survives independently of any lead row. Campaign sending must check it before sending; `lead.opted_out` alone is not sufficient (§15 **[D16]**).
 
-Recognized opt-out keywords are configuration.
+Recognized opt-out keywords are configuration. V1 defaults, confirmed **[D26]**:
+
+```text
+STOP
+UNSUBSCRIBE
+OPT OUT
+OPTOUT
+```
+
+Whole-message matching is sufficient for V1. Additional client-approved or regional
+variants are added to configuration, not to code.
 
 ### Customer-facing content **[D21]**
 
@@ -386,6 +529,8 @@ FAILED
 
 The AI cannot arbitrarily invent state transitions.
 
+A CLOSED conversation is never reopened **[D36]**. A later inbound message from the same customer starts a new conversation, which keeps each conversation's history coherent.
+
 ### Qualification **[D9]**
 
 The LLM must not arbitrarily determine whether a lead is qualified.
@@ -402,6 +547,8 @@ Initial rule concept — a lead becomes `QUALIFIED` when all of the following ho
 The exact required fields are configuration.
 
 V1 does not include a lead-scoring system.
+
+The final `QUALIFYING → QUALIFIED` rules remain a Phase 10 decision **[D37]** and must not be invented earlier. The division of responsibility above is settled; the criteria are not.
 
 ## 11. RAG
 
@@ -531,6 +678,7 @@ The Google OAuth refresh token is stored in **Google Secret Manager**. It must n
 - The worker reads the credential from Secret Manager at runtime and may cache it in memory. This keeps Cloud Run workers stateless.
 - If Google returns a rotated refresh token, the worker writes a new secret version, so the worker's service account needs both read and write access to that secret.
 - Local development and automated tests use `FakeCalendarProvider` and must not require Secret Manager.
+- Google Calendar credentials are introduced in the Calendar phase, and HubSpot credentials in the HubSpot phase **[D38]**. No production credentials are introduced earlier.
 
 ### Slot policy **[D8]**
 
@@ -858,6 +1006,16 @@ GET /campaigns/{id}/recipients
 GET /whatsapp-templates
 ```
 
+Added by **[D29]**, since §16 lists no route for stopping a broadcast:
+
+```text
+POST /campaigns/{id}/cancel
+```
+
+Campaign permissions **[D33]**: `POST /campaigns`, `POST /campaigns/{id}/send` and
+`POST /campaigns/{id}/cancel` are **ADMIN-only**. The read routes remain open to any
+authenticated internal user.
+
 `GET /whatsapp-templates` is read-only and returns only APPROVED MARKETING templates.
 There is deliberately no endpoint that creates or approves a template: **[D6]** puts
 approval with Meta, and rows appear only from the Phase 6 synchronization.
@@ -944,9 +1102,24 @@ This is not stated in the original specification and was flagged in the Phase 0
 report. `conversations.last_inbound_at` records when the window opened and
 `CUSTOMER_SERVICE_WINDOW_HOURS` configures its length.
 
-**Outstanding**: the approved *utility* templates to fall back to when the window has
-closed are not yet identified. Until they are, an AI reply or booking confirmation
-sent outside the window cannot be delivered.
+### Template-based fallback **[D24]**
+
+When the window has closed, an approved template must be used instead of a free-form
+message. The architecture must support, at minimum:
+- booking confirmation
+- other required transactional/utility messages
+- fallback messaging for a conversation outside the permitted window
+
+Template *selection* is data/configuration-driven: a purpose (for example
+"booking confirmation") maps to an approved template name in configuration, so the
+platform chooses which template to send without any template identity being compiled
+in.
+
+**Content is never invented.** The customer-facing template text is written and
+approved by the client through Meta, and reaches this platform only via the **[D6]**
+synchronization. Until the client supplies and approves those templates, an AI reply
+or booking confirmation outside the window has no template to fall back to and cannot
+be delivered.
 
 ## 17. Dashboard
 
@@ -1025,6 +1198,44 @@ Every task must be:
 - observable
 
 Worker is stateless. The worker loads a read-only local embedding model at startup; this is not request state and does not make the worker stateful.
+
+### Retry policy **[D27]**
+
+```text
+Maximum attempts        5
+Backoff                 exponential, with jitter
+Permanent failures      never retried
+Rate-limit responses    respected, then retried
+```
+
+All of it is configuration, not literals.
+
+Three failure classes must stay distinguishable, because they demand different
+behaviour:
+
+```text
+retryable / transient   retry with backoff, up to the maximum
+permanent               fail the recipient immediately; retrying cannot help
+rate limit              back off and retry; the request was never processed
+```
+
+**A retry must never produce a duplicate successful delivery.** Idempotency is
+mandatory, not best-effort: Cloud Tasks redelivers, workers restart mid-task, and two
+workers can receive the same task.
+
+### Dispatch throttling **[D28]**
+
+No Meta messaging tier is assumed and no production throughput number is hard-coded.
+Dispatch rate is configuration, set from the WhatsApp Business account's actual limits
+once the production account exists.
+
+A large campaign must not overwhelm the provider — the platform paces itself rather
+than enqueuing everything at once and letting Meta reject the overflow.
+
+### Campaign state re-check **[D29]**
+
+Before sending, a worker re-reads the campaign's state. A task queued before a
+cancellation must not send. See §7.
 
 ## 19. Security
 
@@ -1142,6 +1353,22 @@ Excel
 → HubSpot
 ```
 
+### Asynchronous dispatch (Phase 7)
+
+```text
+successful delivery
+transient failure → retry → success
+transient failure → maximum attempts → FAILED
+permanent failure → no retry
+rate-limit response
+duplicate task delivery
+cancelled campaign with queued tasks
+campaign cancellation race condition
+worker restart / retry
+multiple workers processing one campaign
+idempotent recipient processing
+```
+
 ### Fake providers
 
 ```text
@@ -1152,6 +1379,9 @@ FakeCalendarProvider
 FakeCRMProvider
 Fake/Inline QueueProvider
 ```
+
+No automated test may send a real WhatsApp message. Tests use the fake provider or a
+mock HTTP transport.
 
 ## 23. Deployment **[D12]**
 
@@ -1262,6 +1492,35 @@ MSG_BOOKING_CONFIRMATION                                 [D21]
 MSG_OPT_OUT_RESPONSE                                     [D21]
 ```
 
+Added by the 2026-08-21 decisions:
+
+```text
+WHATSAPP_APP_SECRET                      secret            [D22]
+WHATSAPP_BUSINESS_ACCOUNT_ID                               [D22]
+CUSTOMER_SERVICE_WINDOW_HOURS            24
+
+AUDIENCE_COLUMN_MAPPING                  header → field    [D25]
+
+TEMPLATE_BOOKING_CONFIRMATION            template name     [D24]
+TEMPLATE_WINDOW_FALLBACK                 template name     [D24]
+
+SEND_MAX_ATTEMPTS                        5                 [D27]
+SEND_BACKOFF_BASE_SECONDS                                  [D27]
+SEND_BACKOFF_MAX_SECONDS                                   [D27]
+SEND_BACKOFF_JITTER                                        [D27]
+
+DISPATCH_RATE_PER_SECOND                 no default        [D28]
+DISPATCH_MAX_CONCURRENT                                    [D28]
+```
+
+Meta credentials are supplied through secure environment variables or secret storage
+and are never committed **[D22]**. Template names are configuration **[D24]**; template
+*content* comes from Meta and is never written here.
+
+`DISPATCH_RATE_PER_SECOND` deliberately has no default: **[D28]** forbids assuming a
+messaging tier, and a wrong guess either throttles a legitimate campaign or gets
+messages rejected.
+
 `OPENROUTER_MODEL` has no default value and the application must fail fast if it is unset **[D17]**.
 
 Customer-facing copy keys **[D21]** are configurable content. Whether they live in environment variables or a configuration file is an implementation choice for the relevant phase; the requirement is that they are not hard-coded strings.
@@ -1293,6 +1552,13 @@ WhatsApp provider, Meta API, webhooks, statuses and fake provider.
 
 ### Phase 7
 Cloud Tasks, worker, retries, idempotency and task authentication.
+
+Also carries three revisions to already-completed phases, because the decisions of
+2026-08-21 changed what those phases must do:
+- campaign cancellation and the worker's state re-check **[D29]**
+- ADMIN-only broadcast sending **[D33]**
+- the canonical audience schema and configurable column mapping **[D25]**/**[D32]**,
+  which needs new contact fields and therefore a migration
 
 ### Phase 8
 RAG knowledge base, ingestion, chunking, local Sentence Transformer embeddings, pgvector and retrieval.
@@ -1403,3 +1669,26 @@ Unless explicitly changed:
 | D21 | Customer-facing copy is configurable content: RAG fallback, booking confirmation, opt-out response and other approved messages. No Meta-approved template names or content invented. |
 
 Provider abstractions are mandatory for all six external concerns: WhatsApp, LLM, Embedding, Calendar, CRM, Queue. Each has a fake used in automated tests. **[D1]**–**[D12]** remain in force.
+
+### Decisions resolved 2026-08-21 (pre-Phase 7)
+
+| ID | Decision |
+|---|---|
+| D22 | Meta credentials come from secure environment variables/secrets and are never committed. Required: access token, phone number ID, WABA ID, verify token, App Secret. |
+| D23 | Real Meta-approved templates are required before production broadcasting. Approval is never fabricated or claimed locally. Tests may use fixtures and mocks. |
+| D24 | Approved templates are used when the customer-service window is closed. Selection is configuration-driven (purpose → template name); content is supplied and approved by the client through Meta. Must cover booking confirmation, transactional/utility messages and out-of-window fallback. |
+| D25 | Canonical V1 audience schema: `name` and `phone` required; `email`, `company`, `designation`, `city` optional. Column mapping from the client's headers is configurable. Supersedes **[D4]**/**[D20]**. |
+| D26 | Opt-out keywords confirmed as STOP, UNSUBSCRIBE, OPT OUT, OPTOUT; configurable; whole-message matching acceptable for V1; opt-out stays global at the normalized phone level. |
+| D27 | Retry policy: maximum 5 attempts, exponential backoff with jitter, no retry on permanent failures, rate limits respected, all configuration-driven. A retry must never produce a duplicate successful delivery. |
+| D28 | Dispatch throttling is configurable. No messaging tier or throughput number is assumed or hard-coded. |
+| D29 | Campaign cancellation is implemented before or within Phase 7. A CANCELLED campaign prevents queued sends; the worker re-checks campaign state before sending; cancellation is idempotent; already-sent messages cannot be undone. |
+| D30 | The recipient snapshot stays frozen at campaign creation. Leads added later never silently enter an existing campaign; targeting them means a new audience or campaign. Auditability. |
+| D31 | Lead promotion stays at audience confirmation. Uploading an Excel file never creates permanent leads. |
+| D32 | The canonical schema is the V1 production schema. Development fixtures migrate to it. Production must never silently fall back to a placeholder. |
+| D33 | Mass broadcast sending is ADMIN-only. ADMIN creates, edits, reviews, sends, pauses and cancels; SALESPERSON views campaigns and prepares/reviews information. |
+| D34 | READY is automatic once a campaign has a sendable recipient, and means prepared, not sending. An ADMIN must explicitly click Send Broadcast. |
+| D35 | The uploaded audience file is authoritative for display names. A WhatsApp profile name never silently overwrites it, and source audience data stays traceable. |
+| D36 | A CLOSED conversation is never reopened; a later inbound message starts a new conversation. Unchanged in Phase 7. |
+| D37 | Final qualification criteria remain a Phase 10 decision. The AI extracts; the backend applies authoritative rules. |
+| D38 | Google Calendar and HubSpot credentials remain with their own phases. No production credentials in Phase 7. |
+| D39 | Scheduled campaigns are out of V1. No cron sending, no automatic scheduled broadcasts, no autonomous execution, despite `SCHEDULED`/`scheduled_for` existing in the model. |
