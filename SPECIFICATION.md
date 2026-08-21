@@ -655,6 +655,64 @@ Retrieved documents are untrusted data. Document instructions must never overrid
 
 Test relevant, irrelevant, unanswered, multi-chunk and prompt-injection cases.
 
+### V1 retrieval parameters (Phase 8)
+
+Configuration, not constants in code. Defaults:
+
+```text
+RAG_CHUNK_CHARS            800     chunk size
+RAG_CHUNK_OVERLAP_CHARS    120     overlap between adjacent chunks
+RAG_TOP_K                  5       chunks returned per query
+RAG_MIN_SIMILARITY         0.25    below this, a chunk counts as no evidence
+RAG_MAX_CONTEXT_CHARS      4000    ceiling on assembled context
+KNOWLEDGE_MAX_FILE_BYTES   700000  upload limit (§19), bounded by the queue
+EMBEDDING_BATCH_SIZE       32      chunks per forward pass
+```
+
+Chunk size is bounded by the model, not chosen freely: `all-MiniLM-L6-v2` accepts 256
+word-pieces and silently truncates the rest, so an over-long chunk would be embedded
+from its opening words alone with no error raised. At roughly four characters per
+token, 800 characters stays inside that window.
+
+Supported upload formats in V1: `.txt`, `.md`, `.pdf`. A PDF with no text layer is
+rejected as needing OCR rather than stored as an empty document.
+
+The upload limit is not a free choice either. V1 has no blob store, so an uploaded
+document travels base64-encoded inside the Cloud Tasks payload, and Cloud Tasks rejects
+a task larger than 1 MB. Startup refuses a `KNOWLEDGE_MAX_FILE_BYTES` above that
+ceiling when Cloud Tasks is the selected queue, so an oversized upload cannot be
+accepted and then fail at enqueue time. **Ingesting documents larger than this requires
+object storage, with the task carrying only a reference — a V2 change.**
+
+### Retrieval filters
+
+Two filters are mandatory on every search:
+
+- **READY documents only.** A pending, failed or archived document must not contribute
+  content to an answer.
+- **Matching embedding model.** Cosine distance between vectors from different models
+  is arithmetically valid and semantically meaningless, so **[D1]**'s prohibition is
+  enforced in the query, not merely intended. Each chunk records the model that
+  produced it.
+
+Archiving a document stops retrieval but does not delete its chunks: answers already
+given cite chunk IDs in `ai_runs`, and deleting would break that trail.
+
+### Untrusted-document handling
+
+Retrieved text is fenced inside explicit delimiters and attributed to its source
+document. Before it enters the context:
+
+- Delimiter look-alikes in both chunk text and document titles are replaced, so no
+  document can close the block early and have the remainder read as system input.
+- Lines shaped like role markers (`System:`, `Assistant:`) have the colon replaced with
+  a look-alike character. The text is neutralised in place rather than deleted, so an
+  operator reviewing a bad answer can still see what the document said.
+
+Retrieval is not exposed as an HTTP endpoint. It is a backend tool the AI calls
+(§13), which keeps it inside the authorization model rather than open to any
+authenticated caller.
+
 ## 12. Google Calendar and Demo Booking
 
 Provider **[D7]**:

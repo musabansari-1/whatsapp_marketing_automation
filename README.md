@@ -4,10 +4,12 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 7 (Cloud Tasks and worker) complete.** The pipeline now runs
-end to end: upload an audience, prepare a campaign, click Send Broadcast, and the
-worker delivers each message with retries, throttling and cancellation. Still needs
-real Meta credentials and approved templates to send anything outside tests.
+**Current state: Phase 8 (RAG knowledge base) complete.** The marketing pipeline runs
+end to end — upload an audience, prepare a campaign, click Send Broadcast, and the
+worker delivers each message with retries, throttling and cancellation. Alongside it,
+documents can be uploaded to a knowledge base and are parsed, chunked, embedded locally
+and stored in pgvector for retrieval. Sending still needs real Meta credentials and
+approved templates; the AI that will use retrieval arrives in Phase 10.
 
 ## Layout
 
@@ -320,6 +322,59 @@ recalled.
 A campaign with some failed recipients ends `COMPLETED`; `sent_count` and
 `failed_count` carry the breakdown. There is no `PARTIAL` state.
 
+## Knowledge base (RAG)
+
+Documents live in named knowledge bases and are retrieved by meaning, not keyword.
+Endpoints, all under `/api/v1/knowledge-bases` and all requiring a session:
+
+```text
+POST   /                                     create a knowledge base
+GET    /                                     list them
+GET    /{id}                                 one knowledge base
+POST   /{id}/documents                       upload (multipart)
+GET    /{id}/documents                       list documents
+GET    /{id}/documents/{doc}                 one document, with ingestion status
+POST   /{id}/documents/{doc}/archive         withdraw from retrieval
+```
+
+Supported formats are `.txt`, `.md` and `.pdf`, capped by `KNOWLEDGE_MAX_FILE_BYTES`
+(700 KB — V1 sends the bytes inside the Cloud Tasks payload, which is limited to 1 MB;
+startup refuses a larger limit rather than letting an accepted upload fail at enqueue
+time). A PDF with no text layer is rejected as needing OCR rather than stored as an
+empty document, and re-uploading identical bytes to the same knowledge base is a 409 —
+duplicate chunks would skew every later search.
+
+Upload returns immediately with the document `PENDING`; ingestion runs in the worker
+(§4 keeps slow work out of requests):
+
+```text
+parse → clean → chunk → embed → store vectors → READY
+```
+
+Only a `READY` document is retrievable. Failures are recorded on the document with a
+reason, so the dashboard can show why a file did not ingest. Re-running an ingestion
+task replaces the document's chunks rather than appending, which is what makes a
+redelivered task idempotent.
+
+**Embeddings run locally** ([D1]) via `all-MiniLM-L6-v2` — no per-request cost, no rate
+limit, and no third party seeing company documents. The model accepts 256 word-pieces
+and *silently truncates* beyond that, which is why `RAG_CHUNK_CHARS` defaults to 800
+rather than being a free parameter. Weights are baked into `Dockerfile.worker` at build
+time, so a cold-starting instance does not download them.
+
+Every chunk records the model that produced it, and search filters on it: cosine
+distance between two different models' vectors is arithmetically valid and
+semantically meaningless.
+
+**Retrieved text is untrusted data.** Before it reaches a prompt it is fenced in
+explicit delimiters and attributed to its source; delimiter look-alikes in both text
+and titles are replaced so no document can close the block early, and lines shaped like
+role markers (`System:`) are defanged in place — neutralised but still legible, so an
+operator reviewing a bad answer can see what the document actually said.
+
+There is deliberately **no retrieval endpoint**. Retrieval is a backend tool the AI
+calls in Phase 10, which keeps it inside the authorization model.
+
 ## Provider abstractions
 
 Six external concerns sit behind interfaces, each with a fake used by the test suite.
@@ -330,7 +385,7 @@ provider.
 | --------- | ------------------- | ------------------------- | ------------------------ |
 | WhatsApp  | `WhatsAppProvider`  | `FakeWhatsAppProvider`    | Meta — Phase 6           |
 | Queue     | `QueueProvider`     | `InMemoryQueueProvider`   | Cloud Tasks — Phase 7    |
-| Embedding | `EmbeddingProvider` | `FakeEmbeddingProvider`   | Sentence Transformers — Phase 8 |
+| Embedding | `EmbeddingProvider` | `FakeEmbeddingProvider`   | `LocalSentenceTransformerProvider` |
 | LLM       | `LLMProvider`       | `FakeLLMProvider`         | OpenRouter — Phase 10    |
 | Calendar  | `CalendarProvider`  | `FakeCalendarProvider`    | Google Calendar — Phase 11 |
 | CRM       | `CRMProvider`       | `FakeCRMProvider`         | HubSpot — Phase 12       |

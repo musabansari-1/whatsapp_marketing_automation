@@ -1,12 +1,23 @@
 # Worker service image (Cloud Run).
 #
 # Separate from the API image because the two services scale independently and,
-# from Phase 8, differ substantially in size: the worker will carry the local
-# Sentence Transformers model and PyTorch ([D1]) while the API stays slim.
+# from Phase 8, differ substantially in size: the worker carries the local Sentence
+# Transformers model and PyTorch ([D1]) while the API stays slim.
 #
-# Phase 8 note: the model weights must be baked into this image at build time, not
-# downloaded at startup. A cold-starting Cloud Run instance that fetches weights on
-# first request would add latency to every scale-up and depend on network at boot.
+# Two things here are load-bearing for size and startup:
+#
+# 1. PyTorch is installed from the CPU wheel index (see `[tool.uv.sources]` in
+#    pyproject.toml). The default wheels bundle CUDA runtimes worth roughly 10 GB that
+#    Cloud Run can never use, and which push the image past Cloud Run's 10 GiB limit.
+#
+# 2. The model weights are baked in at build time rather than downloaded at startup. A
+#    cold-starting instance that fetched them before serving its first request would
+#    add latency to every scale-up and would depend on the network being reachable at
+#    boot.
+#
+# The unprivileged user is created *before* anything large is written, and everything
+# is written as that user. A `chown -R` after the fact would copy the whole tree into a
+# second layer and roughly double the image.
 
 FROM python:3.11-slim AS base
 
@@ -14,21 +25,31 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-WORKDIR /app
-
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app \
+    && chown appuser:appuser /app
 
-COPY alembic.ini ./
-COPY alembic ./alembic
-COPY app ./app
+WORKDIR /app
+USER appuser
+
+COPY --chown=appuser:appuser pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
-USER appuser
+# HF_HOME is set for both build and run so the cached weights are found at the same
+# path at runtime as the path they were downloaded to.
+ENV HF_HOME=/app/.cache/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache/huggingface \
+    HF_HUB_DISABLE_TELEMETRY=1
+ARG EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
+
+COPY --chown=appuser:appuser alembic.ini ./
+COPY --chown=appuser:appuser alembic ./alembic
+COPY --chown=appuser:appuser app ./app
 
 ENV PORT=8080
 EXPOSE 8080
