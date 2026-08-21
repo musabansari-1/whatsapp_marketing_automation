@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import functools
 from enum import StrEnum
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -149,6 +149,25 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- embeddings [D1]
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dimension: int = 384
+    embedding_batch_size: int = 32
+
+    # ---------------------------------------------------------------- RAG [§11]
+    # Chunk size is bounded by the embedding model's input window, not by taste:
+    # all-MiniLM-L6-v2 silently truncates past 256 word-pieces, so an over-long chunk
+    # is embedded from its opening words alone.
+    rag_chunk_chars: int = 800
+    rag_chunk_overlap_chars: int = 120
+    rag_top_k: int = 5
+    # Below this cosine similarity the platform reports insufficient evidence and the
+    # caller uses the approved fallback rather than answering (§11).
+    rag_min_similarity: float = 0.25
+    rag_max_context_chars: int = 4000
+    # V1 has no blob store, so an uploaded document travels base64-encoded inside the
+    # Cloud Tasks payload. Cloud Tasks caps a task at 1 MB and base64 inflates by a
+    # third, so the default is what actually fits. Raising it requires object storage;
+    # a validator below refuses the broken combination rather than letting a large
+    # upload fail at enqueue time, after the user has already been told it worked.
+    knowledge_max_file_bytes: int = 700_000
 
     # ---------------------------------------------------------------- Google Cloud
     google_cloud_project: str | None = None
@@ -352,6 +371,29 @@ class Settings(BaseSettings):
                 "AUDIENCE_COLUMN_SCHEMA is still the development placeholder. "
                 "Set the client's confirmed Excel column schema before production "
                 "([D4]/[D20])."
+            )
+        return self
+
+    #: Cloud Tasks rejects a task larger than 1 MB. Base64 costs a third, and the task
+    #: also carries its own JSON envelope.
+    CLOUD_TASKS_SAFE_UPLOAD_BYTES: ClassVar[int] = 700_000
+
+    @model_validator(mode="after")
+    def _validate_upload_fits_the_queue(self) -> Settings:
+        """Refuse an upload limit the selected queue cannot actually carry.
+
+        Only applies to Cloud Tasks: the in-memory queue used in development and tests
+        has no such limit, and capping it there would make local work harder for no
+        reason.
+        """
+        if self.queue_provider is not QueueProviderName.CLOUD_TASKS:
+            return self
+        if self.knowledge_max_file_bytes > self.CLOUD_TASKS_SAFE_UPLOAD_BYTES:
+            raise ValueError(
+                f"KNOWLEDGE_MAX_FILE_BYTES={self.knowledge_max_file_bytes} exceeds what "
+                f"a Cloud Tasks payload can carry ({self.CLOUD_TASKS_SAFE_UPLOAD_BYTES} "
+                "bytes after base64). V1 sends document bytes inside the task; a larger "
+                "limit needs object storage with the task carrying only a reference."
             )
         return self
 

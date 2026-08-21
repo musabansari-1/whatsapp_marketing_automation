@@ -17,6 +17,7 @@ from app.domain.enums import (
     AudienceStatus,
     CampaignStatus,
     ContactValidationStatus,
+    DocumentStatus,
     RecipientStatus,
     TemplateCategory,
     UserRole,
@@ -245,3 +246,52 @@ class SendCampaignResponse(BaseModel):
     campaign: CampaignResponse
     queued: int
     skipped_as_suppressed: int
+
+
+# ---------------------------------------------------------------- knowledge (§11)
+
+
+class CreateKnowledgeBaseRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, value: str) -> str:
+        """A whitespace-only name passes min_length but is unusable: it is invisible
+        in the dashboard list and unquotable in an AI tool call."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name must not be blank")
+        return stripped
+
+
+class KnowledgeBaseResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    description: str | None
+    created_at: datetime
+
+
+class KnowledgeDocumentResponse(BaseModel):
+    """A document and its ingestion state.
+
+    `status` and `error_message` are what §17 requires the dashboard to surface: a
+    document is only retrievable once READY, and a failed ingestion must say why.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    knowledge_base_id: uuid.UUID
+    title: str
+    source_filename: str | None
+    content_type: str | None
+    byte_size: int | None
+    status: DocumentStatus
+    chunk_count: int
+    error_message: str | None
+    created_at: datetime
+    archived_at: datetime | None

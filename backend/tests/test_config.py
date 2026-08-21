@@ -251,3 +251,36 @@ class TestSecretsAreNotLeaked:
         assert "super-secret-token" not in repr(settings)
         assert settings.hubspot_access_token is not None
         assert settings.hubspot_access_token.get_secret_value() == "super-secret-token"
+
+
+class TestUploadLimitFitsTheQueue:
+    """V1 sends document bytes inside the task payload, and Cloud Tasks caps a task at
+    1 MB. A limit the queue cannot carry would fail at enqueue time — after the user
+    has already been told the upload succeeded."""
+
+    def _cloud_tasks_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("QUEUE_PROVIDER", "cloud_tasks")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "proj")
+        monkeypatch.setenv("GOOGLE_CLOUD_TASKS_QUEUE", "queue")
+        monkeypatch.setenv("WORKER_BASE_URL", "https://worker.example.com")
+
+    def test_the_default_limit_fits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._cloud_tasks_env(monkeypatch)
+        assert Settings().knowledge_max_file_bytes <= Settings.CLOUD_TASKS_SAFE_UPLOAD_BYTES
+
+    def test_an_oversized_limit_is_refused_at_startup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._cloud_tasks_env(monkeypatch)
+        monkeypatch.setenv("KNOWLEDGE_MAX_FILE_BYTES", str(10 * 1024 * 1024))
+
+        with pytest.raises(ValueError, match="object storage"):
+            Settings()
+
+    def test_the_in_memory_queue_is_unconstrained(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Development and tests have no such limit; capping there would make local
+        work harder for no reason."""
+        monkeypatch.setenv("QUEUE_PROVIDER", "inline")
+        monkeypatch.setenv("KNOWLEDGE_MAX_FILE_BYTES", str(50 * 1024 * 1024))
+
+        assert Settings().knowledge_max_file_bytes == 50 * 1024 * 1024
