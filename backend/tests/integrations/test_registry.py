@@ -53,13 +53,28 @@ class TestFakeSelection:
         monkeypatch.setenv("EMBEDDING_DIMENSION", "512")
         assert build_embedding_provider(Settings()).dimension == 512
 
+    def test_the_local_embedding_provider_is_selectable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Phase 8 implemented it ([D1]). Building must not load the model: the
+        registry runs in the API service too, which never embeds anything.
+        """
+        from app.integrations.embedding.local_sentence_transformer import (
+            LocalSentenceTransformerProvider,
+        )
+
+        monkeypatch.setenv("EMBEDDING_PROVIDER", "local_sentence_transformer")
+        provider = build_embedding_provider(Settings())
+
+        assert isinstance(provider, LocalSentenceTransformerProvider)
+        assert provider._model is None  # noqa: SLF001 - laziness is the point
+
 
 class TestUnimplementedProvidersFailLoudly:
     @pytest.mark.parametrize(
         ("env_var", "value", "builder", "expected_phase"),
         [
             ("LLM_PROVIDER", "openrouter", "llm", "Phase 10"),
-            ("EMBEDDING_PROVIDER", "local_sentence_transformer", "embedding", "Phase 8"),
             ("CALENDAR_PROVIDER", "google", "calendar", "Phase 11"),
             ("CRM_PROVIDER", "hubspot", "crm", "Phase 12"),
         ],

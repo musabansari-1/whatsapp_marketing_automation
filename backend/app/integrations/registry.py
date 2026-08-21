@@ -27,6 +27,9 @@ from app.core.errors import ConfigurationError, ProviderNotImplementedError
 from app.integrations.calendar import CalendarProvider, FakeCalendarProvider
 from app.integrations.crm import CRMProvider, FakeCRMProvider
 from app.integrations.embedding import EmbeddingProvider, FakeEmbeddingProvider
+from app.integrations.embedding.local_sentence_transformer import (
+    LocalSentenceTransformerProvider,
+)
 from app.integrations.llm import FakeLLMProvider, LLMProvider
 from app.integrations.queue import InMemoryQueueProvider, QueueProvider
 from app.integrations.queue.cloud_tasks import CloudTasksProvider
@@ -87,8 +90,12 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
             # the pgvector column Phase 2 creates.
             return FakeEmbeddingProvider(dimension=settings.embedding_dimension)
         case EmbeddingProviderName.LOCAL_SENTENCE_TRANSFORMER:
-            raise ProviderNotImplementedError(
-                "local_sentence_transformer", "Phase 8 (RAG knowledge base)"
+            # The model is loaded lazily, so building this costs nothing until
+            # something actually embeds ([D1]).
+            return LocalSentenceTransformerProvider(
+                model_name=settings.embedding_model,
+                dimension=settings.embedding_dimension,
+                batch_size=settings.embedding_batch_size,
             )
 
 

@@ -20,6 +20,11 @@ dependencies = [
     "python-multipart>=0.0.32",
     "google-cloud-tasks>=2.24.0",
     "google-auth>=2.56.3",
+    "sentence-transformers>=6.0.0",
+    "pypdf>=6.16.1",
+    # Declared directly, not left transitive, so [tool.uv.sources] can pin it to the
+    # CPU wheel index — uv applies sources only to direct dependencies.
+    "torch>=2.6",
 ]
 
 [dependency-groups]
@@ -34,6 +39,17 @@ dev = [
 
 [tool.uv]
 package = false
+
+# CPU-only PyTorch. The default wheels bundle CUDA runtimes worth roughly 10 GB, which
+# the worker can never use — Cloud Run has no GPU — and which push the image past
+# Cloud Run's 10 GiB limit.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
 
 # ---------------------------------------------------------------- ruff
 
@@ -107,6 +123,20 @@ module = [
     "tests.test_cloud_tasks_provider",
 ]
 disallow_untyped_calls = false
+
+# numpy's bundled stubs use `type` statements, which are 3.12 syntax; mypy pinned to
+# 3.11 cannot parse them. sentence-transformers pulls numpy in transitively, so the
+# stubs are skipped rather than lowering the project's target version. Nothing in this
+# codebase calls numpy directly.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
+# sentence-transformers and pypdf ship no usable type information for strict mode.
+[[tool.mypy.overrides]]
+module = ["sentence_transformers", "sentence_transformers.*", "pypdf", "pypdf.*"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest
 
