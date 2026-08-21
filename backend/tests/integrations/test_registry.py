@@ -62,7 +62,6 @@ class TestUnimplementedProvidersFailLoudly:
             ("EMBEDDING_PROVIDER", "local_sentence_transformer", "embedding", "Phase 8"),
             ("CALENDAR_PROVIDER", "google", "calendar", "Phase 11"),
             ("CRM_PROVIDER", "hubspot", "crm", "Phase 12"),
-            ("QUEUE_PROVIDER", "cloud_tasks", "queue", "Phase 7"),
         ],
     )
     def test_selecting_a_future_provider_names_its_phase(
@@ -102,6 +101,22 @@ class TestUnimplementedProvidersFailLoudly:
 
         assert expected_phase in str(exc_info.value)
 
+    def test_the_cloud_tasks_queue_is_now_implemented(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Phase 7 replaced the placeholder. Building it opens no connection; the
+        Google client is created lazily on first use."""
+        from app.integrations.queue.cloud_tasks import CloudTasksProvider
+
+        monkeypatch.setenv("QUEUE_PROVIDER", "cloud_tasks")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "proj")
+        monkeypatch.setenv("GOOGLE_CLOUD_TASKS_QUEUE", "sends")
+        monkeypatch.setenv("WORKER_BASE_URL", "https://worker.example.com")
+
+        provider = build_queue_provider(Settings())
+        assert isinstance(provider, CloudTasksProvider)
+        assert isinstance(provider, QueueProvider)
+
     def test_the_meta_provider_is_now_implemented(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Phase 6 replaced the placeholder. Selecting META builds the real provider,
         which still performs no I/O until it is called."""
@@ -118,9 +133,7 @@ class TestUnimplementedProvidersFailLoudly:
         assert isinstance(provider, MetaWhatsAppProvider)
         assert isinstance(provider, WhatsAppProvider)
 
-    def test_meta_requires_its_webhook_credentials(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_meta_requires_its_webhook_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """§19: webhook signatures cannot be verified without the app secret, so a
         partial configuration must fail at startup rather than at the first webhook."""
         monkeypatch.setenv("WHATSAPP_PROVIDER", "meta")

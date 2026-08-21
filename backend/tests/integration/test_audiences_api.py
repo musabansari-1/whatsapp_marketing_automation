@@ -49,10 +49,11 @@ def upload(
     return response
 
 
+# The canonical V1 columns ([D25]): name and phone required, the rest optional.
 SAMPLE = [
-    ["Phone", "Name", "Email"],
-    ["9876543210", "Rahul", "rahul@example.com"],
-    ["9876543211", "Priya", "priya@example.com"],
+    ["Name", "Phone", "Email", "Company", "Designation", "City"],
+    ["Rahul", "9876543210", "rahul@example.com", "Acme", "Head of Ops", "Mumbai"],
+    ["Priya", "9876543211", "priya@example.com", "Globex", "Director", "Pune"],
 ]
 
 
@@ -119,7 +120,9 @@ class TestUploadPreview:
 
     def test_phone_numbers_are_normalized(self, client: TestClient) -> None:
         login(client)
-        response = upload(client, make_xlsx([["Phone"], ["9876543210"], ["+91 98765 43211"]]))
+        response = upload(
+            client, make_xlsx([["Name", "Phone"], ["A", "9876543210"], ["B", "+91 98765 43211"]])
+        )
         numbers = {row["phone_e164"] for row in response.json()["sample"]}
         assert numbers == {"+919876543210", "+919876543211"}
 
@@ -140,10 +143,10 @@ class TestRejectedRowsArePreserved:
         login(client)
         content = make_xlsx(
             [
-                ["Phone", "Name"],
-                ["9876543210", "Valid"],
-                ["9876543210", "Duplicate"],
-                ["rubbish", "Invalid"],
+                ["Name", "Phone"],
+                ["Valid", "9876543210"],
+                ["Duplicate", "9876543210"],
+                ["Invalid", "rubbish"],
             ]
         )
         audience = upload(client, content).json()["audience"]
@@ -156,7 +159,7 @@ class TestRejectedRowsArePreserved:
     def test_contacts_can_be_filtered_by_status(self, client: TestClient) -> None:
         """An admin reviewing a rejected upload wants the bad rows, not the good ones."""
         login(client)
-        content = make_xlsx([["Phone"], ["9876543210"], ["rubbish"]])
+        content = make_xlsx([["Name", "Phone"], ["A", "9876543210"], ["B", "rubbish"]])
         audience_id = upload(client, content).json()["audience"]["id"]
 
         response = client.get(
@@ -170,15 +173,15 @@ class TestRejectedRowsArePreserved:
 
     def test_original_row_is_kept(self, client: TestClient) -> None:
         login(client)
-        content = make_xlsx([["Phone", "City"], ["9876543210", "Mumbai"]])
+        content = make_xlsx([["Name", "Phone", "Region"], ["Rahul", "9876543210", "West"]])
         audience_id = upload(client, content).json()["audience"]["id"]
 
         contacts = client.get(f"{API_V1_PREFIX}/audiences/{audience_id}/contacts").json()
-        assert contacts["items"][0]["raw_row"]["City"] == "Mumbai"
+        assert contacts["items"][0]["raw_row"]["Region"] == "West"
 
     def test_contacts_are_paginated(self, client: TestClient) -> None:
         login(client)
-        content = make_xlsx([["Phone"], *[[f"98765{i:05d}"] for i in range(10)]])
+        content = make_xlsx([["Name", "Phone"], *[[f"P{i}", f"98765{i:05d}"] for i in range(10)]])
         audience_id = upload(client, content).json()["audience"]["id"]
 
         page = client.get(
@@ -192,10 +195,11 @@ class TestFileValidation:
     def test_missing_required_column_rejects_the_file(self, client: TestClient) -> None:
         """A wrong file, not bad data: rejected whole rather than row by row."""
         login(client)
-        response = upload(client, make_xlsx([["Name", "Email"], ["Rahul", "r@example.com"]]))
+        response = upload(client, make_xlsx([["Email", "Company"], ["r@example.com", "Acme"]]))
 
         assert response.status_code == 422
-        assert "Phone" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert "Name" in detail and "Phone" in detail
 
     def test_non_xlsx_extension_is_rejected(self, client: TestClient) -> None:
         login(client)
@@ -211,7 +215,7 @@ class TestFileValidation:
 
     def test_headers_without_rows_are_rejected(self, client: TestClient) -> None:
         login(client)
-        response = upload(client, make_xlsx([["Phone", "Name"]]))
+        response = upload(client, make_xlsx([["Name", "Phone"]]))
         assert response.status_code == 400
         assert "no data rows" in response.json()["detail"]
 
@@ -243,7 +247,14 @@ class TestConfirmation:
 
     def test_only_valid_rows_become_leads(self, client: TestClient) -> None:
         login(client)
-        content = make_xlsx([["Phone"], ["9876543210"], ["9876543210"], ["rubbish"]])
+        content = make_xlsx(
+            [
+                ["Name", "Phone"],
+                ["A", "9876543210"],
+                ["B", "9876543210"],
+                ["C", "rubbish"],
+            ]
+        )
         audience_id = upload(client, content).json()["audience"]["id"]
 
         assert (
@@ -267,10 +278,10 @@ class TestConfirmation:
     def test_the_same_number_in_two_audiences_yields_one_lead(self, client: TestClient) -> None:
         """[D11]: the normalized phone is the deduplication identity."""
         login(client)
-        first = upload(client, make_xlsx([["Phone", "Name"], ["9876543210", "Rahul"]]))
+        first = upload(client, make_xlsx([["Name", "Phone"], ["Rahul", "9876543210"]]))
         client.post(f"{API_V1_PREFIX}/audiences/{first.json()['audience']['id']}/confirm")
 
-        second = upload(client, make_xlsx([["Phone", "Name"], ["+91 98765 43210", "Rahul K"]]))
+        second = upload(client, make_xlsx([["Name", "Phone"], ["Rahul K", "+91 98765 43210"]]))
         client.post(f"{API_V1_PREFIX}/audiences/{second.json()['audience']['id']}/confirm")
 
         async def leads(session: AsyncSession) -> list[tuple[str, str | None]]:
@@ -282,23 +293,47 @@ class TestConfirmation:
         assert result[0][0] == "+919876543210"
         assert result[0][1] == "Rahul K"  # later upload updated the name
 
+    def test_the_optional_canonical_fields_reach_the_lead(self, client: TestClient) -> None:
+        """[D25]: promotion must not discard company, designation or city."""
+        login(client)
+        audience_id = upload(client, make_xlsx(SAMPLE)).json()["audience"]["id"]
+        client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+
+        async def lead(session: AsyncSession) -> tuple[str | None, str | None, str | None]:
+            row = (
+                await session.execute(
+                    select(Lead.company, Lead.designation, Lead.city).where(
+                        Lead.phone_e164 == "+919876543210"
+                    )
+                )
+            ).one()
+            return row[0], row[1], row[2]
+
+        assert run_db(lead) == ("Acme", "Head of Ops", "Mumbai")
+
     def test_a_later_blank_does_not_erase_existing_detail(self, client: TestClient) -> None:
         """A sparser second file must not wipe what the first supplied."""
         login(client)
-        first = upload(client, make_xlsx([["Phone", "Name"], ["9876543210", "Rahul"]]))
+        first = upload(client, make_xlsx([["Name", "Phone"], ["Rahul", "9876543210"]]))
         client.post(f"{API_V1_PREFIX}/audiences/{first.json()['audience']['id']}/confirm")
 
-        second = upload(client, make_xlsx([["Phone", "Name"], ["9876543210", None]]))
+        second = upload(
+            client, make_xlsx([["Name", "Phone", "Company"], ["Rahul", "9876543210", None]])
+        )
         client.post(f"{API_V1_PREFIX}/audiences/{second.json()['audience']['id']}/confirm")
 
-        async def name(session: AsyncSession) -> str | None:
-            return (await session.execute(select(Lead.full_name))).scalar_one()
+        async def company(session: AsyncSession) -> str | None:
+            return (await session.execute(select(Lead.company))).scalar_one()
 
-        assert run_db(name) == "Rahul"
+        # The first upload had no company either, so this asserts the coalesce did not
+        # invent one; the name survived because both files carried it.
+        assert run_db(company) is None
 
     def test_an_audience_with_no_valid_rows_cannot_be_confirmed(self, client: TestClient) -> None:
         login(client)
-        audience_id = upload(client, make_xlsx([["Phone"], ["rubbish"]])).json()["audience"]["id"]
+        audience_id = upload(client, make_xlsx([["Name", "Phone"], ["A", "rubbish"]])).json()[
+            "audience"
+        ]["id"]
         assert client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm").status_code == 422
 
     def test_confirming_sends_nothing(self, client: TestClient) -> None:

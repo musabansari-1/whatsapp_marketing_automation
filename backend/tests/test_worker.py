@@ -19,12 +19,12 @@ class TestWorkerHealth:
         assert body["service"] == "worker"
 
     def test_health_reports_the_registered_handlers(self, worker_client: TestClient) -> None:
-        """Handlers arrive with the phases that own their tasks. Phase 6 added the
-        WhatsApp ones; sending is still unregistered until Phase 7."""
+        """Handlers arrive with the phases that own their tasks."""
         registered = worker_client.get("/health").json()["registered_task_types"]
         assert "process_inbound_message" in registered
         assert "sync_whatsapp_templates" in registered
-        assert "send_campaign_message" not in registered
+        # Phase 7 registered the send handler, so a broadcast can finally be delivered.
+        assert "send_campaign_message" in registered
 
 
 class TestTaskRegistry:
@@ -34,9 +34,9 @@ class TestTaskRegistry:
         async def handler(task: TaskRequest) -> str:
             return "done"
 
-        registry.register(TaskType.SEND_CAMPAIGN_MESSAGE, handler)
-        assert registry.get(TaskType.SEND_CAMPAIGN_MESSAGE) is handler
-        assert registry.registered_types() == [TaskType.SEND_CAMPAIGN_MESSAGE]
+        registry.register(TaskType.SYNC_CRM_CONTACT, handler)
+        assert registry.get(TaskType.SYNC_CRM_CONTACT) is handler
+        assert registry.registered_types() == [TaskType.SYNC_CRM_CONTACT]
 
     def test_unknown_type_raises(self) -> None:
         with pytest.raises(UnknownTaskTypeError):
@@ -61,8 +61,8 @@ class TestDispatch:
             received.append(task)
             return "ok"
 
-        task_registry.register(TaskType.SEND_CAMPAIGN_MESSAGE, handler)
-        task = TaskRequest(task_type=TaskType.SEND_CAMPAIGN_MESSAGE, payload={"lead_id": "l-1"})
+        task_registry.register(TaskType.SYNC_CRM_CONTACT, handler)
+        task = TaskRequest(task_type=TaskType.SYNC_CRM_CONTACT, payload={"lead_id": "l-1"})
 
         result = await dispatch_task(task)
 
@@ -71,7 +71,7 @@ class TestDispatch:
 
     async def test_dispatch_raises_for_unregistered_type(self) -> None:
         with pytest.raises(UnknownTaskTypeError):
-            await dispatch_task(TaskRequest(task_type=TaskType.SYNC_CRM_CONTACT))
+            await dispatch_task(TaskRequest(task_type=TaskType.INGEST_KNOWLEDGE_DOCUMENT))
 
     async def test_handler_errors_propagate(self) -> None:
         async def handler(task: TaskRequest) -> None:

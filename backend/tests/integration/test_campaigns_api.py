@@ -96,8 +96,8 @@ def seed_template(
 
 def seed_audience(client: TestClient, phones: Sequence[str]) -> str:
     """Upload and confirm an audience, so it has leads to snapshot."""
-    rows: list[Sequence[object]] = [["Phone", "Name"]]
-    rows.extend([phone, f"Person {index}"] for index, phone in enumerate(phones))
+    rows: list[Sequence[object]] = [["Name", "Phone"]]
+    rows.extend([f"Person {index}", phone] for index, phone in enumerate(phones))
 
     response = client.post(
         f"{API_V1_PREFIX}/audiences/upload",
@@ -120,11 +120,107 @@ def create_campaign(client: TestClient, audience_id: str, template_id: str) -> R
 PHONES = ["9876543210", "9876543211", "9876543212"]
 
 
+class TestPermissions:
+    """[D33]: mass broadcast sending is ADMIN-only."""
+
+    def test_a_salesperson_cannot_create_a_campaign(self, client: TestClient) -> None:
+        login(client, "sales@example.com")
+        audience_id = seed_audience(client, PHONES)
+        assert create_campaign(client, audience_id, seed_template()).status_code == 403
+
+    def test_a_salesperson_cannot_send_a_broadcast(self, client: TestClient) -> None:
+        """The decision's whole point: a salesperson must not be able to trigger a
+        mass broadcast, accidentally or otherwise."""
+        login(client)
+        audience_id = seed_audience(client, PHONES)
+        campaign_id = create_campaign(client, audience_id, seed_template()).json()["campaign"]["id"]
+        client.post(f"{API_V1_PREFIX}/auth/logout")
+
+        login(client, "sales@example.com")
+        assert client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send").status_code == 403
+
+    def test_a_salesperson_cannot_cancel(self, client: TestClient) -> None:
+        login(client)
+        audience_id = seed_audience(client, PHONES)
+        campaign_id = create_campaign(client, audience_id, seed_template()).json()["campaign"]["id"]
+        client.post(f"{API_V1_PREFIX}/auth/logout")
+
+        login(client, "sales@example.com")
+        assert client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel").status_code == 403
+
+    def test_a_salesperson_may_still_view_campaigns(self, client: TestClient) -> None:
+        """[D33] restricts sending, not visibility."""
+        login(client)
+        audience_id = seed_audience(client, PHONES)
+        campaign_id = create_campaign(client, audience_id, seed_template()).json()["campaign"]["id"]
+        client.post(f"{API_V1_PREFIX}/auth/logout")
+
+        login(client, "sales@example.com")
+        assert client.get(f"{API_V1_PREFIX}/campaigns").status_code == 200
+        assert client.get(f"{API_V1_PREFIX}/campaigns/{campaign_id}").status_code == 200
+        assert client.get(f"{API_V1_PREFIX}/campaigns/{campaign_id}/recipients").status_code == 200
+
+
+class TestCancellation:
+    """[D29]."""
+
+    def _ready(self, client: TestClient) -> str:
+        audience_id = seed_audience(client, PHONES)
+        return str(create_campaign(client, audience_id, seed_template()).json()["campaign"]["id"])
+
+    def test_a_running_campaign_can_be_cancelled(self, client: TestClient) -> None:
+        login(client)
+        campaign_id = self._ready(client)
+        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+
+        response = client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+        assert response.status_code == 200
+        assert response.json()["status"] == "CANCELLED"
+
+    def test_cancelling_stops_unsent_recipients(self, client: TestClient) -> None:
+        """The dashboard must reflect the cancellation immediately rather than waiting
+        for every queued task to drain."""
+        login(client)
+        campaign_id = self._ready(client)
+        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+
+        page = client.get(f"{API_V1_PREFIX}/campaigns/{campaign_id}/recipients").json()
+        assert {r["status"] for r in page["items"]} == {"SKIPPED"}
+
+    def test_a_ready_campaign_can_be_cancelled_before_sending(self, client: TestClient) -> None:
+        login(client)
+        campaign_id = self._ready(client)
+        assert client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel").status_code == 200
+
+    def test_cancellation_is_idempotent(self, client: TestClient) -> None:
+        """A double click or a retried request must not fail."""
+        login(client)
+        campaign_id = self._ready(client)
+        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+
+        second = client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+        assert second.status_code == 200
+        assert second.json()["status"] == "CANCELLED"
+
+    def test_a_cancelled_campaign_cannot_be_sent(self, client: TestClient) -> None:
+        login(client)
+        campaign_id = self._ready(client)
+        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+
+        assert client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send").status_code == 409
+
+    def test_an_unknown_campaign_is_404(self, client: TestClient) -> None:
+        login(client)
+        assert client.post(f"{API_V1_PREFIX}/campaigns/{uuid.uuid4()}/cancel").status_code == 404
+
+
 class TestAuthentication:
     def test_every_route_requires_a_session(self, client: TestClient) -> None:
         assert client.get(f"{API_V1_PREFIX}/campaigns").status_code == 401
         assert client.post(f"{API_V1_PREFIX}/campaigns", json={}).status_code == 401
         assert client.post(f"{API_V1_PREFIX}/campaigns/{uuid.uuid4()}/send").status_code == 401
+        assert client.post(f"{API_V1_PREFIX}/campaigns/{uuid.uuid4()}/cancel").status_code == 401
         assert client.get(f"{API_V1_PREFIX}/whatsapp-templates").status_code == 401
 
 
@@ -209,7 +305,9 @@ class TestCampaignCreation:
         login(client)
         upload = client.post(
             f"{API_V1_PREFIX}/audiences/upload",
-            files={"file": ("l.xlsx", make_xlsx([["Phone"], ["9876543210"]]), XLSX_TYPE)},
+            files={
+                "file": ("l.xlsx", make_xlsx([["Name", "Phone"], ["A", "9876543210"]]), XLSX_TYPE)
+            },
             data={"name": "Unconfirmed"},
         )
         audience_id = str(upload.json()["audience"]["id"])

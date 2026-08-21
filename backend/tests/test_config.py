@@ -128,10 +128,12 @@ class TestAudienceSchema:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(
-            "AUDIENCE_COLUMN_SCHEMA", '[{"source": "Mobile", "field": "phone", "required": true}]'
+            "AUDIENCE_COLUMN_SCHEMA",
+            '[{"source": "Full Name", "field": "name", "required": true},'
+            ' {"source": "Mobile", "field": "phone", "required": true}]',
         )
         settings = Settings()
-        assert [c.source for c in settings.audience_schema().columns] == ["Mobile"]
+        assert [c.source for c in settings.audience_schema().columns] == ["Full Name", "Mobile"]
         assert settings.audience_schema_is_placeholder is False
 
     def test_a_schema_without_a_phone_column_is_rejected(
@@ -139,10 +141,16 @@ class TestAudienceSchema:
     ) -> None:
         monkeypatch.setenv(
             "AUDIENCE_COLUMN_SCHEMA",
-            '[{"source": "Name", "field": "full_name", "required": true}]',
+            '[{"source": "Name", "field": "name", "required": true}]',
         )
         with pytest.raises(ValueError, match="phone column"):
             Settings().audience_schema()
+
+    def test_the_placeholder_is_the_canonical_field_set(self, settings) -> None:  # type: ignore[no-untyped-def]
+        """[D25]/[D32]: the placeholder differs from production only in its header
+        names, never in which canonical fields exist."""
+        fields = {column.field.value for column in settings.audience_schema().columns}
+        assert fields == {"name", "phone", "email", "company", "designation", "city"}
 
 
 class TestSlotPolicy:

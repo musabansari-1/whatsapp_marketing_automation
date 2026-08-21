@@ -21,19 +21,28 @@ from app.domain.audience import (
 from app.domain.enums import ContactValidationStatus
 from app.domain.phone import normalize_phone
 
+# The canonical V1 fields ([D25]), behind headers that happen to match them.
 SCHEMA = AudienceColumnSchema(
     columns=[
+        ColumnMapping(source="Name", field=AudienceField.NAME, required=True),
         ColumnMapping(source="Phone", field=AudienceField.PHONE, required=True),
-        ColumnMapping(source="Name", field=AudienceField.FULL_NAME),
         ColumnMapping(source="Email", field=AudienceField.EMAIL),
+        ColumnMapping(source="Company", field=AudienceField.COMPANY),
+        ColumnMapping(source="Designation", field=AudienceField.DESIGNATION),
+        ColumnMapping(source="City", field=AudienceField.CITY),
     ]
 )
 
-# A schema with entirely different names, standing in for whatever the client sends.
+# The same canonical fields behind entirely different headers — [D25]'s worked
+# example. Behaviour must be identical under both.
 CLIENT_SCHEMA = AudienceColumnSchema(
     columns=[
+        ColumnMapping(source="Full Name", field=AudienceField.NAME, required=True),
         ColumnMapping(source="Mobile Number", field=AudienceField.PHONE, required=True),
-        ColumnMapping(source="Customer Name", field=AudienceField.FULL_NAME),
+        ColumnMapping(source="Email ID", field=AudienceField.EMAIL),
+        ColumnMapping(source="Organization", field=AudienceField.COMPANY),
+        ColumnMapping(source="Job Title", field=AudienceField.DESIGNATION),
+        ColumnMapping(source="Location", field=AudienceField.CITY),
     ]
 )
 
@@ -85,19 +94,30 @@ class TestColumnSchema:
         describes a file this system cannot use."""
         with pytest.raises(ValidationError, match="must map a phone column"):
             AudienceColumnSchema(
-                columns=[ColumnMapping(source="Name", field=AudienceField.FULL_NAME)]
+                columns=[ColumnMapping(source="Name", field=AudienceField.NAME, required=True)]
             )
 
-    def test_phone_column_must_be_required(self) -> None:
-        with pytest.raises(ValidationError, match="phone column must be required"):
+    def test_name_column_is_mandatory(self) -> None:
+        """[D25] makes name required alongside phone."""
+        with pytest.raises(ValidationError, match="must map a name column"):
             AudienceColumnSchema(
-                columns=[ColumnMapping(source="Phone", field=AudienceField.PHONE, required=False)]
+                columns=[ColumnMapping(source="Phone", field=AudienceField.PHONE, required=True)]
+            )
+
+    def test_required_fields_must_be_marked_required(self) -> None:
+        with pytest.raises(ValidationError, match="must be required"):
+            AudienceColumnSchema(
+                columns=[
+                    ColumnMapping(source="Name", field=AudienceField.NAME, required=True),
+                    ColumnMapping(source="Phone", field=AudienceField.PHONE, required=False),
+                ]
             )
 
     def test_duplicate_field_mappings_are_rejected(self) -> None:
         with pytest.raises(ValidationError, match="duplicate field mappings"):
             AudienceColumnSchema(
                 columns=[
+                    ColumnMapping(source="Name", field=AudienceField.NAME, required=True),
                     ColumnMapping(source="Phone", field=AudienceField.PHONE, required=True),
                     ColumnMapping(source="Mobile", field=AudienceField.PHONE, required=True),
                 ]
@@ -112,6 +132,10 @@ class TestRequiredColumns:
     def test_missing_required_column_is_detected(self) -> None:
         assert find_missing_columns(["Name", "Email"], SCHEMA) == ["Phone"]
 
+    def test_a_missing_name_column_is_detected(self) -> None:
+        """[D25] made name required, so its absence rejects the file."""
+        assert find_missing_columns(["Phone", "Email"], SCHEMA) == ["Name"]
+
     def test_present_columns_pass(self) -> None:
         assert find_missing_columns(["Phone", "Name", "Email"], SCHEMA) == []
 
@@ -120,13 +144,13 @@ class TestRequiredColumns:
         assert find_missing_columns(["  phone  ", "NAME"], SCHEMA) == []
 
     def test_optional_columns_may_be_absent(self) -> None:
-        assert find_missing_columns(["Phone"], SCHEMA) == []
+        assert find_missing_columns(["Name", "Phone"], SCHEMA) == []
 
 
 class TestRowValidation:
     def test_valid_row(self) -> None:
         summary = _validate(
-            [{"Phone": "9876543210", "Name": "Rahul", "Email": "rahul@example.com"}]
+            [{"Name": "Rahul", "Phone": "9876543210", "Email": "rahul@example.com"}]
         )
         row = summary.rows[0]
 
@@ -138,12 +162,14 @@ class TestRowValidation:
 
     def test_row_numbers_are_one_based(self) -> None:
         """They refer to data rows as a person counts them, not spreadsheet rows."""
-        summary = _validate([{"Phone": "9876543210"}, {"Phone": "9876543211"}])
+        summary = _validate(
+            [{"Name": "A", "Phone": "9876543210"}, {"Name": "B", "Phone": "9876543211"}]
+        )
         assert [row.row_number for row in summary.rows] == [1, 2]
 
     def test_invalid_phone_is_recorded_not_dropped(self) -> None:
         """§6 requires the preview to show what was rejected and why."""
-        summary = _validate([{"Phone": "nonsense", "Name": "X"}])
+        summary = _validate([{"Name": "X", "Phone": "nonsense"}])
         row = summary.rows[0]
 
         assert row.status is ContactValidationStatus.INVALID
@@ -152,32 +178,67 @@ class TestRowValidation:
         assert len(summary.rows) == 1
 
     def test_missing_phone_is_invalid(self) -> None:
-        summary = _validate([{"Phone": None, "Name": "X"}])
+        summary = _validate([{"Name": "X", "Phone": None}])
         assert summary.rows[0].status is ContactValidationStatus.INVALID
 
     def test_invalid_email_invalidates_the_row(self) -> None:
-        summary = _validate([{"Phone": "9876543210", "Email": "not-an-email"}])
+        summary = _validate([{"Name": "X", "Phone": "9876543210", "Email": "not-an-email"}])
         assert summary.rows[0].status is ContactValidationStatus.INVALID
         assert summary.rows[0].error == "invalid email address"
 
     def test_email_is_optional(self) -> None:
-        summary = _validate([{"Phone": "9876543210", "Email": None}])
+        summary = _validate([{"Name": "X", "Phone": "9876543210", "Email": None}])
         assert summary.rows[0].status is ContactValidationStatus.VALID
         assert summary.rows[0].email is None
 
     def test_email_is_lowercased(self) -> None:
-        summary = _validate([{"Phone": "9876543210", "Email": "Rahul@Example.COM"}])
+        summary = _validate([{"Name": "X", "Phone": "9876543210", "Email": "Rahul@Example.COM"}])
         assert summary.rows[0].email == "rahul@example.com"
 
     def test_unmapped_columns_are_preserved(self) -> None:
         """No uploaded data is silently discarded."""
-        summary = _validate([{"Phone": "9876543210", "City": "Mumbai"}])
-        assert summary.rows[0].raw_row["City"] == "Mumbai"
+        summary = _validate([{"Name": "X", "Phone": "9876543210", "Region": "West"}])
+        assert summary.rows[0].raw_row["Region"] == "West"
+
+    def test_a_row_without_a_name_is_invalid(self) -> None:
+        """[D25] made name required. This rejects rows the pre-canonical build
+        accepted, which is the intended behaviour change."""
+        summary = _validate([{"Name": None, "Phone": "9876543210"}])
+        assert summary.rows[0].status is ContactValidationStatus.INVALID
+        assert summary.rows[0].error == "missing name"
+
+    def test_the_optional_canonical_fields_are_captured(self) -> None:
+        """[D25]: company, designation and city are first-class, not raw-row extras,
+        because promotion must carry them onto the lead."""
+        summary = _validate(
+            [
+                {
+                    "Name": "Rahul",
+                    "Phone": "9876543210",
+                    "Company": "Acme",
+                    "Designation": "Head of Ops",
+                    "City": "Mumbai",
+                }
+            ]
+        )
+        row = summary.rows[0]
+        assert row.company == "Acme"
+        assert row.designation == "Head of Ops"
+        assert row.city == "Mumbai"
 
     def test_schema_is_data_not_code(self) -> None:
-        """[D20]: swapping in the client's column names must need no code change."""
+        """[D25]: swapping in the client's column names must need no code change."""
         summary = _validate(
-            [{"Mobile Number": "9876543210", "Customer Name": "Priya"}], CLIENT_SCHEMA
+            [
+                {
+                    "Full Name": "Priya",
+                    "Mobile Number": "9876543210",
+                    "Organization": "Acme",
+                    "Job Title": "Head of Ops",
+                    "Location": "Mumbai",
+                }
+            ],
+            CLIENT_SCHEMA,
         )
         assert summary.rows[0].status is ContactValidationStatus.VALID
         assert summary.rows[0].phone_e164 == "+919876543210"
@@ -186,7 +247,9 @@ class TestRowValidation:
 
 class TestDuplicateDetection:
     def test_repeated_number_marks_later_rows_duplicate(self) -> None:
-        summary = _validate([{"Phone": "9876543210"}, {"Phone": "9876543210"}])
+        summary = _validate(
+            [{"Name": "A", "Phone": "9876543210"}, {"Name": "B", "Phone": "9876543210"}]
+        )
 
         assert summary.rows[0].status is ContactValidationStatus.VALID
         assert summary.rows[1].status is ContactValidationStatus.DUPLICATE
@@ -196,7 +259,11 @@ class TestDuplicateDetection:
     def test_duplicates_are_found_after_normalization(self) -> None:
         """Two spellings of one number are the same number."""
         summary = _validate(
-            [{"Phone": "9876543210"}, {"Phone": "+91 98765 43210"}, {"Phone": "098765 43210"}]
+            [
+                {"Name": "A", "Phone": "9876543210"},
+                {"Name": "B", "Phone": "+91 98765 43210"},
+                {"Name": "C", "Phone": "098765 43210"},
+            ]
         )
         statuses = [row.status for row in summary.rows]
         assert statuses == [
@@ -208,7 +275,7 @@ class TestDuplicateDetection:
     def test_first_occurrence_wins(self) -> None:
         """Outcome depends on file order, not processing order."""
         summary = _validate(
-            [{"Phone": "9876543210", "Name": "First"}, {"Phone": "9876543210", "Name": "Second"}]
+            [{"Name": "First", "Phone": "9876543210"}, {"Name": "Second", "Phone": "9876543210"}]
         )
         assert summary.rows[0].full_name == "First"
 
@@ -216,15 +283,17 @@ class TestDuplicateDetection:
         """A row rejected for a bad email must not make a later good row a duplicate."""
         summary = _validate(
             [
-                {"Phone": "9876543210", "Email": "bad"},
-                {"Phone": "9876543210", "Email": "ok@example.com"},
+                {"Name": "A", "Phone": "9876543210", "Email": "bad"},
+                {"Name": "B", "Phone": "9876543210", "Email": "ok@example.com"},
             ]
         )
         assert summary.rows[0].status is ContactValidationStatus.INVALID
         assert summary.rows[1].status is ContactValidationStatus.VALID
 
     def test_distinct_numbers_are_all_valid(self) -> None:
-        summary = _validate([{"Phone": "9876543210"}, {"Phone": "9876543211"}])
+        summary = _validate(
+            [{"Name": "A", "Phone": "9876543210"}, {"Name": "B", "Phone": "9876543211"}]
+        )
         assert summary.valid == 2
         assert summary.duplicate == 0
 
@@ -233,10 +302,10 @@ class TestSummaryCounts:
     def test_counts_partition_the_rows(self) -> None:
         summary = _validate(
             [
-                {"Phone": "9876543210"},
-                {"Phone": "9876543210"},
-                {"Phone": "rubbish"},
-                {"Phone": "9876543211"},
+                {"Name": "A", "Phone": "9876543210"},
+                {"Name": "B", "Phone": "9876543210"},
+                {"Name": "C", "Phone": "rubbish"},
+                {"Name": "D", "Phone": "9876543211"},
             ]
         )
         assert summary.total == 4
