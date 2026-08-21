@@ -18,6 +18,8 @@ dependencies = [
     "openpyxl>=3.1.5",
     "phonenumbers>=9.0.37",
     "python-multipart>=0.0.32",
+    "google-cloud-tasks>=2.24.0",
+    "google-auth>=2.56.3",
 ]
 
 [dependency-groups]
@@ -64,7 +66,9 @@ ignore = [
 # S101: asserts are the point of tests.
 # S105/S106: test files legitimately contain literal placeholder credentials; the
 # rule is about production code, and per-line noqa on every fixture is noise.
-"tests/**" = ["S101", "S105", "S106"]
+# S311: seeded `random.Random` in tests is deterministic fixture material,
+# never used for anything security-relevant.
+"tests/**" = ["S101", "S105", "S106", "S311"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
@@ -92,6 +96,17 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
+
+# The Google client libraries ship no type information, so strict mode flags every
+# call into them as untyped. Only the modules that touch that boundary are relaxed;
+# their own signatures stay fully typed.
+[[tool.mypy.overrides]]
+module = [
+    "app.integrations.queue.cloud_tasks",
+    "app.worker.security",
+    "tests.test_cloud_tasks_provider",
+]
+disallow_untyped_calls = false
 
 # ---------------------------------------------------------------- pytest
 

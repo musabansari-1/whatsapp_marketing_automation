@@ -1,5 +1,6 @@
 """Queue integration package."""
 
+from app.integrations.queue.cloud_tasks import CloudTasksProvider
 from app.integrations.queue.memory import InMemoryQueueProvider, TaskDispatcher
 from app.integrations.queue.provider import (
     EnqueuedTask,
@@ -9,6 +10,7 @@ from app.integrations.queue.provider import (
 )
 
 __all__ = [
+    "CloudTasksProvider",
     "EnqueuedTask",
     "InMemoryQueueProvider",
     "QueueProvider",

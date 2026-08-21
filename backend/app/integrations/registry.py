@@ -29,6 +29,7 @@ from app.integrations.crm import CRMProvider, FakeCRMProvider
 from app.integrations.embedding import EmbeddingProvider, FakeEmbeddingProvider
 from app.integrations.llm import FakeLLMProvider, LLMProvider
 from app.integrations.queue import InMemoryQueueProvider, QueueProvider
+from app.integrations.queue.cloud_tasks import CloudTasksProvider
 from app.integrations.whatsapp import FakeWhatsAppProvider, WhatsAppProvider
 from app.integrations.whatsapp.meta import MetaWhatsAppProvider
 
@@ -112,7 +113,24 @@ def build_queue_provider(settings: Settings) -> QueueProvider:
         case QueueProviderName.INLINE:
             return InMemoryQueueProvider()
         case QueueProviderName.CLOUD_TASKS:
-            raise ProviderNotImplementedError("cloud_tasks", "Phase 7 (Cloud Tasks and worker)")
+            # Configuration validation guarantees these when CLOUD_TASKS is selected;
+            # re-checked because `python -O` strips asserts.
+            if (
+                settings.google_cloud_project is None
+                or settings.google_cloud_tasks_queue is None
+                or settings.worker_base_url is None
+            ):
+                raise ConfigurationError(
+                    "The Cloud Tasks queue is selected but its configuration is missing"
+                )
+            return CloudTasksProvider(
+                project=settings.google_cloud_project,
+                location=settings.google_cloud_location,
+                queue=settings.google_cloud_tasks_queue,
+                worker_base_url=settings.worker_base_url,
+                service_account_email=settings.worker_service_account_email,
+                dispatch_rate_per_second=settings.dispatch_rate_per_second,
+            )
 
 
 def build_providers(settings: Settings | None = None) -> Providers:
