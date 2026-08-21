@@ -22,6 +22,7 @@ from app.core.logging import configure_logging, get_logger
 from app.integrations.queue import TaskRequest, TaskType
 from app.persistence.database import check_database_connection, dispose_engine
 from app.worker.dispatcher import dispatch_task
+from app.worker.handlers import register_all
 from app.worker.registry import UnknownTaskTypeError, task_registry
 
 logger = get_logger(__name__)
@@ -60,6 +61,9 @@ class WorkerHealthResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = get_settings()
+    # Registers the handlers implemented so far. Phase 7 adds the Cloud Tasks
+    # transport in front of them; the dispatch seam itself is unchanged.
+    register_all()
     logger.info(
         "worker_starting",
         environment=settings.app_env.value,
