@@ -127,6 +127,7 @@ export default function AudienceDetailPage() {
                   <th className="px-3 py-2 font-medium">Phone</th>
                   <th className="px-3 py-2 font-medium">Name</th>
                   <th className="px-3 py-2 font-medium">Email</th>
+                  <th className="px-3 py-2 font-medium">Company</th>
                   <th className="px-3 py-2 font-medium">Status</th>
                 </tr>
               </thead>
@@ -137,6 +138,7 @@ export default function AudienceDetailPage() {
                     <td className="px-3 py-2 font-mono text-xs">{contact.phone_e164 ?? '-'}</td>
                     <td className="px-3 py-2">{contact.full_name ?? '-'}</td>
                     <td className="px-3 py-2">{contact.email ?? '-'}</td>
+                    <td className="px-3 py-2">{contact.company ?? '-'}</td>
                     <td className="px-3 py-2">
                       {contact.validation_status === 'VALID' ? (
                         <span className="text-emerald-700">Valid</span>

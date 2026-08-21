@@ -52,6 +52,21 @@ export default function CampaignDetailPage() {
     void load();
   }, [load]);
 
+  async function handleCancel() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.cancelCampaign(id);
+      setNotice('Campaign cancelled. Queued messages will not be sent.');
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not cancel the campaign.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleSend() {
     setBusy(true);
     setError(null);
@@ -148,6 +163,24 @@ export default function CampaignDetailPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {(campaign.status === 'PROCESSING' ||
+            campaign.status === 'READY' ||
+            campaign.status === 'PAUSED') && (
+            <div className="mt-4">
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={busy}
+                className="rounded-md border border-red-300 px-3 py-2 text-sm text-red-700 disabled:opacity-60"
+              >
+                Cancel campaign
+              </button>
+              <p className="mt-1 text-xs text-slate-500">
+                Stops anything not yet sent. Messages already delivered cannot be recalled.
+              </p>
             </div>
           )}
 

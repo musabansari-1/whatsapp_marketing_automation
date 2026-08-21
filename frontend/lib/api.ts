@@ -28,9 +28,13 @@ export interface AudienceSummary {
 export interface AudienceContact {
   id: string;
   row_number: number;
+  // The canonical V1 fields ([D25]).
   full_name: string | null;
   phone_e164: string | null;
   email: string | null;
+  company: string | null;
+  designation: string | null;
+  city: string | null;
   validation_status: ValidationStatus;
   validation_error: string | null;
   raw_row: Record<string, unknown>;
@@ -186,6 +190,8 @@ export const api = {
     }
     return request<CampaignRecipientPage>(`/campaigns/${id}/recipients?${params}`);
   },
+
+  cancelCampaign: (id: string) => request<Campaign>(`/campaigns/${id}/cancel`, { method: 'POST' }),
 
   sendCampaign: (id: string) =>
     request<{ campaign: Campaign; queued: number; skipped_as_suppressed: number }>(
