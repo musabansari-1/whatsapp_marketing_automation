@@ -6,6 +6,7 @@ touch the worker entrypoint.
 """
 
 from app.integrations.queue import TaskType
+from app.worker.handlers.campaign_send import send_campaign_message
 from app.worker.handlers.whatsapp import process_inbound_webhook, sync_whatsapp_templates
 from app.worker.registry import TaskRegistry, task_registry
 
@@ -22,6 +23,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
     handlers = {
         TaskType.PROCESS_INBOUND_MESSAGE: process_inbound_webhook,
         TaskType.SYNC_WHATSAPP_TEMPLATES: sync_whatsapp_templates,
+        TaskType.SEND_CAMPAIGN_MESSAGE: send_campaign_message,
     }
 
     for task_type, handler in handlers.items():
@@ -29,4 +31,9 @@ def register_all(registry: TaskRegistry | None = None) -> None:
             target.register(task_type, handler)
 
 
-__all__ = ["process_inbound_webhook", "register_all", "sync_whatsapp_templates"]
+__all__ = [
+    "process_inbound_webhook",
+    "register_all",
+    "send_campaign_message",
+    "sync_whatsapp_templates",
+]

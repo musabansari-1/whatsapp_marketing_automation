@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
@@ -23,7 +23,9 @@ from app.integrations.queue import TaskRequest, TaskType
 from app.persistence.database import check_database_connection, dispose_engine
 from app.worker.dispatcher import dispatch_task
 from app.worker.handlers import register_all
+from app.worker.handlers.campaign_send import RetryableSendError
 from app.worker.registry import UnknownTaskTypeError, task_registry
+from app.worker.security import verify_task_request
 
 logger = get_logger(__name__)
 
@@ -111,16 +113,36 @@ def create_worker_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ready", "checks": {"database": True}}
 
     @app.post("/internal/tasks", response_model=TaskResult)
-    async def execute_task(envelope: TaskEnvelope) -> TaskResult:
+    async def execute_task(request: Request, envelope: TaskEnvelope) -> TaskResult:
         """Execute one task.
 
-        A task with no registered handler returns 400, not 500: retrying it would
-        never succeed, so Cloud Tasks must not keep redelivering it.
+        The HTTP status is how the worker talks to Cloud Tasks, which retries on 5xx
+        and considers any 2xx final. That makes the mapping below part of the retry
+        policy rather than cosmetic:
+
+        - success, or a permanent failure already recorded  -> 200, do not retry
+        - a retryable failure with attempts remaining       -> 503 plus Retry-After
+        - an unknown task type                              -> 400, never retryable
+        - anything unexpected                               -> 500, retry
+
+        A task with no registered handler returns 400 rather than 500 because
+        redelivering something nothing handles would retry forever.
         """
+        verify_task_request(request, settings)
+
         try:
             await dispatch_task(envelope.to_request())
         except UnknownTaskTypeError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except RetryableSendError as exc:
+            # Retry-After carries the jittered backoff [D27] so the transport waits
+            # the computed interval rather than its own default.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+                headers={"Retry-After": str(max(1, int(exc.retry_after_seconds)))},
+            ) from exc
+
         return TaskResult(task_id=envelope.task_id, task_type=envelope.task_type)
 
     return app
