@@ -558,3 +558,117 @@ class TestStatusUpdates:
             return (await session.execute(select(WebhookEvent.status))).scalar_one()
 
         assert run_db(status) is WebhookEventStatus.PROCESSED
+
+
+class TestConversationTurnQueueing:
+    """The webhook → task → worker → AI link (§9, §18).
+
+    The queue is captured rather than run: what matters here is that exactly one
+    retryable, idempotent unit of work is created per customer message.
+    """
+
+    def test_a_customer_message_queues_one_turn(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        queued = capture_queue(monkeypatch)
+
+        post_webhook(webhook_client, inbound("Do you offer training?"))
+        process_all()
+
+        assert len(queued) == 1
+        assert queued[0].task_type is TaskType.PROCESS_CONVERSATION_TURN
+        assert queued[0].payload["message_id"]
+
+    def test_the_task_name_is_deterministic(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§20: a redelivered webhook must collapse into the same task rather than
+        producing a second reply to the customer."""
+        queued = capture_queue(monkeypatch)
+
+        post_webhook(webhook_client, inbound("Hello"))
+        process_all()
+
+        message_id = queued[0].payload["message_id"]
+        assert queued[0].task_id == f"turn-{message_id}"
+
+    def test_reprocessing_queues_nothing_further(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The message is already stored, so there is no new turn to hand over."""
+        queued = capture_queue(monkeypatch)
+
+        post_webhook(webhook_client, inbound("Hello"))
+        process_all()
+
+        async def event_ids(session: AsyncSession) -> list[str]:
+            rows = (await session.execute(select(WebhookEvent.id))).scalars().all()
+            return [str(row) for row in rows]
+
+        for event_id in run_db(event_ids):
+            run_db_task(event_id)
+
+        assert len(queued) == 1
+
+    def test_an_opt_out_queues_no_turn(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Handing STOP to the AI would reply to someone who just asked us to stop.
+        The opt-out acknowledgement is the only response ([D5])."""
+        queued = capture_queue(monkeypatch)
+
+        post_webhook(webhook_client, inbound("STOP"))
+        process_all()
+
+        assert queued == []
+
+    def test_two_messages_in_one_delivery_queue_two_turns(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Meta batches messages into one POST, and each needs its own retryable unit
+        of work — one failing must not strand the other."""
+        queued = capture_queue(monkeypatch)
+
+        post_webhook(webhook_client, inbound("First", message_id="wamid.a"))
+        process_all()
+        post_webhook(webhook_client, inbound("Second", message_id="wamid.b"))
+        process_all()
+
+        assert len(queued) == 2
+        assert len({task.task_id for task in queued}) == 2
+
+    def test_a_queue_failure_does_not_lose_the_message(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The message is already committed. Raising here would reprocess the whole
+        webhook for no benefit."""
+
+        class BrokenQueue:
+            async def enqueue(self, task: TaskRequest) -> None:
+                raise RuntimeError("queue unavailable")
+
+        monkeypatch.setattr(
+            "app.worker.handlers.whatsapp.build_queue_provider", lambda _settings: BrokenQueue()
+        )
+
+        post_webhook(webhook_client, inbound("Hello"))
+        process_all()
+
+        async def messages(session: AsyncSession) -> int:
+            return len((await session.execute(select(Message))).scalars().all())
+
+        assert run_db(messages) == 1
+
+
+def capture_queue(monkeypatch: pytest.MonkeyPatch) -> list[TaskRequest]:
+    """Collect the tasks the handler enqueues instead of dispatching them."""
+    captured: list[TaskRequest] = []
+
+    class RecordingQueue:
+        async def enqueue(self, task: TaskRequest) -> None:
+            captured.append(task)
+
+    monkeypatch.setattr(
+        "app.worker.handlers.whatsapp.build_queue_provider", lambda _settings: RecordingQueue()
+    )
+    return captured

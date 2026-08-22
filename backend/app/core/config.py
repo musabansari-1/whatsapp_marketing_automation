@@ -215,6 +215,12 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- qualification [D9][D18]
     qualification_required_fields: CommaSeparated = Field(default_factory=list)
 
+    # ---------------------------------------------------------------- conversations §9 §10
+    # How many prior turns are sent to the model. A context window is finite and the
+    # recent turns are what the next reply depends on; tune against real conversations
+    # in Phase 10 alongside the model choice ([D17]).
+    conversation_history_turns: int = 20
+
     # ---------------------------------------------------------------- customer copy [D21]
     # Never hard-coded in application logic.
     msg_rag_fallback: str = (
@@ -223,6 +229,17 @@ class Settings(BaseSettings):
     )
     msg_booking_confirmation: str = "Your demo is confirmed for {start_time} ({timezone})."
     msg_opt_out_response: str = "You have been unsubscribed and will not receive further messages."
+    # The AI's operating instructions. Configuration ([D21]) because it is
+    # customer-facing behaviour, and because Phase 10 will iterate on it against real
+    # conversations. Deliberately conservative: it tells the model what it may not do,
+    # since the tools and retrieval that let it do more arrive in Phase 10.
+    ai_system_prompt: str = (
+        "You are a helpful assistant replying to a customer on WhatsApp on behalf of "
+        "the business. Be brief and professional. Only state facts that appear in the "
+        "conversation or in verified information provided to you. If you do not know "
+        "something, say you will have a colleague follow up. Never invent prices, "
+        "availability, or commitments."
+    )
 
     # ---------------------------------------------------------------- retries [D27]
     # Maximum attempts per recipient, counting the first. Configuration, never a

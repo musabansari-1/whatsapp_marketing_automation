@@ -7,6 +7,7 @@ touch the worker entrypoint.
 
 from app.integrations.queue import TaskType
 from app.worker.handlers.campaign_send import send_campaign_message
+from app.worker.handlers.conversation import process_conversation_turn
 from app.worker.handlers.knowledge_ingest import ingest_knowledge_document
 from app.worker.handlers.whatsapp import process_inbound_webhook, sync_whatsapp_templates
 from app.worker.registry import TaskRegistry, task_registry
@@ -26,6 +27,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
         TaskType.SYNC_WHATSAPP_TEMPLATES: sync_whatsapp_templates,
         TaskType.SEND_CAMPAIGN_MESSAGE: send_campaign_message,
         TaskType.INGEST_KNOWLEDGE_DOCUMENT: ingest_knowledge_document,
+        TaskType.PROCESS_CONVERSATION_TURN: process_conversation_turn,
     }
 
     for task_type, handler in handlers.items():
@@ -35,6 +37,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
 
 __all__ = [
     "ingest_knowledge_document",
+    "process_conversation_turn",
     "process_inbound_webhook",
     "register_all",
     "send_campaign_message",

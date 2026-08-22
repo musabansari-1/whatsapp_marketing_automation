@@ -16,8 +16,8 @@ from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.logging import get_logger
 from app.domain.whatsapp_webhook import matches_opt_out, parse_webhook
-from app.integrations.queue import TaskRequest
-from app.integrations.registry import build_whatsapp_provider
+from app.integrations.queue import TaskRequest, TaskType
+from app.integrations.registry import build_queue_provider, build_whatsapp_provider
 from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
 from app.persistence.repositories import templates as template_repo
@@ -48,7 +48,7 @@ async def process_inbound_webhook(task: TaskRequest) -> dict[str, int]:
         try:
             parsed = parse_webhook(event.payload)
             statuses = await _apply_statuses(session, parsed.statuses)
-            inbound, opt_outs = await _apply_inbound(session, settings, parsed.inbound)
+            inbound, opt_outs, needs_reply = await _apply_inbound(session, settings, parsed.inbound)
 
             await webhook_repo.mark_processed(session, event)
             await session.commit()
@@ -63,13 +63,52 @@ async def process_inbound_webhook(task: TaskRequest) -> dict[str, int]:
                     await error_session.commit()
             raise
 
+    # After the commit, so the task cannot arrive before the row it names. Failing to
+    # enqueue must not undo the storage: the message is safely recorded either way, and
+    # raising here would reprocess the whole webhook.
+    queued = await _queue_conversation_turns(settings, needs_reply)
+
     logger.info(
         "whatsapp_webhook_processed",
         inbound_messages=inbound,
         status_updates=statuses,
         opt_outs=opt_outs,
+        conversation_turns_queued=queued,
     )
-    return {"inbound": inbound, "statuses": statuses, "opt_outs": opt_outs}
+    return {
+        "inbound": inbound,
+        "statuses": statuses,
+        "opt_outs": opt_outs,
+        "turns_queued": queued,
+    }
+
+
+async def _queue_conversation_turns(settings: Settings, message_ids: list[str]) -> int:
+    """Hand each stored customer message to the conversation handler (§9, §18)."""
+    if not message_ids:
+        return 0
+
+    queue = build_queue_provider(settings)
+    queued = 0
+
+    for message_id in message_ids:
+        try:
+            await queue.enqueue(
+                TaskRequest(
+                    task_type=TaskType.PROCESS_CONVERSATION_TURN,
+                    # Deterministic, so a redelivered webhook collapses into the same
+                    # task rather than producing a second reply (§20).
+                    task_id=f"turn-{message_id}",
+                    payload={"message_id": message_id},
+                )
+            )
+            queued += 1
+        except Exception as exc:  # noqa: BLE001 - queueing is not worth losing the message over
+            logger.warning(
+                "conversation_turn_enqueue_failed", message_id=message_id, error=str(exc)
+            )
+
+    return queued
 
 
 async def _apply_statuses(session: Any, statuses: list[Any]) -> int:
@@ -88,10 +127,18 @@ async def _apply_statuses(session: Any, statuses: list[Any]) -> int:
     return applied
 
 
-async def _apply_inbound(session: Any, settings: Settings, messages: list[Any]) -> tuple[int, int]:
-    """Store customer messages and act on opt-outs."""
+async def _apply_inbound(
+    session: Any, settings: Settings, messages: list[Any]
+) -> tuple[int, int, list[str]]:
+    """Store customer messages, act on opt-outs, and report which need a reply.
+
+    The IDs are returned rather than enqueued here because the rows are not committed
+    yet: a task dispatched now could reach a worker before the message it names
+    exists.
+    """
     stored = 0
     opt_outs = 0
+    needs_reply: list[str] = []
 
     for event in messages:
         lead = await webhook_repo.get_or_create_lead(
@@ -113,12 +160,16 @@ async def _apply_inbound(session: Any, settings: Settings, messages: list[Any]) 
             continue
         stored += 1
 
-        if matches_opt_out(event.text, settings.opt_out_keywords) and await _handle_opt_out(
-            session, settings, lead, event.provider_message_id
-        ):
-            opt_outs += 1
+        if matches_opt_out(event.text, settings.opt_out_keywords):
+            if await _handle_opt_out(session, settings, lead, event.provider_message_id):
+                opt_outs += 1
+            # An opt-out gets the acknowledgement above and nothing else. Handing it
+            # to the AI would reply to someone who just asked us to stop.
+            continue
 
-    return stored, opt_outs
+        needs_reply.append(str(message.id))
+
+    return stored, opt_outs, needs_reply
 
 
 async def _handle_opt_out(

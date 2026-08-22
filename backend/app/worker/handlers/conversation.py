@@ -1,0 +1,420 @@
+"""Inbound conversation processing (specification §9, §10, §18, §20, [D36]).
+
+This is the seam the AI plugs into. Phase 9 builds the whole flow — history, states,
+window enforcement, idempotency, reply delivery — around an `LLMProvider` that is
+still the fake. Phase 10 swaps the provider and adds retrieval, tools and extraction;
+nothing in this module's shape has to change for that.
+
+What Phase 9 deliberately does *not* do:
+
+- decide qualification. [D9]/[D37] put the criteria in Phase 10, and inventing them
+  here is exactly what that decision forbids.
+- let the model choose the conversation's state. §10 says the AI cannot invent
+  transitions, so the state moves through the domain table below and nowhere else.
+- call any tool. The authorized six arrive in Phase 10; a tool call from the fake is
+  recorded and ignored rather than dispatched.
+
+The ordering in `process_conversation_turn` is deliberate and each step prevents a
+specific failure:
+
+1. load the conversation and the triggering message
+2. already replied under this idempotency key? — a redelivery must not reply twice
+3. conversation CLOSED? — [D36] makes it terminal; nothing is sent
+4. suppressed? — [D16], because the customer may have opted out since the task was
+   queued
+5. outside the 24-hour window? — §8 forbids the free-form reply; recorded, not sent
+6. record the customer's turn, once
+7. ask the model
+8. send, then record the reply and move the state
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import Settings, get_settings
+from app.core.correlation import bind_log_context
+from app.core.errors import ProviderError
+from app.core.logging import get_logger
+from app.domain.enums import ConversationStatus, LeadStatus, MessageStatus
+from app.domain.retry import RetryPolicy, backoff_seconds, classify, should_retry
+from app.domain.whatsapp_webhook import is_within_service_window
+from app.integrations.llm import CompletionRequest, LLMCompletion, Role
+from app.integrations.llm import Message as LLMMessage
+from app.integrations.queue import TaskRequest
+from app.integrations.registry import build_llm_provider, build_whatsapp_provider
+from app.integrations.whatsapp import OutboundTextMessage
+from app.persistence.database import get_session_factory
+from app.persistence.models import AIRun, Conversation, Lead, WhatsAppSuppression
+from app.persistence.repositories import conversations as conversation_repo
+from app.worker.handlers.campaign_send import RetryableSendError
+
+logger = get_logger(__name__)
+
+# How many prior turns are given to the model. Configuration in all but name — it is
+# read from settings; this is only the fallback when unset.
+DEFAULT_HISTORY_TURNS = 20
+
+
+@dataclass(frozen=True, slots=True)
+class TurnOutcome:
+    """What happened, for logging and for the task response."""
+
+    result: str
+    conversation_id: str
+    replied: bool = False
+
+    def as_dict(self) -> dict[str, str | bool]:
+        return {
+            "result": self.result,
+            "conversation_id": self.conversation_id,
+            "replied": self.replied,
+        }
+
+
+def reply_idempotency_key(message_id: str) -> str:
+    """One reply per inbound message, by construction.
+
+    Derived from the triggering message rather than generated, so a retried task
+    computes the same key and the unique constraint on `messages.idempotency_key`
+    refuses the second write.
+    """
+    return f"reply-{message_id}"
+
+
+async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
+    """Handle one inbound customer message end to end."""
+    settings = get_settings()
+
+    message_id = task.payload.get("message_id")
+    if not message_id:
+        raise ValueError("message_id missing from task payload")
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        message = await conversation_repo.get_message(session, uuid.UUID(str(message_id)))
+        if message is None:
+            # Nothing to retry against.
+            raise ValueError(f"Message {message_id} not found")
+
+        if message.conversation_id is None:
+            raise ValueError(f"Message {message_id} is not part of a conversation")
+
+        conversation = await conversation_repo.get_conversation(session, message.conversation_id)
+        lead = await session.get(Lead, message.lead_id) if message.lead_id else None
+        if conversation is None or lead is None:
+            raise ValueError(f"Conversation or lead missing for message {message_id}")
+
+        bind_log_context(
+            conversation_id=str(conversation.id),
+            lead_id=str(lead.id),
+        )
+
+        idempotency_key = reply_idempotency_key(str(message.id))
+
+        # A reply already exists for this message: a redelivery, or a worker that sent
+        # and then crashed before finishing. Either way, replying again would send the
+        # customer a duplicate.
+        if await conversation_repo.find_reply_by_idempotency_key(session, idempotency_key):
+            logger.info("conversation_turn_already_handled", message_id=str(message.id))
+            return TurnOutcome("already_replied", str(conversation.id)).as_dict()
+
+        # [D36]: a closed conversation is never reopened. A message arriving against a
+        # closed thread is the webhook's problem to route into a new conversation, not
+        # this handler's to resurrect.
+        if conversation.status is ConversationStatus.CLOSED:
+            logger.info("conversation_turn_skipped", reason="closed")
+            return TurnOutcome("conversation_closed", str(conversation.id)).as_dict()
+
+        # [D16]: consent may have been withdrawn after this task was queued. The
+        # suppression table is authoritative; `lead.opted_out` alone is never enough.
+        if await _is_suppressed(session, lead.phone_e164):
+            logger.info("conversation_turn_skipped", reason="suppressed")
+            return TurnOutcome("suppressed", str(conversation.id)).as_dict()
+
+        # §8: outside the 24-hour window Meta permits only an approved template, and
+        # [D24] leaves that template's content with the client. The turn is recorded
+        # so the transcript stays complete and the dashboard shows what was missed.
+        if not is_within_service_window(
+            conversation.last_inbound_at,
+            window_hours=settings.customer_service_window_hours,
+        ):
+            await conversation_repo.record_turn_once(
+                session,
+                conversation=conversation,
+                role=conversation_repo.ROLE_USER,
+                content=message.body or "",
+                message_id=message.id,
+            )
+            await session.commit()
+            logger.warning("conversation_reply_blocked", reason="outside_service_window")
+            return TurnOutcome("outside_service_window", str(conversation.id)).as_dict()
+
+        _turn, created = await conversation_repo.record_turn_once(
+            session,
+            conversation=conversation,
+            role=conversation_repo.ROLE_USER,
+            content=message.body or "",
+            message_id=message.id,
+        )
+        if created:
+            # A customer who replies is no longer merely CONTACTED. Guarded rather
+            # than assumed: the lead may already be further along, and §10 does not
+            # allow walking a state backwards.
+            await _advance_to_responded(session, lead)
+
+        history = await conversation_repo.get_history(
+            session,
+            conversation.id,
+            limit=settings.conversation_history_turns or DEFAULT_HISTORY_TURNS,
+        )
+        prompt = _build_prompt(settings, history)
+        conversation_id = conversation.id
+        lead_phone = lead.phone_e164
+        await session.commit()
+
+    started = datetime.now(UTC)
+    provider = build_llm_provider(settings)
+
+    try:
+        completion = await provider.complete(CompletionRequest(messages=tuple(prompt)))
+    except ProviderError as exc:
+        await _record_failed_run(conversation_id, provider.model, str(exc))
+        _raise_if_retryable(settings, exc)
+        logger.warning("conversation_llm_failed", error=str(exc))
+        return TurnOutcome("llm_failed", str(conversation_id)).as_dict()
+
+    latency_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+
+    if completion.tool_calls:
+        # Phase 10 owns the authorized six. Recording the request without executing it
+        # keeps the audit trail honest about what the model asked for.
+        logger.info(
+            "conversation_tool_call_ignored",
+            tools=[call.name for call in completion.tool_calls],
+        )
+
+    reply_text = completion.text.strip()
+    if not reply_text:
+        await _record_run(conversation_id, completion, latency_ms=latency_ms)
+        logger.warning("conversation_empty_completion")
+        return TurnOutcome("empty_completion", str(conversation_id)).as_dict()
+
+    idempotency_key = reply_idempotency_key(str(message_id))
+
+    try:
+        result = await build_whatsapp_provider(settings).send_text_message(
+            OutboundTextMessage(
+                to_e164=lead_phone,
+                body=reply_text,
+                idempotency_key=idempotency_key,
+            )
+        )
+    except ProviderError as exc:
+        await _record_failed_run(conversation_id, provider.model, str(exc))
+        _raise_if_retryable(settings, exc)
+        logger.warning("conversation_reply_send_failed", error=str(exc))
+        return TurnOutcome("send_failed", str(conversation_id)).as_dict()
+
+    async with factory() as session:
+        conversation = await conversation_repo.get_conversation(session, conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} disappeared mid-turn")
+        lead = await session.get(Lead, conversation.lead_id)
+        if lead is None:
+            raise ValueError(f"Lead for conversation {conversation_id} disappeared mid-turn")
+
+        sent_message = await conversation_repo.record_outbound_reply(
+            session,
+            lead=lead,
+            conversation=conversation,
+            body=reply_text,
+            idempotency_key=idempotency_key,
+            provider_message_id=result.provider_message_id,
+            status=MessageStatus.SENT,
+            sent_at=datetime.now(UTC),
+        )
+        await conversation_repo.record_turn(
+            session,
+            conversation=conversation,
+            role=conversation_repo.ROLE_ASSISTANT,
+            content=reply_text,
+            message_id=sent_message.id,
+            tool_calls=_tool_calls_json(completion),
+        )
+        await conversation_repo.touch_outbound(session, conversation)
+
+        # We have spoken; it is the customer's turn. Only from ACTIVE: the table also
+        # permits BOOKING → WAITING_FOR_USER, but a booking conversation is waiting on
+        # a slot choice rather than on ordinary conversation, and Phase 11 owns when
+        # that ends. Applying the generic rule here would quietly drop it out of
+        # booking.
+        if conversation.status is ConversationStatus.ACTIVE:
+            await conversation_repo.transition_conversation(
+                session, conversation, ConversationStatus.WAITING_FOR_USER
+            )
+
+        session.add(
+            _build_run(
+                conversation_id=conversation.id,
+                lead_id=lead.id,
+                completion=completion,
+                latency_ms=latency_ms,
+            )
+        )
+        await session.commit()
+
+    logger.info("conversation_turn_completed", latency_ms=latency_ms)
+    return TurnOutcome("replied", str(conversation_id), replied=True).as_dict()
+
+
+# ---------------------------------------------------------------- internals
+
+
+def _build_prompt(settings: Settings, history: list[Any]) -> list[LLMMessage]:
+    """Turn the stored transcript into the provider's message shape.
+
+    The system message is configuration ([D21]) rather than a literal, and retrieved
+    knowledge is deliberately absent: RAG joins in Phase 10, where §11's rule about
+    document text never overriding instructions is enforced by `build_context`.
+    """
+    messages = [LLMMessage(role=Role.SYSTEM, content=settings.ai_system_prompt)]
+
+    for turn in history:
+        try:
+            role = Role(turn.role)
+        except ValueError:
+            # An unknown role would be rejected by the provider. Treating it as a
+            # system note keeps one bad row from breaking the whole conversation.
+            role = Role.SYSTEM
+        messages.append(LLMMessage(role=role, content=turn.content))
+
+    return messages
+
+
+async def _is_suppressed(session: AsyncSession, phone_e164: str) -> bool:
+    result = await session.execute(
+        select(WhatsAppSuppression.id).where(WhatsAppSuppression.phone_e164 == phone_e164)
+    )
+    return result.scalars().first() is not None
+
+
+async def _advance_to_responded(session: AsyncSession, lead: Lead) -> None:
+    """Record that the customer replied, if that is a step forward.
+
+    Only ever moves NEW/CONTACTED to RESPONDED. A lead that is already QUALIFYING has
+    obviously responded, and §10 permits no edge back.
+    """
+    if lead.status in {LeadStatus.NEW, LeadStatus.CONTACTED}:
+        await conversation_repo.transition_lead(session, lead, LeadStatus.RESPONDED)
+
+
+def _tool_calls_json(completion: LLMCompletion) -> dict[str, Any] | None:
+    if not completion.tool_calls:
+        return None
+    return {
+        "requested": [
+            {"id": call.id, "name": call.name, "arguments": call.arguments}
+            for call in completion.tool_calls
+        ],
+        # Explicit, so the audit trail does not read as though these ran.
+        "executed": [],
+    }
+
+
+def _build_run(
+    *,
+    conversation_id: uuid.UUID,
+    lead_id: uuid.UUID,
+    completion: LLMCompletion,
+    latency_ms: int,
+) -> AIRun:
+    from app.domain.enums import AIRunStatus
+
+    return AIRun(
+        conversation_id=conversation_id,
+        lead_id=lead_id,
+        # Recorded per run rather than assumed: [D17] leaves the model unchosen until
+        # Phase 10 benchmarking, and it may change between runs.
+        model=completion.model,
+        status=AIRunStatus.SUCCESS,
+        prompt_tokens=completion.usage.prompt_tokens,
+        completion_tokens=completion.usage.completion_tokens,
+        latency_ms=latency_ms,
+        tool_calls=_tool_calls_json(completion),
+    )
+
+
+async def _record_run(
+    conversation_id: uuid.UUID, completion: LLMCompletion, *, latency_ms: int
+) -> None:
+    from app.domain.enums import AIRunStatus
+
+    factory = get_session_factory()
+    async with factory() as session:
+        conversation = await session.get(Conversation, conversation_id)
+        session.add(
+            AIRun(
+                conversation_id=conversation_id,
+                lead_id=conversation.lead_id if conversation else None,
+                model=completion.model,
+                status=AIRunStatus.SUCCESS,
+                prompt_tokens=completion.usage.prompt_tokens,
+                completion_tokens=completion.usage.completion_tokens,
+                latency_ms=latency_ms,
+                # Recorded even though nothing was sent: a completion that asked for a
+                # tool and returned no text is exactly the case worth being able to see.
+                tool_calls=_tool_calls_json(completion),
+            )
+        )
+        await session.commit()
+
+
+async def _record_failed_run(conversation_id: uuid.UUID, model: str, reason: str) -> None:
+    """Record a failed run so §21 has the trail even when nothing was sent."""
+    from app.domain.enums import AIRunStatus
+
+    factory = get_session_factory()
+    async with factory() as session:
+        conversation = await session.get(Conversation, conversation_id)
+        session.add(
+            AIRun(
+                conversation_id=conversation_id,
+                lead_id=conversation.lead_id if conversation else None,
+                model=model,
+                status=AIRunStatus.FAILED,
+                error_message=reason[:1000],
+            )
+        )
+        await session.commit()
+
+
+def _raise_if_retryable(settings: Settings, exc: ProviderError) -> None:
+    """Re-raise as a retryable failure when another attempt could succeed.
+
+    Attempt counting lives with the transport: Cloud Tasks knows how many times it has
+    delivered this task, so the policy here only decides whether the failure class is
+    worth retrying at all.
+    """
+    policy = RetryPolicy(
+        max_attempts=settings.send_max_attempts,
+        base_seconds=settings.send_backoff_base_seconds,
+        max_seconds=settings.send_backoff_max_seconds,
+        jitter=settings.send_backoff_jitter,
+    )
+    failure = classify(exc)
+    if should_retry(failure=failure, attempts_made=1, policy=policy):
+        raise RetryableSendError(
+            str(exc),
+            retry_after_seconds=backoff_seconds(attempts_made=1, policy=policy),
+        ) from exc
+
+
+__all__ = ["process_conversation_turn", "reply_idempotency_key"]

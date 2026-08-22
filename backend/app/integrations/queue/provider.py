@@ -31,6 +31,10 @@ class TaskType(StrEnum):
 
     SEND_CAMPAIGN_MESSAGE = "send_campaign_message"
     PROCESS_INBOUND_MESSAGE = "process_inbound_message"
+    # One customer turn, queued per stored inbound message. Distinct from
+    # PROCESS_INBOUND_MESSAGE, which handles a whole webhook delivery: one webhook can
+    # carry several messages, and each needs its own retryable, idempotent unit of work.
+    PROCESS_CONVERSATION_TURN = "process_conversation_turn"
     INGEST_KNOWLEDGE_DOCUMENT = "ingest_knowledge_document"
     GENERATE_EMBEDDINGS = "generate_embeddings"
     SYNC_CRM_CONTACT = "sync_crm_contact"

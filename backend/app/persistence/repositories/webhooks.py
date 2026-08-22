@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.conversation import can_transition_conversation, can_transition_lead
 from app.domain.enums import (
     ConversationStatus,
     LeadStatus,
@@ -206,22 +207,31 @@ async def record_inbound_message(
         delivered_at=received_at,
     )
     session.add(message)
+    # Flushed here so the transcript turn can carry the message's ID. That link is
+    # what lets the Phase 9 conversation handler recognise a turn it has already
+    # recorded instead of appending a second copy of the same customer message.
+    await session.flush()
 
     session.add(
         ConversationMessage(
             conversation_id=conversation.id,
             role="user",
             content=body or "",
+            message_id=message.id,
         )
     )
 
     conversation.last_inbound_at = received_at
-    if conversation.status is ConversationStatus.WAITING_FOR_USER:
+    # Their turn is over, so it is ours again. Guarded by the §10 table rather than
+    # assigned directly: a conversation in BOOKING stays in BOOKING.
+    if can_transition_conversation(conversation.status, ConversationStatus.ACTIVE):
         conversation.status = ConversationStatus.ACTIVE
 
     # A reply is the first signal a lead is reachable and interested enough to
     # respond. Later states belong to the AI's qualification flow ([D9]).
-    if lead.status in (LeadStatus.NEW, LeadStatus.CONTACTED):
+    if lead.status in (LeadStatus.NEW, LeadStatus.CONTACTED) and can_transition_lead(
+        lead.status, LeadStatus.RESPONDED
+    ):
         lead.status = LeadStatus.RESPONDED
 
     await session.flush()
