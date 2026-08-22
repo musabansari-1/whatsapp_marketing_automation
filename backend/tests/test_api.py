@@ -96,4 +96,6 @@ class TestAppConfiguration:
         assert "access-control-allow-origin" not in {k.lower() for k in response.headers}
 
     def test_unknown_route_is_404(self, api_client: TestClient) -> None:
-        assert api_client.get(f"{API_V1_PREFIX}/leads").status_code == 404
+        """`/leads` used to serve as the unknown path here. Phase 9 implemented it, so
+        this now uses a route no phase will add."""
+        assert api_client.get(f"{API_V1_PREFIX}/no-such-resource").status_code == 404

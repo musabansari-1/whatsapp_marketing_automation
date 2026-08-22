@@ -1,7 +1,7 @@
 """API v1 router (specification §16, base path `/api/v1`).
 
-Later phases add their routers here: conversations (9), bookings and
-notifications (11), analytics (13).
+Later phases add their routers here: bookings and notifications (11),
+analytics (13).
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from app.api.v1.routes import (
     audiences,
     auth,
     campaigns,
+    conversations,
     health,
     knowledge,
     users,
@@ -26,3 +27,4 @@ api_v1_router.include_router(audiences.router)
 api_v1_router.include_router(campaigns.router)
 api_v1_router.include_router(webhooks.router)
 api_v1_router.include_router(knowledge.router)
+api_v1_router.include_router(conversations.router)

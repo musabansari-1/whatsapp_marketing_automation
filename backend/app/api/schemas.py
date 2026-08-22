@@ -17,7 +17,9 @@ from app.domain.enums import (
     AudienceStatus,
     CampaignStatus,
     ContactValidationStatus,
+    ConversationStatus,
     DocumentStatus,
+    LeadStatus,
     RecipientStatus,
     TemplateCategory,
     UserRole,
@@ -295,3 +297,111 @@ class KnowledgeDocumentResponse(BaseModel):
     error_message: str | None
     created_at: datetime
     archived_at: datetime | None
+
+
+# ---------------------------------------------------------------- leads (§10, §16)
+
+
+class LeadResponse(BaseModel):
+    """A lead as the dashboard sees it.
+
+    `qualification_data` is included read-only: §17 wants the AI's extracted facts
+    visible, but [D18] makes it the AI's target, not something a human edits here.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    phone_e164: str
+    full_name: str | None
+    email: str | None
+    company: str | None
+    designation: str | None
+    city: str | None
+    status: LeadStatus
+    qualification_data: dict[str, Any]
+    opted_out: bool
+    source_audience_id: uuid.UUID | None
+    last_contacted_at: datetime | None
+    created_at: datetime
+
+
+class LeadPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[LeadResponse]
+
+
+class UpdateLeadRequest(BaseModel):
+    """Human corrections to a lead.
+
+    Notably absent: `qualification_data` and `opted_out`. The first belongs to the AI
+    ([D18]); the second is consent, which is not an editable attribute — it changes
+    only through the opt-out flow.
+
+    `status` is present but validated against the §10 transition table, so a human can
+    correct a misjudged lead without being able to invent a transition the
+    specification does not allow.
+    """
+
+    full_name: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=320)
+    company: str | None = Field(default=None, max_length=255)
+    designation: str | None = Field(default=None, max_length=255)
+    city: str | None = Field(default=None, max_length=255)
+    status: LeadStatus | None = None
+
+
+# ---------------------------------------------------------------- conversations (§9, §10)
+
+
+class ConversationTurnResponse(BaseModel):
+    """One turn of the transcript.
+
+    `tool_calls` records what the AI asked for. In Phase 9 nothing is executed, and
+    the stored shape says so explicitly rather than leaving it ambiguous.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    role: str
+    content: str
+    message_id: uuid.UUID | None
+    tool_calls: dict[str, Any] | None
+    created_at: datetime
+
+
+class ConversationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    status: ConversationStatus
+    last_inbound_at: datetime | None
+    last_outbound_at: datetime | None
+    closed_at: datetime | None
+    created_at: datetime
+
+
+class ConversationDetailResponse(BaseModel):
+    """A conversation with its transcript and whether a free-form reply is possible.
+
+    `within_service_window` is computed rather than stored: it is a function of
+    `last_inbound_at` and the clock, and a stored copy would be wrong seconds later.
+    The dashboard needs it to explain why a reply cannot be sent (§8).
+    """
+
+    conversation: ConversationResponse
+    lead: LeadResponse
+    within_service_window: bool
+    total_turns: int
+    turns: list[ConversationTurnResponse]
+
+
+class ConversationPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[ConversationResponse]
