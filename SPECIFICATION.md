@@ -550,6 +550,61 @@ V1 does not include a lead-scoring system.
 
 The final `QUALIFYING → QUALIFIED` rules remain a Phase 10 decision **[D37]** and must not be invented earlier. The division of responsibility above is settled; the criteria are not.
 
+### V1 transition tables (Phase 9)
+
+§10 lists the states; the edges are derived in `app/domain/conversation.py`, where each
+is justified individually so review can challenge one edge rather than the whole table.
+Two rules shape them:
+
+- **CLOSED and OPTED_OUT are terminal.** [D36] never reopens a conversation, and the
+  platform does not reverse a withdrawal of consent on its own.
+- **Progress is not linear.** `NOT_INTERESTED` can be revived by a later message, a
+  booked demo can be re-offered, and a failed delivery can be retried by a later
+  campaign. Real conversations do this.
+
+The edge that matters most is the one that is *absent*: nothing reaches `QUALIFIED`
+except from `QUALIFYING`. A model that decides a lead is qualified cannot make it so.
+
+Every status change — by the worker or by a human through `PATCH /leads/{id}` — goes
+through this table. [D18] gives the backend sole authority over `lead.status`; a single
+validated path is what makes that enforceable rather than a convention.
+
+### Conversation processing (Phase 9)
+
+One customer message is one task:
+
+```text
+webhook stored → PROCESS_CONVERSATION_TURN queued per message
+ ↓
+worker: already replied? → closed? → suppressed? → inside 24h window?
+ ↓
+record the customer's turn
+ ↓
+ask the LLM with the recent transcript
+ ↓
+send, record the reply, move the state
+```
+
+Each check exists to prevent a specific failure, and the order is deliberate: the
+idempotency check comes first because a redelivered task must not reply twice, and the
+suppression check precedes the model call because consent may have been withdrawn
+after the task was queued ([D16]).
+
+The reply's idempotency key is derived from the triggering message, so a retry computes
+the same key and the unique constraint refuses the second write.
+
+Outside the 24-hour window the customer's turn is still recorded but nothing is sent:
+§8 permits only an approved template there, and [D24] leaves that content with the
+client.
+
+Transcript order is decided by a database-assigned sequence, not `created_at`. The
+latter defaults to `now()`, which is the *transaction* timestamp, so turns written
+together would tie — and that order is what the AI reads the conversation in.
+
+There is no endpoint for sending a message into a conversation. The worker is where
+the window and suppression checks live, and an endpoint bypassing them would be a way
+to message a customer who has opted out.
+
 ## 11. RAG
 
 RAG is required.

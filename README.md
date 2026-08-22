@@ -4,12 +4,14 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 8 (RAG knowledge base) complete.** The marketing pipeline runs
-end to end — upload an audience, prepare a campaign, click Send Broadcast, and the
-worker delivers each message with retries, throttling and cancellation. Alongside it,
-documents can be uploaded to a knowledge base and are parsed, chunked, embedded locally
-and stored in pgvector for retrieval. Sending still needs real Meta credentials and
-approved templates; the AI that will use retrieval arrives in Phase 10.
+**Current state: Phase 9 (Conversations) complete.** The marketing pipeline runs end
+to end — upload an audience, prepare a campaign, click Send Broadcast, and the worker
+delivers each message with retries, throttling and cancellation. A customer's reply now
+flows all the way through: webhook → task → worker → generated reply → delivery, with
+the transcript, states and 24-hour window enforced. Documents can be uploaded to a
+knowledge base and are embedded locally into pgvector. **The replies come from
+`FakeLLMProvider`** — the real model, retrieval and tools arrive in Phase 10 — and
+sending still needs real Meta credentials and approved templates.
 
 ## Layout
 
@@ -374,6 +376,59 @@ operator reviewing a bad answer can see what the document actually said.
 
 There is deliberately **no retrieval endpoint**. Retrieval is a backend tool the AI
 calls in Phase 10, which keeps it inside the authorization model.
+
+## Conversations
+
+A customer's reply is one unit of work. The webhook stores it and queues one
+`PROCESS_CONVERSATION_TURN` task per message; the worker does the rest:
+
+```text
+already replied? → conversation closed? → suppressed? → inside the 24-hour window?
+ ↓
+record the customer's turn
+ ↓
+ask the LLM with the recent transcript
+ ↓
+send the reply, record it, move the state
+```
+
+Each check prevents a specific failure and the order matters. Idempotency comes first
+because Cloud Tasks redelivers and a second reply is a duplicate message to a real
+person; suppression is re-checked before the model call because consent may have been
+withdrawn after the task was queued ([D16]). The reply's idempotency key is derived
+from the triggering message, so a retry computes the same key and the unique constraint
+refuses the second write.
+
+Outside the 24-hour window nothing is sent — §8 allows only an approved template there
+— but the customer's turn is still recorded, so the dashboard shows what was missed
+rather than losing it.
+
+**States are the backend's decision, never the model's.** `app/domain/conversation.py`
+holds the §10 transition tables, and every status change goes through them, whether it
+comes from the worker or from a human using `PATCH /leads/{id}`. The most important
+edge is the missing one: nothing reaches `QUALIFIED` except from `QUALIFYING`, so a
+confident model cannot declare a lead qualified. What justifies that step is a Phase 10
+decision ([D37]) and is deliberately not encoded yet.
+
+Endpoints:
+
+```text
+GET   /api/v1/leads                        filter by status, search name/phone/email/company
+GET   /api/v1/leads/{id}
+PATCH /api/v1/leads/{id}                   correct details; status validated against §10
+GET   /api/v1/leads/{id}/conversation      most recent thread, open or closed
+GET   /api/v1/conversations                by most recent activity
+GET   /api/v1/conversations/{id}           with transcript and window status
+```
+
+`PATCH` cannot write `qualification_data` (the AI's extraction target, [D18]) or
+`opted_out` (consent, which changes only through the opt-out flow). There is
+deliberately **no endpoint that sends a message** into a conversation: the worker is
+where the window and suppression checks live.
+
+In Phase 9 the replies come from `FakeLLMProvider`. A tool call from the model is
+recorded and ignored — the authorized six arrive in Phase 10 — so the audit trail stays
+honest about what was asked for versus what ran.
 
 ## Provider abstractions
 
