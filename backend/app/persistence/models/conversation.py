@@ -7,9 +7,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
+    BigInteger,
     DateTime,
     Enum,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     String,
@@ -133,6 +135,14 @@ class ConversationMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "conversation_messages"
 
+    # Ordering cannot rely on `created_at`: it defaults to `now()`, which in PostgreSQL
+    # is the *transaction* timestamp, so every turn written in one transaction carries
+    # an identical value and their order becomes arbitrary. That order is exactly what
+    # the AI reads history in, so a database-assigned monotonic sequence decides it.
+    sequence: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=False), nullable=False, unique=True
+    )
+
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
@@ -151,6 +161,8 @@ class ConversationMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         Index("ix_conversation_messages_conversation_created", "conversation_id", "created_at"),
+        # The index the transcript is actually read by.
+        Index("ix_conversation_messages_conversation_sequence", "conversation_id", "sequence"),
     )
 
 
