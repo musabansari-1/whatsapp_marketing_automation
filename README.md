@@ -4,17 +4,20 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 11 (Calendar, booking and notifications) complete.** The product
-loop is whole: a customer replies, the platform retrieves knowledge, asks a model,
-checks real calendar availability, books a demo, records it, notifies the sales team and
-confirms to the customer.
+**Current state: Phase 13 (Dashboard) complete.** The product loop is whole and now
+visible: a customer replies, the platform retrieves knowledge, asks a model, checks
+calendar availability, books a demo, notifies the team and confirms to the customer —
+and a salesperson can follow all of it from one dashboard.
 
-What is *not* proven is external. No integration has run against a real account — Meta,
-OpenRouter and Google are all built and tested against mocks and fakes, and each needs
+**Phase 12 (HubSpot) is skipped, not done**, and is the only outstanding feature phase
+before hardening.
+
+What is not proven is external. No integration has run against a real account: Meta,
+OpenRouter and Google are built and tested against mocks and fakes, and each needs
 credentials the client supplies. **`OPENROUTER_MODEL` is unchosen** ([D17]) and
-**qualification criteria are unconfigured** ([D37]), so no lead reaches `QUALIFIED`; the
-rules engine is complete and inert. Google Calendar additionally needs a one-time human
-OAuth consent before it can authenticate at all.
+**qualification criteria are unconfigured** ([D37]), so no lead reaches `QUALIFIED`.
+Google Calendar additionally needs a one-time human OAuth consent before it can
+authenticate at all.
 
 ## Layout
 
@@ -574,6 +577,45 @@ Local development and tests use an in-memory store and never need GCP.
 **The first refresh token requires a one-time human OAuth consent flow.** The platform
 cannot perform it; until someone does, the Google provider fails with a message saying
 exactly that. Nothing here has been exercised against a real Google account.
+
+## Dashboard
+
+All nine §17 sections, sharing one navigation bar:
+
+```text
+Overview        /                metrics: reach → engagement → outcomes
+Audiences       /audiences
+Campaigns       /campaigns
+Leads           /leads           filter and search; the detail page carries the transcript
+Conversations   /conversations   by most recent activity
+Demos           /bookings        read-only, each in its own timezone
+Knowledge       /knowledge       create, upload, status, archive, ingestion errors
+Notifications   /notifications   per-user, with an unread count
+```
+
+Analytics has no separate page: its metrics *are* the Overview, and a second view of
+the same numbers would be a menu entry with nothing behind it.
+
+Three of the metrics involve a judgement, so they are defined in one place
+(`app/persistence/repositories/analytics.py`) and computed from the tables that own the
+data rather than from stored counters:
+
+- **Sent, delivered and read are cumulative** — a delivered message was also sent, so
+  "sent" does not fall as receipts arrive.
+- **Replies count people, not messages.** Five messages from one customer is one reply;
+  counting messages would make engagement look like reach.
+- **Interested and qualified include the states beyond them.** A qualified lead is by
+  definition interested, and a number that dropped as leads progressed would read as
+  leads being lost.
+
+Three things the dashboard deliberately cannot do: send a message (the worker owns the
+24-hour window and suppression checks), create a booking (§12 requires the availability
+re-check and Calendar confirmation), or edit `qualification_data` (the AI's extraction
+target, [D18]).
+
+The Overview says so when it has nothing to show for a reason rather than by accident —
+if leads are interested but none qualified, it points at the unset criteria ([D37])
+rather than leaving a zero to be misread.
 
 ## Provider abstractions
 

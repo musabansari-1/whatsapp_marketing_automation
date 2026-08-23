@@ -1442,6 +1442,55 @@ Knowledge Base:
 - archive
 - ingestion errors
 
+### V1 implementation (Phase 13)
+
+All nine sections exist. Analytics is not a separate page: its metrics *are* the
+Overview, and a second view of the same numbers would be a menu entry with nothing
+behind it.
+
+```text
+Overview        /            metrics, grouped as reach → engagement → outcomes
+Audiences       /audiences   (Phase 4)
+Campaigns       /campaigns   (Phase 5)
+Leads           /leads       list, filter and search; detail carries the transcript
+Conversations   /conversations  by most recent activity
+Bookings        /bookings    read-only, each in its own timezone
+Knowledge Base  /knowledge   create, upload, status, archive, ingestion errors
+Notifications   /notifications  per-user, with an unread count
+```
+
+### Metric definitions (Phase 13)
+
+Three of the §17 metrics involve a judgement about which rows answer the question. They
+are defined in `app/persistence/repositories/analytics.py` and computed from the tables
+that own the data, never from stored counters — a counter can drift after a crashed
+worker or a manual correction, and a dashboard that quietly disagrees with the records
+is worse than a slow one.
+
+- **Sent, delivered, read are cumulative.** A delivered message was also sent, so
+  "sent" does not fall as receipts arrive.
+- **Replies count people, not messages.** A customer who sends five messages is one
+  reply; counting messages would make engagement look like reach.
+- **Interested and qualified include the states past them.** A qualified lead is by
+  definition interested, and a dashboard where "interested" dropped as leads progressed
+  would read as leads being lost.
+- **Only CONFIRMED bookings count as demos.** A cancelled or failed attempt is not a
+  demo anyone will attend.
+
+The lead funnel returns every state including the empty ones: gaps would hide where
+leads are stalling, which is what the view is for.
+
+### Dashboard constraints (Phase 13)
+
+- **No message can be sent from the dashboard.** Replies come from the worker, which is
+  where the 24-hour window and suppression checks live.
+- **No booking can be created from the dashboard.** §12 puts booking behind the
+  availability re-check and Calendar confirmation.
+- **`qualification_data` is read-only.** [D18] makes it the AI's extraction target; a
+  human editing it would be arguing with the extraction rather than correcting a record.
+- Every list is scoped by the API's own authorization. Notifications are per-user and no
+  route accepts a user ID.
+
 ## 18. Cloud Tasks and Worker
 
 Use Cloud Tasks for:
