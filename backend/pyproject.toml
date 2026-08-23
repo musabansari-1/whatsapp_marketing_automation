@@ -25,6 +25,11 @@ dependencies = [
     # Declared directly, not left transitive, so [tool.uv.sources] can pin it to the
     # CPU wheel index — uv applies sources only to direct dependencies.
     "torch>=2.6",
+    # The IANA timezone database. `zoneinfo` reads the system copy, which Windows
+    # does not have at all and a slim container image is not guaranteed to carry —
+    # so ZoneInfo("Asia/Kolkata") raises and §12 booking fails at runtime. Shipping
+    # the data as a dependency makes the [D8] timezone setting work everywhere.
+    "tzdata>=2025.1",
 ]
 
 [dependency-groups]
