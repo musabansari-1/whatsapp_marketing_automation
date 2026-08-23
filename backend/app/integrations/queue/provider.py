@@ -35,6 +35,10 @@ class TaskType(StrEnum):
     # PROCESS_INBOUND_MESSAGE, which handles a whole webhook delivery: one webhook can
     # carry several messages, and each needs its own retryable, idempotent unit of work.
     PROCESS_CONVERSATION_TURN = "process_conversation_turn"
+    # Telling the team and the customer about a confirmed booking. Its own task
+    # because §12 says a confirmed booking stays confirmed while a failed
+    # notification retries — so notifying must never be able to undo or delay it.
+    NOTIFY_BOOKING = "notify_booking"
     INGEST_KNOWLEDGE_DOCUMENT = "ingest_knowledge_document"
     GENERATE_EMBEDDINGS = "generate_embeddings"
     SYNC_CRM_CONTACT = "sync_crm_contact"

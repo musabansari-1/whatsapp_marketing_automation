@@ -6,6 +6,7 @@ touch the worker entrypoint.
 """
 
 from app.integrations.queue import TaskType
+from app.worker.handlers.booking import notify_booking
 from app.worker.handlers.campaign_send import send_campaign_message
 from app.worker.handlers.conversation import process_conversation_turn
 from app.worker.handlers.knowledge_ingest import ingest_knowledge_document
@@ -28,6 +29,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
         TaskType.SEND_CAMPAIGN_MESSAGE: send_campaign_message,
         TaskType.INGEST_KNOWLEDGE_DOCUMENT: ingest_knowledge_document,
         TaskType.PROCESS_CONVERSATION_TURN: process_conversation_turn,
+        TaskType.NOTIFY_BOOKING: notify_booking,
     }
 
     for task_type, handler in handlers.items():
@@ -37,6 +39,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
 
 __all__ = [
     "ingest_knowledge_document",
+    "notify_booking",
     "process_conversation_turn",
     "process_inbound_webhook",
     "register_all",

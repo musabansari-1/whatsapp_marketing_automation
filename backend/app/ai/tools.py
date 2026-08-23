@@ -22,6 +22,7 @@ Three rules from CLAUDE.md are enforced here rather than trusted to the prompt:
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.domain import qualification
+from app.domain.conversation import can_transition_lead
+from app.domain.enums import BookingStatus, LeadStatus
 from app.domain.slots import SlotPolicy, available_slots, is_slot_available
 from app.integrations.calendar import (
     CalendarProvider,
@@ -39,6 +42,7 @@ from app.integrations.calendar import (
     TimeInterval,
 )
 from app.integrations.llm import AuthorizedTool, ToolSpec
+from app.persistence.repositories import bookings as booking_repo
 from app.persistence.repositories import conversations as conversation_repo
 
 logger = get_logger(__name__)
@@ -74,6 +78,10 @@ class ToolContext:
     now: datetime | None = None
     # Filled by tools whose effects the caller must act on after the turn.
     booked_event_id: str | None = None
+    booking_id: uuid.UUID | None = None
+    # Set only when a booking was newly recorded, so a retried turn does not notify
+    # the team twice about the same demo.
+    notify_booking_id: uuid.UUID | None = None
     proposed_status: Any = None
 
 
@@ -361,10 +369,39 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
     event, and only then report success. The re-check is not redundant — the customer
     chose from a list computed minutes earlier, and someone else may have taken it
     since.
+
+    The already-booked check comes *first*, before the re-check, and that ordering is
+    load-bearing. On a retried turn the booking's own calendar event is now busy time,
+    so re-checking first would find the slot occupied and tell the customer their demo
+    was lost — when in fact it is theirs.
     """
     start = _parse_start_time(arguments.get("start_time"))
     now = context.now or datetime.now(UTC)
     slot = TimeInterval(start=start, end=start + _minutes(context.slot_policy.duration_minutes))
+
+    # Deterministic in the conversation and the slot, so a retried turn recognises its
+    # own earlier success rather than treating it as somebody else's booking.
+    event_id = f"demo-{context.conversation.id}-{int(start.timestamp())}"
+
+    already = await booking_repo.find_by_event_id(context.session, event_id)
+    if already is not None and already.status is BookingStatus.CONFIRMED:
+        context.booked_event_id = event_id
+        context.booking_id = already.id
+        # Deliberately not set: the team was notified when this booking was first
+        # recorded, and telling them twice about one demo is noise.
+        logger.info("ai_demo_already_booked", booking_id=str(already.id))
+        return ToolResult(
+            ok=True,
+            data={
+                "booked": True,
+                "event_id": event_id,
+                "start_time": already.start_time.isoformat(),
+                "local_time": already.start_time.astimezone(context.slot_policy.zone).strftime(
+                    "%A %d %B, %I:%M %p"
+                ),
+                "timezone": already.timezone,
+            },
+        )
 
     horizon = TimeInterval(start=now, end=now + _days(context.slot_policy.horizon_days))
     try:
@@ -378,10 +415,6 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
             ok=False,
             error="That time is no longer available. Offer the customer another slot.",
         )
-
-    # Deterministic in the conversation and the slot, so a retried turn converges on
-    # one event instead of double-booking the sales team.
-    event_id = f"demo-{context.conversation.id}-{int(start.timestamp())}"
 
     try:
         event = await context.calendar.create_event(
@@ -406,7 +439,38 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
         raise ToolError("The booking could not be completed") from exc
 
     context.booked_event_id = event.event_id
-    logger.info("ai_demo_booked", event_id=event.event_id, lead_id=str(context.lead.id))
+
+    # Record the booking (§12). The calendar event already exists, so this cannot be
+    # skipped on failure: an event with no row is a demo the dashboard does not know
+    # about. `record_confirmed_booking` is keyed on the event ID, so a retry that
+    # reaches an already-created event converges on the existing row.
+    booking, created = await booking_repo.record_confirmed_booking(
+        context.session,
+        lead=context.lead,
+        conversation_id=context.conversation.id,
+        event=event,
+    )
+    context.booking_id = booking.id
+
+    if created:
+        # The lead has a demo. Proposed through the §10 table like every other status
+        # change — a booking is a fact, but the transition still has to be legal.
+        if can_transition_lead(context.lead.status, LeadStatus.DEMO_BOOKED):
+            context.proposed_status = LeadStatus.DEMO_BOOKED
+
+        # Notifying the team is deliberately *not* inline. It fans out to every active
+        # user ([D3]) and its failure must not delay — or undo — a booking the
+        # customer is waiting to hear about. §12 is explicit that a confirmed booking
+        # stays confirmed while a failed notification retries.
+        context.notify_booking_id = booking.id
+
+    logger.info(
+        "ai_demo_booked",
+        event_id=event.event_id,
+        booking_id=str(booking.id),
+        lead_id=str(context.lead.id),
+        newly_created=created,
+    )
 
     return ToolResult(
         ok=True,

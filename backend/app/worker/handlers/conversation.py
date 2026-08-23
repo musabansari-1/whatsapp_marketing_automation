@@ -53,11 +53,12 @@ from app.domain.slots import policy_from_settings
 from app.domain.whatsapp_webhook import is_within_service_window
 from app.integrations.llm import Message as LLMMessage
 from app.integrations.llm import Role
-from app.integrations.queue import TaskRequest
+from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import (
     build_calendar_provider,
     build_embedding_provider,
     build_llm_provider,
+    build_queue_provider,
     build_whatsapp_provider,
 )
 from app.integrations.whatsapp import OutboundTextMessage
@@ -319,8 +320,36 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         )
         await session.commit()
 
+    # After the commit, so the task cannot arrive before the booking row it names.
+    # Enqueued only for a newly recorded booking, so a retried turn does not notify
+    # the team twice about the same demo.
+    if tool_context.notify_booking_id is not None:
+        await _queue_booking_notification(settings, tool_context.notify_booking_id)
+
     logger.info("conversation_turn_completed", latency_ms=latency_ms)
     return TurnOutcome("replied", str(conversation_id), replied=True).as_dict()
+
+
+async def _queue_booking_notification(settings: Settings, booking_id: uuid.UUID) -> None:
+    """Hand the confirmed booking to the notification task (§12, §13).
+
+    A queueing failure is logged, not raised: the booking is confirmed and committed,
+    and failing the turn here would re-run the whole conversation — including a second
+    reply to the customer — to fix a notification.
+    """
+    try:
+        await build_queue_provider(settings).enqueue(
+            TaskRequest(
+                task_type=TaskType.NOTIFY_BOOKING,
+                # Deterministic, so a redelivered turn collapses into one task.
+                task_id=f"notify-booking-{booking_id}",
+                payload={"booking_id": str(booking_id)},
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - a booking is not worth losing over this
+        logger.warning(
+            "booking_notification_enqueue_failed", booking_id=str(booking_id), error=str(exc)
+        )
 
 
 # ---------------------------------------------------------------- internals
