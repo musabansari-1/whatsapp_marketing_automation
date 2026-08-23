@@ -1,0 +1,493 @@
+"""Google Calendar provider tests (§12, §19, §20, [D7], [D19]).
+
+Every request is served by an in-memory mock transport: no socket is opened, no real
+calendar is touched, and no Google credential exists.
+
+The three things worth getting wrong here are the token lifecycle (including rotation,
+which fails silently months later if missed), the event-ID idempotency that stops a
+retry double-booking, and the retryable/permanent split.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import httpx
+import pytest
+
+from app.core.errors import NonRetryableProviderError, RetryableProviderError
+from app.integrations.calendar import EventRequest, SlotUnavailableError, TimeInterval
+from app.integrations.calendar.google import (
+    GoogleCalendarProvider,
+    _decode_event_id,
+    _encode_event_id,
+)
+from app.integrations.secrets import InMemorySecretStore
+
+CALENDAR_ID = "sales@example.com"
+SECRET_NAME = "google-calendar-refresh-token"  # noqa: S105 - a name, not a secret
+START = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+
+
+def make_provider(
+    handler: Any, *, store: InMemorySecretStore | None = None
+) -> tuple[GoogleCalendarProvider, InMemorySecretStore]:
+    secret_store = store or InMemorySecretStore({SECRET_NAME: "refresh-token-1"})
+    provider = GoogleCalendarProvider(
+        calendar_id=CALENDAR_ID,
+        client_id="client-id",
+        client_secret="client-secret",  # noqa: S106 - never leaves the mock
+        secret_store=secret_store,
+        refresh_token_secret_name=SECRET_NAME,
+        timezone="Asia/Kolkata",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    return provider, secret_store
+
+
+def token_response(**extra: Any) -> dict[str, Any]:
+    return {"access_token": "access-1", "expires_in": 3600, **extra}
+
+
+def event_body(event_id: str = "abc", **extra: Any) -> dict[str, Any]:
+    return {
+        "id": event_id,
+        "summary": "Demo",
+        "start": {"dateTime": "2026-09-02T10:00:00Z", "timeZone": "Asia/Kolkata"},
+        "end": {"dateTime": "2026-09-02T10:30:00Z", "timeZone": "Asia/Kolkata"},
+        "htmlLink": "https://calendar.google.com/event?eid=abc",
+        **extra,
+    }
+
+
+def routed(
+    *,
+    token: dict[str, Any] | None = None,
+    freebusy: dict[str, Any] | None = None,
+    event: dict[str, Any] | None = None,
+    event_status: int = 200,
+    token_status: int = 200,
+) -> Any:
+    """A handler that answers the token endpoint and one calendar endpoint."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth2.googleapis.com" in str(request.url):
+            return httpx.Response(token_status, json=token or token_response())
+        if "freeBusy" in str(request.url):
+            return httpx.Response(200, json=freebusy or {"calendars": {CALENDAR_ID: {"busy": []}}})
+        return httpx.Response(event_status, json=event or event_body())
+
+    return handler
+
+
+def an_event_request(event_id: str = "demo-abc-123") -> EventRequest:
+    return EventRequest(
+        event_id=event_id,
+        interval=TimeInterval(start=START, end=START + timedelta(minutes=30)),
+        timezone="Asia/Kolkata",
+        summary="Demo — Asha",
+        metadata={"lead_id": "lead-1"},
+    )
+
+
+class TestEventIdEncoding:
+    def test_encoding_round_trips(self) -> None:
+        """The booking row stores the application's ID, and a retry looks the event up
+        by it — so the mapping must be reversible."""
+        original = "demo-4f2c1e9a-1756800000"
+        assert _decode_event_id(_encode_event_id(original)) == original
+
+    def test_encoding_is_deterministic(self) -> None:
+        """The whole idempotency story rests on this: the same booking must produce
+        the same Google ID on every attempt, in every release."""
+        assert _encode_event_id("demo-1") == _encode_event_id("demo-1")
+
+    def test_different_ids_never_collide(self) -> None:
+        """Hex is injective, so one booking can never claim another's event."""
+        ids = {_encode_event_id(f"demo-{n}") for n in range(500)}
+        assert len(ids) == 500
+
+    def test_the_result_is_acceptable_to_google(self) -> None:
+        """Google permits only base32hex characters, 5-1024 of them."""
+        encoded = _encode_event_id("demo-ABC-123")
+        assert set(encoded) <= set("0123456789abcdefghijklmnopqrstuv")
+        assert 5 <= len(encoded) <= 1024
+
+    def test_a_short_id_is_padded(self) -> None:
+        assert len(_encode_event_id("a")) >= 5
+
+    def test_a_foreign_id_does_not_decode(self) -> None:
+        """An event a human created in the calendar UI keeps its Google ID."""
+        assert _decode_event_id("someGoogleId") is None
+
+
+class TestAuthentication:
+    @pytest.mark.asyncio
+    async def test_the_refresh_token_comes_from_the_secret_store(self) -> None:
+        """[D19]: never from configuration, never from the database."""
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                seen["body"] = request.content.decode()
+                return httpx.Response(200, json=token_response())
+            return httpx.Response(200, json={"calendars": {CALENDAR_ID: {"busy": []}}})
+
+        provider, _ = make_provider(handler)
+        await provider.list_busy_intervals(TimeInterval(start=START, end=START + timedelta(days=1)))
+
+        assert "refresh-token-1" in seen["body"]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_refresh_token_is_a_permanent_failure(self) -> None:
+        """Someone must run the one-time OAuth consent; no retry produces a token."""
+        provider, _ = make_provider(routed(), store=InMemorySecretStore())
+
+        with pytest.raises(NonRetryableProviderError, match="OAuth consent"):
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_rotated_refresh_token_is_written_back(self) -> None:
+        """The failure that shows up months later: Google rotates the token, the
+        worker keeps using the old one, and everything works until it expires."""
+        provider, store = make_provider(
+            routed(token=token_response(refresh_token="refresh-token-2"))
+        )
+
+        await provider.list_busy_intervals(TimeInterval(start=START, end=START + timedelta(days=1)))
+
+        assert store.values[SECRET_NAME] == "refresh-token-2"
+        assert store.writes == [SECRET_NAME]
+
+    @pytest.mark.asyncio
+    async def test_an_unrotated_token_is_not_rewritten(self) -> None:
+        """A new secret version per booking would be noise, and Secret Manager
+        versions are not free."""
+        provider, store = make_provider(
+            routed(token=token_response(refresh_token="refresh-token-1"))
+        )
+
+        await provider.list_busy_intervals(TimeInterval(start=START, end=START + timedelta(days=1)))
+
+        assert store.writes == []
+
+    @pytest.mark.asyncio
+    async def test_the_access_token_is_reused(self) -> None:
+        """One token exchange per process, not one per call."""
+        calls = {"token": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                calls["token"] += 1
+                return httpx.Response(200, json=token_response())
+            return httpx.Response(200, json={"calendars": {CALENDAR_ID: {"busy": []}}})
+
+        provider, _ = make_provider(handler)
+        window = TimeInterval(start=START, end=START + timedelta(days=1))
+
+        await provider.list_busy_intervals(window)
+        await provider.list_busy_intervals(window)
+
+        assert calls["token"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_refresh_token_is_permanent(self) -> None:
+        """invalid_grant means revoked or expired; the consent flow must be rerun."""
+        provider, _ = make_provider(routed(token={"error": "invalid_grant"}, token_status=400))
+
+        with pytest.raises(NonRetryableProviderError, match="rejected the refresh token"):
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_token_server_error_is_retryable(self) -> None:
+        provider, _ = make_provider(routed(token={"error": "backend_error"}, token_status=503))
+
+        with pytest.raises(RetryableProviderError):
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_client_secret_never_appears_in_an_error(self) -> None:
+        """§19: an error message ends up in the log store."""
+        provider, _ = make_provider(routed(token={"error": "invalid_client"}, token_status=401))
+
+        with pytest.raises(NonRetryableProviderError) as caught:
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
+
+        assert "client-secret" not in str(caught.value)
+
+
+class TestAvailability:
+    @pytest.mark.asyncio
+    async def test_busy_intervals_are_returned(self) -> None:
+        busy = {
+            "calendars": {
+                CALENDAR_ID: {
+                    "busy": [{"start": "2026-09-02T11:00:00Z", "end": "2026-09-02T12:00:00Z"}]
+                }
+            }
+        }
+        provider, _ = make_provider(routed(freebusy=busy))
+
+        intervals = await provider.list_busy_intervals(
+            TimeInterval(start=START, end=START + timedelta(days=1))
+        )
+
+        assert len(intervals) == 1
+        assert intervals[0].start == datetime(2026, 9, 2, 11, 0, tzinfo=UTC)
+
+    @pytest.mark.asyncio
+    async def test_an_empty_calendar_returns_nothing(self) -> None:
+        provider, _ = make_provider(routed())
+
+        assert (
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
+            == []
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_calendar_is_refused_not_treated_as_free(self) -> None:
+        """The dangerous default: a calendar the credentials cannot see would read as
+        'no busy time', offer every slot, and double-book the team."""
+        broken = {"calendars": {CALENDAR_ID: {"errors": [{"reason": "notFound"}]}}}
+        provider, _ = make_provider(routed(freebusy=broken))
+
+        with pytest.raises(NonRetryableProviderError, match="not readable"):
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_interval_is_skipped(self) -> None:
+        messy = {
+            "calendars": {
+                CALENDAR_ID: {
+                    "busy": [
+                        {"start": "not-a-time", "end": "2026-09-02T12:00:00Z"},
+                        {"start": "2026-09-02T13:00:00Z", "end": "2026-09-02T14:00:00Z"},
+                    ]
+                }
+            }
+        }
+        provider, _ = make_provider(routed(freebusy=messy))
+
+        intervals = await provider.list_busy_intervals(
+            TimeInterval(start=START, end=START + timedelta(days=1))
+        )
+        assert len(intervals) == 1
+
+
+class TestEventCreation:
+    @pytest.mark.asyncio
+    async def test_an_event_is_created(self) -> None:
+        encoded = _encode_event_id("demo-abc-123")
+        provider, _ = make_provider(routed(event=event_body(event_id=encoded)))
+
+        event = await provider.create_event(an_event_request())
+
+        assert event.event_id == "demo-abc-123"
+        assert event.interval.start == START
+
+    @pytest.mark.asyncio
+    async def test_the_client_supplied_id_is_sent(self) -> None:
+        """Google accepting our ID is what makes the retry converge."""
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            import json
+
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=event_body(event_id=seen["id"]))
+
+        provider, _ = make_provider(handler)
+        await provider.create_event(an_event_request())
+
+        assert seen["id"] == _encode_event_id("demo-abc-123")
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_converges_on_the_existing_event(self) -> None:
+        """§20: a redelivered booking task must not create a second event."""
+        encoded = _encode_event_id("demo-abc-123")
+        state = {"created": False}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            if request.method == "POST":
+                state["created"] = True
+                return httpx.Response(409, json={"error": {"message": "duplicate"}})
+            return httpx.Response(200, json=event_body(event_id=encoded))
+
+        provider, _ = make_provider(handler)
+        event = await provider.create_event(an_event_request())
+
+        assert state["created"] is True
+        assert event.event_id == "demo-abc-123"
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_that_cannot_be_read_back_is_unavailable(self) -> None:
+        """Deleted between the conflict and the read, or another calendar's. Either
+        way the slot is not ours to claim."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            if request.method == "POST":
+                return httpx.Response(409, json={"error": {"message": "duplicate"}})
+            return httpx.Response(404, json={"error": {"message": "gone"}})
+
+        provider, _ = make_provider(handler)
+
+        with pytest.raises(SlotUnavailableError):
+            await provider.create_event(an_event_request())
+
+    @pytest.mark.asyncio
+    async def test_attendees_and_metadata_are_sent(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            import json
+
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=event_body(event_id=seen["id"]))
+
+        provider, _ = make_provider(handler)
+        request = EventRequest(
+            event_id="demo-1",
+            interval=TimeInterval(start=START, end=START + timedelta(minutes=30)),
+            timezone="Asia/Kolkata",
+            summary="Demo",
+            attendee_emails=("asha@example.com",),
+            metadata={"lead_id": "lead-1"},
+        )
+        await provider.create_event(request)
+
+        assert seen["attendees"] == [{"email": "asha@example.com"}]
+        assert seen["extendedProperties"]["private"]["lead_id"] == "lead-1"
+
+    @pytest.mark.asyncio
+    async def test_google_does_not_email_the_attendee(self) -> None:
+        """The platform sends its own WhatsApp confirmation; two would be confusing."""
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            seen["params"] = dict(request.url.params)
+            return httpx.Response(200, json=event_body())
+
+        provider, _ = make_provider(handler)
+        await provider.create_event(an_event_request())
+
+        assert seen["params"]["sendUpdates"] == "none"
+
+
+class TestEventReading:
+    @pytest.mark.asyncio
+    async def test_a_missing_event_is_none(self) -> None:
+        """Lets a retry detect that its own prior attempt did not succeed."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            return httpx.Response(404, json={"error": {"message": "not found"}})
+
+        provider, _ = make_provider(handler)
+        assert await provider.get_event("demo-abc-123") is None
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_event_reads_as_absent(self) -> None:
+        """Google keeps cancelled events readable; treating one as present would make
+        a cancelled booking look confirmed."""
+        provider, _ = make_provider(routed(event=event_body(status="cancelled")))
+
+        assert await provider.get_event("demo-abc-123") is None
+
+    @pytest.mark.asyncio
+    async def test_deleting_an_absent_event_is_not_an_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            return httpx.Response(410, json={"error": {"message": "already deleted"}})
+
+        provider, _ = make_provider(handler)
+        await provider.delete_event("demo-abc-123")  # must not raise
+
+
+class TestFailureClassification:
+    @pytest.mark.asyncio
+    async def test_rate_limiting_is_retryable(self) -> None:
+        provider, _ = make_provider(
+            routed(event={"error": {"message": "slow down"}}, event_status=429)
+        )
+
+        with pytest.raises(RetryableProviderError, match="Rate limited"):
+            await provider.create_event(an_event_request())
+
+    @pytest.mark.asyncio
+    async def test_a_403_rate_limit_is_retryable_not_permanent(self) -> None:
+        """Google answers rate limits with 403 as well as 429, distinguished only by
+        the reason — reading the status alone would abandon a recoverable booking."""
+        body = {"error": {"message": "quota", "errors": [{"reason": "rateLimitExceeded"}]}}
+        provider, _ = make_provider(routed(event=body, event_status=403))
+
+        with pytest.raises(RetryableProviderError, match="Rate limited"):
+            await provider.create_event(an_event_request())
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_403_is_permanent(self) -> None:
+        body = {"error": {"message": "forbidden", "errors": [{"reason": "forbidden"}]}}
+        provider, _ = make_provider(routed(event=body, event_status=403))
+
+        with pytest.raises(NonRetryableProviderError, match="access denied"):
+            await provider.create_event(an_event_request())
+
+    @pytest.mark.asyncio
+    async def test_a_server_error_is_retryable(self) -> None:
+        provider, _ = make_provider(routed(event={"error": {"message": "oops"}}, event_status=503))
+
+        with pytest.raises(RetryableProviderError):
+            await provider.create_event(an_event_request())
+
+    @pytest.mark.asyncio
+    async def test_a_bad_request_is_permanent(self) -> None:
+        provider, _ = make_provider(routed(event={"error": {"message": "bad"}}, event_status=400))
+
+        with pytest.raises(NonRetryableProviderError):
+            await provider.create_event(an_event_request())
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_is_retryable(self) -> None:
+        """Says nothing about whether Google processed it — and the client-supplied
+        event ID is what stops the retry double-booking."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            raise httpx.ReadTimeout("too slow")
+
+        provider, _ = make_provider(handler)
+
+        with pytest.raises(RetryableProviderError, match="timed out"):
+            await provider.create_event(an_event_request())
+
+    @pytest.mark.asyncio
+    async def test_an_event_without_times_is_permanent(self) -> None:
+        provider, _ = make_provider(routed(event={"id": "abc", "summary": "Demo"}))
+
+        with pytest.raises(NonRetryableProviderError, match="usable time range"):
+            await provider.create_event(an_event_request())

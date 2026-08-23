@@ -25,6 +25,7 @@ from app.core.config import (
 )
 from app.core.errors import ConfigurationError, ProviderNotImplementedError
 from app.integrations.calendar import CalendarProvider, FakeCalendarProvider
+from app.integrations.calendar.google import GoogleCalendarProvider
 from app.integrations.crm import CRMProvider, FakeCRMProvider
 from app.integrations.embedding import EmbeddingProvider, FakeEmbeddingProvider
 from app.integrations.embedding.local_sentence_transformer import (
@@ -34,6 +35,11 @@ from app.integrations.llm import FakeLLMProvider, LLMProvider
 from app.integrations.llm.openrouter import OpenRouterLLMProvider
 from app.integrations.queue import InMemoryQueueProvider, QueueProvider
 from app.integrations.queue.cloud_tasks import CloudTasksProvider
+from app.integrations.secrets import (
+    GoogleSecretManagerStore,
+    InMemorySecretStore,
+    SecretStore,
+)
 from app.integrations.whatsapp import FakeWhatsAppProvider, WhatsAppProvider
 from app.integrations.whatsapp.meta import MetaWhatsAppProvider
 
@@ -114,7 +120,34 @@ def build_calendar_provider(settings: Settings) -> CalendarProvider:
         case CalendarProviderName.FAKE:
             return FakeCalendarProvider()
         case CalendarProviderName.GOOGLE:
-            raise ProviderNotImplementedError("google", "Phase 11 (Calendar and booking)")
+            # Every value below is guaranteed present: configuration refuses to start
+            # when the Google calendar is selected without them.
+            return GoogleCalendarProvider(
+                calendar_id=settings.google_calendar_id or "",
+                client_id=settings.google_oauth_client_id or "",
+                client_secret=(
+                    settings.google_oauth_client_secret.get_secret_value()
+                    if settings.google_oauth_client_secret
+                    else ""
+                ),
+                # [D19]: the refresh token comes from Secret Manager, never from
+                # configuration and never from the database.
+                secret_store=build_secret_store(settings),
+                refresh_token_secret_name=settings.google_calendar_token_secret_name or "",
+                timezone=settings.demo_timezone,
+                timeout_seconds=settings.google_calendar_timeout_seconds,
+            )
+
+
+def build_secret_store(settings: Settings) -> SecretStore:
+    """Where secrets are read from ([D19]).
+
+    Google Secret Manager only when the real calendar is selected: [D19] is explicit
+    that local development and tests must not require it.
+    """
+    if settings.calendar_provider is CalendarProviderName.GOOGLE:
+        return GoogleSecretManagerStore(project_id=settings.google_secret_manager_project or "")
+    return InMemorySecretStore()
 
 
 def build_crm_provider(settings: Settings) -> CRMProvider:

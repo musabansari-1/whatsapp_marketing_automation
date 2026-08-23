@@ -195,6 +195,12 @@ class Settings(BaseSettings):
     google_calendar_id: str | None = None
     google_secret_manager_project: str | None = None
     google_calendar_token_secret_name: str | None = None
+    # The OAuth client the refresh token belongs to. The *token* lives in Secret
+    # Manager ([D19]); these identify the application it was granted to, and the
+    # secret is still a secret — hence SecretStr.
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: SecretStr | None = None
+    google_calendar_timeout_seconds: float = 20.0
 
     # ---------------------------------------------------------------- CRM
     hubspot_access_token: SecretStr | None = None
@@ -371,6 +377,10 @@ class Settings(BaseSettings):
                 missing.append("GOOGLE_SECRET_MANAGER_PROJECT")
             if not self.google_calendar_token_secret_name:
                 missing.append("GOOGLE_CALENDAR_TOKEN_SECRET_NAME")
+            if not self.google_oauth_client_id:
+                missing.append("GOOGLE_OAUTH_CLIENT_ID")
+            if not self.google_oauth_client_secret:
+                missing.append("GOOGLE_OAUTH_CLIENT_SECRET")
 
         if self.crm_provider is CRMProviderName.HUBSPOT and not self.hubspot_access_token:
             missing.append("HUBSPOT_ACCESS_TOKEN")

@@ -53,6 +53,36 @@ class TestFakeSelection:
         monkeypatch.setenv("EMBEDDING_DIMENSION", "512")
         assert build_embedding_provider(Settings()).dimension == 512
 
+    def test_the_google_calendar_provider_is_selectable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Phase 11 implemented it ([D7]).
+
+        Building must not read the secret: the registry runs in the API service too,
+        which never touches the calendar, and [D19] keeps Secret Manager out of local
+        development.
+        """
+        from app.integrations.calendar.google import GoogleCalendarProvider
+
+        monkeypatch.setenv("CALENDAR_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_CALENDAR_ID", "sales@example.com")
+        monkeypatch.setenv("GOOGLE_SECRET_MANAGER_PROJECT", "proj")
+        monkeypatch.setenv("GOOGLE_CALENDAR_TOKEN_SECRET_NAME", "refresh-token")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+
+        provider = build_calendar_provider(Settings())
+
+        assert isinstance(provider, GoogleCalendarProvider)
+        assert provider._refresh_token is None  # noqa: SLF001 - laziness is the point
+
+    def test_the_secret_store_is_in_memory_without_the_google_calendar(self) -> None:
+        """[D19]: local development and tests must not require Secret Manager."""
+        from app.integrations.registry import build_secret_store
+        from app.integrations.secrets import InMemorySecretStore
+
+        assert isinstance(build_secret_store(Settings()), InMemorySecretStore)
+
     def test_the_openrouter_provider_is_selectable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Phase 10 implemented it ([D10])."""
         from app.integrations.llm.openrouter import OpenRouterLLMProvider
@@ -88,7 +118,6 @@ class TestUnimplementedProvidersFailLoudly:
     @pytest.mark.parametrize(
         ("env_var", "value", "builder", "expected_phase"),
         [
-            ("CALENDAR_PROVIDER", "google", "calendar", "Phase 11"),
             ("CRM_PROVIDER", "hubspot", "crm", "Phase 12"),
         ],
     )
