@@ -55,6 +55,55 @@ export interface AudienceSchema {
   max_rows: number;
 }
 
+export type BookingStatus = 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'FAILED';
+
+export interface Booking {
+  id: string;
+  lead_id: string;
+  conversation_id: string | null;
+  calendar_event_id: string | null;
+  start_time: string;
+  end_time: string;
+  // Per booking, not from configuration: a policy change must not retroactively
+  // reinterpret a booking already made ([D8]).
+  timezone: string;
+  status: BookingStatus;
+  meeting_link: string | null;
+  customer_email: string | null;
+  failure_reason: string | null;
+  confirmed_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+}
+
+export interface BookingPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: Booking[];
+}
+
+export interface Notification {
+  id: string;
+  type: 'DEMO_BOOKED';
+  title: string;
+  message: string;
+  related_entity_type: string | null;
+  related_entity_id: string | null;
+  is_read: boolean;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface NotificationPage {
+  total: number;
+  /** Every unread notification, not just those on this page: the badge shows this. */
+  unread: number;
+  limit: number;
+  offset: number;
+  items: Notification[];
+}
+
 export interface WhatsAppTemplate {
   id: string;
   name: string;
@@ -198,4 +247,30 @@ export const api = {
       `/campaigns/${id}/send`,
       { method: 'POST' },
     ),
+
+  // Notifications are always the current user's: no route takes a user ID, so one
+  // salesperson cannot read or clear another's ([D3], section 13).
+  listNotifications: (unreadOnly = false, limit = 50, offset = 0) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (unreadOnly) {
+      params.set('unread_only', 'true');
+    }
+    return request<NotificationPage>(`/notifications?${params}`);
+  },
+
+  markNotificationRead: (id: string) =>
+    request<Notification>(`/notifications/${id}/read`, { method: 'POST' }),
+
+  markAllNotificationsRead: () =>
+    request<{ marked_read: number }>('/notifications/read-all', { method: 'POST' }),
+
+  listBookings: (status?: BookingStatus, limit = 50, offset = 0) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (status) {
+      params.set('status', status);
+    }
+    return request<BookingPage>(`/bookings?${params}`);
+  },
+
+  getBooking: (id: string) => request<Booking>(`/bookings/${id}`),
 };

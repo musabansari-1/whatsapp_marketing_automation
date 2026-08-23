@@ -36,12 +36,12 @@ const PHASES = [
   { phase: 3, name: 'Authentication', done: true },
   { phase: 4, name: 'Excel audience', done: true },
   { phase: 5, name: 'Campaigns', done: true },
-  { phase: 6, name: 'WhatsApp', done: false },
-  { phase: 7, name: 'Cloud Tasks and worker', done: false },
-  { phase: 8, name: 'RAG knowledge base', done: false },
-  { phase: 9, name: 'Conversations', done: false },
-  { phase: 10, name: 'AI agent', done: false },
-  { phase: 11, name: 'Calendar, booking, notifications', done: false },
+  { phase: 6, name: 'WhatsApp', done: true },
+  { phase: 7, name: 'Cloud Tasks and worker', done: true },
+  { phase: 8, name: 'RAG knowledge base', done: true },
+  { phase: 9, name: 'Conversations', done: true },
+  { phase: 10, name: 'AI agent', done: true },
+  { phase: 11, name: 'Calendar, booking, notifications', done: true },
   { phase: 12, name: 'HubSpot', done: false },
   { phase: 13, name: 'Dashboard and analytics', done: false },
   { phase: 14, name: 'Hardening', done: false },
@@ -75,6 +75,12 @@ export default async function HomePage() {
             </Link>
             <Link href="/campaigns" className="text-sm underline">
               Campaigns
+            </Link>
+            <Link href="/bookings" className="text-sm underline">
+              Demos
+            </Link>
+            <Link href="/notifications" className="text-sm underline">
+              Notifications
             </Link>
           </div>
         </section>

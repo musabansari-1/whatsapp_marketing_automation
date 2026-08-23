@@ -15,11 +15,13 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.domain.enums import (
     AudienceStatus,
+    BookingStatus,
     CampaignStatus,
     ContactValidationStatus,
     ConversationStatus,
     DocumentStatus,
     LeadStatus,
+    NotificationType,
     RecipientStatus,
     TemplateCategory,
     UserRole,
@@ -405,3 +407,73 @@ class ConversationPage(BaseModel):
     limit: int
     offset: int
     items: list[ConversationResponse]
+
+
+# ---------------------------------------------------------------- bookings (§12, §16)
+
+
+class BookingResponse(BaseModel):
+    """A demo booking.
+
+    `timezone` is per booking rather than read from configuration: a policy change
+    must not retroactively reinterpret a booking already made ([D8]).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    conversation_id: uuid.UUID | None
+    calendar_event_id: str | None
+    start_time: datetime
+    end_time: datetime
+    timezone: str
+    status: BookingStatus
+    meeting_link: str | None
+    customer_email: str | None
+    failure_reason: str | None
+    confirmed_at: datetime | None
+    cancelled_at: datetime | None
+    created_at: datetime
+
+
+class BookingPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[BookingResponse]
+
+
+# ---------------------------------------------------------------- notifications (§13)
+
+
+class NotificationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    type: NotificationType
+    title: str
+    message: str
+    related_entity_type: str | None
+    related_entity_id: uuid.UUID | None
+    is_read: bool
+    read_at: datetime | None
+    created_at: datetime
+
+
+class NotificationPage(BaseModel):
+    """A page of notifications.
+
+    `unread` counts every unread notification, not just those on this page: the bell
+    badge shows it regardless of what is being viewed.
+    """
+
+    total: int
+    unread: int
+    limit: int
+    offset: int
+    items: list[NotificationResponse]
+
+
+class MarkAllReadResponse(BaseModel):
+    marked_read: int
