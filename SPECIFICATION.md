@@ -499,6 +499,98 @@ send_whatsapp_message
 
 The backend remains the source of truth for state.
 
+### V1 agent behaviour (Phase 10)
+
+One customer turn runs:
+
+```text
+retrieve knowledge (§11)
+ ↓
+assemble: system prompt + fenced knowledge + recent transcript
+ ↓
+ask the model, offering the six authorized tools
+ ↓
+run any tools it requests, feed the results back
+ ↓
+reply → the worker delivers it through the window and suppression checks
+```
+
+Retrieval happens **before** the model runs and outside the tool loop: §11 makes it the
+evidence the reply is grounded in, not something the model chooses to consult. A
+retrieval failure is not fatal — the agent is told there is no evidence and uses the
+approved fallback, so the customer's turn is not lost.
+
+Knowledge is placed in a *system* message with a preamble stating that it is data and
+that instructions inside it must be ignored. This is belt and braces on top of the
+sanitisation in §11: the customer's own message stays exactly what they wrote.
+
+The tool loop is bounded by `AI_MAX_TOOL_ROUNDS`. The final round is asked *without*
+tools, which is what makes it terminate — a model with no tools available answers in
+words.
+
+### The authorized tools (Phase 10)
+
+All six from §9 are implemented, and `app/ai/tools.py` is the only route from the model
+to the backend. Three properties are structural rather than prompt-dependent:
+
+- **No tool accepts a lead or conversation identifier.** The context is scoped to the
+  conversation in hand, so the model cannot name another customer and read them.
+- **`update_lead` has no `status` parameter.** [D18] gives the backend sole authority;
+  the tool records extracted facts and the qualification rules read them.
+- **An unrecognised tool name is refused, never approximated.** Models hallucinate tool
+  names, and a fuzzy match would run something the conversation never called for.
+
+`send_whatsapp_message` is authorized but declines: the turn handler already sends the
+reply through the 24-hour window and suppression checks, and a second sending path
+would be a way around them. The model is told to put its text in the reply instead.
+
+### Booking (Phase 10 / §12)
+
+`get_available_slots` and `book_demo` are implemented here because §9 places both in
+the AI's tool set and they are useless without slot computation. **Phase 11 still owns
+the Google Calendar provider, the booking record and the notification fan-out**; V1
+runs against `FakeCalendarProvider` until then.
+
+Slot computation lives in `app/domain/slots.py` and is driven entirely by the [D8]
+policy. Two rules matter:
+
+- The buffer applies on **both sides** of a busy interval. A demo starting the instant
+  another ends leaves nobody time to move between them.
+- Everything is computed in the sales team's timezone and returned as UTC instants.
+  "10:00 to 18:00" is a local statement, and a customer elsewhere is still offered
+  those hours.
+
+The §12 sequence is enforced in `book_demo`: re-check the slot against live busy
+intervals, create the event, and only then report success. **A demo is never reported
+as booked unless Calendar returned an event** — a failed write, a lost race and an
+unavailable slot are all reported honestly so the model offers another time.
+
+The event ID is derived from the conversation and the slot, so a retried turn converges
+on one event rather than double-booking the sales team.
+
+### Qualification (Phase 10 / [D37] pending)
+
+`app/domain/qualification.py` implements the **mechanism** [D9] settles; the criteria
+[D37] leaves open stay in configuration:
+
+```text
+QUALIFICATION_REQUIRED_FIELDS   which extracted fields must be present
+```
+
+**With that list empty — the default — nothing ever reaches QUALIFIED.** That is the
+correct behaviour for an undecided rule: the machinery is complete and inert, and no
+lead is qualified by accident. Supplying the fields switches it on without a code
+change.
+
+The rules require all three of §10's conditions: interest, the configured fields, and
+demo intent. An explicit "not interested" outranks everything else, because a customer
+who has said no must not be walked further down the funnel by a rule about collected
+fields.
+
+Results are *proposed*, never applied: the caller passes them through the §10
+transition table, so a lead that has not reached QUALIFYING advances one step rather
+than jumping.
+
 ## 10. Conversation and Lead State
 
 Conversation:

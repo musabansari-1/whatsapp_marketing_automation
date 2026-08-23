@@ -4,14 +4,16 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 9 (Conversations) complete.** The marketing pipeline runs end
-to end — upload an audience, prepare a campaign, click Send Broadcast, and the worker
-delivers each message with retries, throttling and cancellation. A customer's reply now
-flows all the way through: webhook → task → worker → generated reply → delivery, with
-the transcript, states and 24-hour window enforced. Documents can be uploaded to a
-knowledge base and are embedded locally into pgvector. **The replies come from
-`FakeLLMProvider`** — the real model, retrieval and tools arrive in Phase 10 — and
-sending still needs real Meta credentials and approved templates.
+**Current state: Phase 10 (AI agent) complete.** The full loop works: a customer
+replies, the platform retrieves relevant knowledge, asks a model, runs authorized tools
+— including checking real calendar availability and booking a demo — and sends the
+reply, all within the 24-hour window and suppression rules.
+
+Two things are deliberately not finished. **`OPENROUTER_MODEL` is unchosen** ([D17]),
+so nothing has been run against a real model yet; the default configuration still uses
+`FakeLLMProvider`. **Qualification criteria are unconfigured** ([D37]), so no lead
+reaches `QUALIFIED` — the rules engine is complete and inert until the client supplies
+the fields. Sending still needs real Meta credentials and approved templates.
 
 ## Layout
 
@@ -430,6 +432,86 @@ In Phase 9 the replies come from `FakeLLMProvider`. A tool call from the model i
 recorded and ignored — the authorized six arrive in Phase 10 — so the audit trail stays
 honest about what was asked for versus what ran.
 
+## The AI agent
+
+A customer's reply now goes to a model. One turn:
+
+```text
+retrieve knowledge → assemble prompt → ask the model → run authorized tools → reply
+```
+
+Retrieval runs before the model and outside the tool loop: §11 makes it the evidence
+the answer is grounded in, not something the model opts into. When it finds nothing
+above the similarity floor, the model is told so and given the approved fallback
+wording ([D21]) rather than being left to guess. A retrieval failure is not fatal — the
+platform still replies from the conversation itself.
+
+Retrieved text goes into a *system* message behind a preamble saying it is data and
+that instructions inside it must be ignored, on top of the sanitisation the retrieval
+layer already applies. The customer's own message stays exactly what they wrote.
+
+### The six authorized tools
+
+`app/ai/tools.py` is the only route from the model into the backend (§9). Three
+properties are structural, not prompt-dependent:
+
+- **No tool takes a lead or conversation ID.** The context is scoped to the
+  conversation in hand, so the model cannot name another customer and read them.
+- **`update_lead` has no `status` parameter.** [D18] gives the backend sole authority
+  over it; the tool records facts and the rules decide.
+- **An unknown tool name is refused, never approximated.** A fuzzy match for a
+  hallucinated name would run something the conversation never called for.
+
+`send_whatsapp_message` is authorized but declines. The turn handler already sends the
+reply through the 24-hour window and suppression checks, and a second sending path
+would be a way around them.
+
+The tool loop is bounded by `AI_MAX_TOOL_ROUNDS`. The last round is asked without
+tools, which is what makes it terminate.
+
+### Booking
+
+Slot computation (`app/domain/slots.py`) is driven entirely by the [D8] policy —
+duration, buffer, working days and hours, horizon, timezone. The buffer applies on
+**both sides** of a busy interval, and everything is computed in the sales team's
+timezone then returned as UTC instants.
+
+`book_demo` follows §12 exactly: re-check the slot against live busy intervals, create
+the event, and only then report success. **Nothing is reported as booked unless
+Calendar returned an event** — a failed write, a lost race and a taken slot are all
+reported honestly so the model offers another time. The event ID is derived from the
+conversation and the slot, so a retried turn converges on one event instead of
+double-booking.
+
+Phase 10 builds the slot logic; **Phase 11 still owns the Google Calendar provider**,
+the booking record and the notification fan-out. Until then this runs against
+`FakeCalendarProvider`.
+
+### Qualification
+
+The AI extracts; the backend decides ([D9]). `update_lead` writes facts into
+`leads.qualification_data`, and `app/domain/qualification.py` applies the rules.
+
+**The criteria are configuration and are empty by default**, because [D37] has not
+decided them. With `QUALIFICATION_REQUIRED_FIELDS` unset, nothing ever reaches
+`QUALIFIED` — the machinery is complete and inert rather than guessing at rules nobody
+has agreed. Supplying the fields switches it on without a code change.
+
+Results are proposed, never applied: everything passes through the §10 transition
+table, so a lead that has not reached `QUALIFYING` advances one step rather than
+jumping straight to qualified.
+
+### Choosing a model
+
+`OPENROUTER_MODEL` has no default and startup fails without it ([D17]). The provider
+refuses to construct without one too. `ai_runs` records the model that actually
+answered — OpenRouter can fall back across vendors — along with token spend, latency,
+the tools that ran and the chunks that grounded the reply (§21).
+
+**Nothing has been verified against a real model yet.** The mock-transport tests prove
+the wire format, not that the prompt works, so benchmarking against representative
+conversations is the first thing to do once an API key exists.
+
 ## Provider abstractions
 
 Six external concerns sit behind interfaces, each with a fake used by the test suite.
@@ -441,7 +523,7 @@ provider.
 | WhatsApp  | `WhatsAppProvider`  | `FakeWhatsAppProvider`    | Meta — Phase 6           |
 | Queue     | `QueueProvider`     | `InMemoryQueueProvider`   | Cloud Tasks — Phase 7    |
 | Embedding | `EmbeddingProvider` | `FakeEmbeddingProvider`   | `LocalSentenceTransformerProvider` |
-| LLM       | `LLMProvider`       | `FakeLLMProvider`         | OpenRouter — Phase 10    |
+| LLM       | `LLMProvider`       | `FakeLLMProvider`         | `OpenRouterLLMProvider`  |
 | Calendar  | `CalendarProvider`  | `FakeCalendarProvider`    | Google Calendar — Phase 11 |
 | CRM       | `CRMProvider`       | `FakeCRMProvider`         | HubSpot — Phase 12       |
 
