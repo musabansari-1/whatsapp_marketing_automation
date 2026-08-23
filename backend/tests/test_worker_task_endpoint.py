@@ -93,9 +93,13 @@ class TestFinalOutcomes:
         assert response.status_code == 200
 
     def test_an_unknown_task_type_is_never_retried(self, worker_client: TestClient) -> None:
-        """400, because redelivering something nothing handles would retry forever."""
+        """400, because redelivering something nothing handles would retry forever.
+
+        `generate_embeddings` is the only declared task type with no handler — every
+        other one is now registered.
+        """
         response = worker_client.post(
-            "/internal/tasks", json={"task_type": "sync_crm_contact", "task_id": "t-6"}
+            "/internal/tasks", json={"task_type": "generate_embeddings", "task_id": "t-6"}
         )
         assert response.status_code == 400
 

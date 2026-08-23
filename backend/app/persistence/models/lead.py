@@ -62,6 +62,19 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # CRM synchronization state (§14). Recorded so a retry can update the contact it
+    # already created rather than searching HubSpot again, and so the dashboard can
+    # show that a lead has not reached the CRM.
+    #
+    # Not a unique constraint: HubSpot can legitimately hold one contact matched by
+    # email for two platform leads with different phone numbers, and refusing to
+    # record that would lose the link entirely.
+    crm_contact_id: Mapped[str | None] = mapped_column(String(64))
+    crm_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The last failure, kept until a sync succeeds. §14 forbids a CRM outage breaking
+    # anything, so failures are recorded rather than raised at the caller.
+    crm_sync_error: Mapped[str | None] = mapped_column(Text)
+
     conversations: Mapped[list[Conversation]] = relationship(back_populates="lead")
     bookings: Mapped[list[Booking]] = relationship(back_populates="lead")
 

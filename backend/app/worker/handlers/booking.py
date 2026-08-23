@@ -33,6 +33,7 @@ from app.persistence.models import Booking, Lead
 from app.persistence.repositories import bookings as booking_repo
 from app.persistence.repositories import conversations as conversation_repo
 from app.worker.handlers.campaign_send import RetryableSendError
+from app.worker.handlers.crm_sync import queue_crm_sync
 
 logger = get_logger(__name__)
 
@@ -80,10 +81,16 @@ async def notify_booking(task: TaskRequest) -> dict[str, int | str]:
         await session.commit()
 
         phone = lead.phone_e164
+        lead_id = lead.id
         confirmation = _confirmation_message(settings, booking)
         conversation_id = booking.conversation_id
 
     logger.info("booking_notifications_created", notified=notified)
+
+    # A booked demo is exactly what a salesperson expects to see in the CRM. Enqueued
+    # rather than written here, and best-effort: §14 forbids a CRM failure affecting a
+    # confirmed booking.
+    await queue_crm_sync(settings, lead_id)
 
     sent = await _send_confirmation(
         settings,

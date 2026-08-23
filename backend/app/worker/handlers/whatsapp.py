@@ -22,6 +22,7 @@ from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
 from app.persistence.repositories import templates as template_repo
 from app.persistence.repositories import webhooks as webhook_repo
+from app.worker.handlers.crm_sync import queue_crm_sync
 
 logger = get_logger(__name__)
 
@@ -184,6 +185,10 @@ async def _handle_opt_out(
         return False
 
     cancelled = await webhook_repo.cancel_pending_sends(session, lead.phone_e164)
+
+    # Consent is the field where a stale CRM value does real harm: a salesperson
+    # reading "not opted out" may contact someone who asked us to stop.
+    await queue_crm_sync(settings, lead.id)
     logger.info(
         "whatsapp_opt_out",
         lead_id=str(lead.id),

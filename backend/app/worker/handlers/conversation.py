@@ -67,6 +67,7 @@ from app.persistence.models import AIRun, Conversation, Lead, WhatsAppSuppressio
 from app.persistence.repositories import conversations as conversation_repo
 from app.persistence.repositories import knowledge as knowledge_repo
 from app.worker.handlers.campaign_send import RetryableSendError
+from app.worker.handlers.crm_sync import queue_crm_sync
 
 logger = get_logger(__name__)
 
@@ -325,6 +326,11 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
     # the team twice about the same demo.
     if tool_context.notify_booking_id is not None:
         await _queue_booking_notification(settings, tool_context.notify_booking_id)
+
+    # The lead has engaged, and the turn may have recorded facts or moved its status.
+    # Best-effort by design: §14 forbids a CRM problem breaking the conversation, and
+    # `queue_crm_sync` swallows its own failures.
+    await queue_crm_sync(settings, lead_id)
 
     logger.info("conversation_turn_completed", latency_ms=latency_ms)
     return TurnOutcome("replied", str(conversation_id), replied=True).as_dict()

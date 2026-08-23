@@ -111,10 +111,15 @@ class TestTaskEndpoint:
         assert seen == ["task-1"]
 
     def test_unregistered_task_is_rejected_without_retry(self, worker_client: TestClient) -> None:
-        """400 not 500: redelivering a task nothing handles would retry forever."""
+        """400 not 500: redelivering a task nothing handles would retry forever.
+
+        `generate_embeddings` is the placeholder because it is the one task type §18
+        declares that no phase has registered a handler for. Earlier this used
+        `sync_crm_contact`, which Phase 12 then implemented.
+        """
         response = worker_client.post(
             "/internal/tasks",
-            json={"task_type": "sync_crm_contact", "task_id": "task-2"},
+            json={"task_type": "generate_embeddings", "task_id": "task-2"},
         )
         assert response.status_code == 400
 
