@@ -55,6 +55,125 @@ export interface AudienceSchema {
   max_rows: number;
 }
 
+export type LeadStatus =
+  | 'NEW'
+  | 'CONTACTED'
+  | 'RESPONDED'
+  | 'INTERESTED'
+  | 'QUALIFYING'
+  | 'QUALIFIED'
+  | 'DEMO_OFFERED'
+  | 'DEMO_BOOKED'
+  | 'NOT_INTERESTED'
+  | 'OPTED_OUT'
+  | 'INVALID'
+  | 'FAILED';
+
+export type ConversationStatus = 'ACTIVE' | 'WAITING_FOR_USER' | 'BOOKING' | 'CLOSED';
+
+export type DocumentStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED' | 'ARCHIVED';
+
+export interface Lead {
+  id: string;
+  phone_e164: string;
+  full_name: string | null;
+  email: string | null;
+  company: string | null;
+  designation: string | null;
+  city: string | null;
+  status: LeadStatus;
+  /** The AI's extracted facts. Read-only here: [D18] makes it the model's target. */
+  qualification_data: Record<string, unknown>;
+  opted_out: boolean;
+  source_audience_id: string | null;
+  last_contacted_at: string | null;
+  created_at: string;
+}
+
+export interface LeadPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: Lead[];
+}
+
+export interface Conversation {
+  id: string;
+  lead_id: string;
+  status: ConversationStatus;
+  last_inbound_at: string | null;
+  last_outbound_at: string | null;
+  closed_at: string | null;
+  created_at: string;
+}
+
+export interface ConversationTurn {
+  id: string;
+  role: string;
+  content: string;
+  message_id: string | null;
+  tool_calls: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface ConversationDetail {
+  conversation: Conversation;
+  lead: Lead;
+  /** Computed per request: whether a free-form reply is still permitted (§8). */
+  within_service_window: boolean;
+  total_turns: number;
+  turns: ConversationTurn[];
+}
+
+export interface ConversationPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: Conversation[];
+}
+
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  knowledge_base_id: string;
+  title: string;
+  source_filename: string | null;
+  content_type: string | null;
+  byte_size: number | null;
+  status: DocumentStatus;
+  chunk_count: number;
+  /** §17 requires a failed ingestion to say why. */
+  error_message: string | null;
+  created_at: string;
+  archived_at: string | null;
+}
+
+export interface Overview {
+  campaigns: number;
+  campaigns_sending: number;
+  messages_sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  /** People who replied, not messages received. */
+  replies: number;
+  total_leads: number;
+  interested: number;
+  qualified: number;
+  demos_booked: number;
+  unread_notifications: number;
+}
+
+export interface LeadFunnel {
+  counts: Record<string, number>;
+}
+
 export type BookingStatus = 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'FAILED';
 
 export interface Booking {
@@ -273,4 +392,66 @@ export const api = {
   },
 
   getBooking: (id: string) => request<Booking>(`/bookings/${id}`),
+
+  listLeads: (status?: LeadStatus, search?: string, limit = 50, offset = 0) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (status) {
+      params.set('status', status);
+    }
+    if (search) {
+      params.set('search', search);
+    }
+    return request<LeadPage>(`/leads?${params}`);
+  },
+
+  getLead: (id: string) => request<Lead>(`/leads/${id}`),
+
+  getLeadConversation: (id: string) => request<ConversationDetail>(`/leads/${id}/conversation`),
+
+  listConversations: (status?: ConversationStatus, limit = 50, offset = 0) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (status) {
+      params.set('status', status);
+    }
+    return request<ConversationPage>(`/conversations?${params}`);
+  },
+
+  getConversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
+
+  listKnowledgeBases: () => request<KnowledgeBase[]>('/knowledge-bases'),
+
+  createKnowledgeBase: (name: string, description: string | null) =>
+    request<KnowledgeBase>('/knowledge-bases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description }),
+    }),
+
+  listDocuments: (knowledgeBaseId: string, includeArchived = false) => {
+    const params = new URLSearchParams();
+    if (includeArchived) {
+      params.set('include_archived', 'true');
+    }
+    return request<KnowledgeDocument[]>(`/knowledge-bases/${knowledgeBaseId}/documents?${params}`);
+  },
+
+  uploadDocument: (knowledgeBaseId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    // No Content-Type header: the browser must set the multipart boundary itself.
+    return request<KnowledgeDocument>(`/knowledge-bases/${knowledgeBaseId}/documents`, {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  archiveDocument: (knowledgeBaseId: string, documentId: string) =>
+    request<KnowledgeDocument>(
+      `/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/archive`,
+      { method: 'POST' },
+    ),
+
+  getOverview: () => request<Overview>('/analytics/overview'),
+
+  getLeadFunnel: () => request<LeadFunnel>('/analytics/leads-by-status'),
 };
