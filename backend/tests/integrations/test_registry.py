@@ -53,6 +53,20 @@ class TestFakeSelection:
         monkeypatch.setenv("EMBEDDING_DIMENSION", "512")
         assert build_embedding_provider(Settings()).dimension == 512
 
+    def test_the_openrouter_provider_is_selectable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Phase 10 implemented it ([D10])."""
+        from app.integrations.llm.openrouter import OpenRouterLLMProvider
+
+        monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "key")
+        monkeypatch.setenv("OPENROUTER_MODEL", "vendor/model")
+
+        provider = build_llm_provider(Settings())
+
+        assert isinstance(provider, OpenRouterLLMProvider)
+        # [D17]: the model comes from configuration, never from the provider.
+        assert provider.model == "vendor/model"
+
     def test_the_local_embedding_provider_is_selectable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -74,7 +88,6 @@ class TestUnimplementedProvidersFailLoudly:
     @pytest.mark.parametrize(
         ("env_var", "value", "builder", "expected_phase"),
         [
-            ("LLM_PROVIDER", "openrouter", "llm", "Phase 10"),
             ("CALENDAR_PROVIDER", "google", "calendar", "Phase 11"),
             ("CRM_PROVIDER", "hubspot", "crm", "Phase 12"),
         ],

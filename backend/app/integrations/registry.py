@@ -31,6 +31,7 @@ from app.integrations.embedding.local_sentence_transformer import (
     LocalSentenceTransformerProvider,
 )
 from app.integrations.llm import FakeLLMProvider, LLMProvider
+from app.integrations.llm.openrouter import OpenRouterLLMProvider
 from app.integrations.queue import InMemoryQueueProvider, QueueProvider
 from app.integrations.queue.cloud_tasks import CloudTasksProvider
 from app.integrations.whatsapp import FakeWhatsAppProvider, WhatsAppProvider
@@ -80,7 +81,16 @@ def build_llm_provider(settings: Settings) -> LLMProvider:
         case LLMProviderName.FAKE:
             return FakeLLMProvider()
         case LLMProviderName.OPENROUTER:
-            raise ProviderNotImplementedError("openrouter", "Phase 10 (AI agent)")
+            # Both are guaranteed present: configuration refuses to start with
+            # OPENROUTER_MODEL unset, because [D17] forbids a baked-in default.
+            return OpenRouterLLMProvider(
+                api_key=settings.openrouter_api_key.get_secret_value()
+                if settings.openrouter_api_key
+                else "",
+                model=settings.openrouter_model or "",
+                base_url=settings.openrouter_base_url,
+                timeout_seconds=settings.openrouter_timeout_seconds,
+            )
 
 
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:

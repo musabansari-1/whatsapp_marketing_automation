@@ -145,6 +145,21 @@ class Settings(BaseSettings):
     openrouter_api_key: SecretStr | None = None
     # No default. [D17]: the model is chosen after Phase 10 benchmarking.
     openrouter_model: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # Generous next to the WhatsApp timeout: a model generating a long reply
+    # legitimately takes tens of seconds, and cutting it off wastes what was spent.
+    openrouter_timeout_seconds: float = 60.0
+
+    # ---------------------------------------------------------------- AI agent §9 §11
+    # How many rounds of tool calls one turn may take. Enough for look up the lead →
+    # record facts → fetch slots → book, and short enough that a confused model cannot
+    # loop at the customer's expense.
+    ai_max_tool_rounds: int = 4
+    # Whether the agent retrieves knowledge before replying. Off leaves it answering
+    # from the conversation alone, which is the safe behaviour before the client's
+    # documents are loaded (§11).
+    ai_retrieval_enabled: bool = True
+    ai_knowledge_base_name: str | None = None
 
     # ---------------------------------------------------------------- embeddings [D1]
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
