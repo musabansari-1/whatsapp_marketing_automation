@@ -1,6 +1,6 @@
 """API v1 router (specification §16, base path `/api/v1`).
 
-Later phases add their routers here: analytics (13).
+Every §16 route group is registered here.
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.v1.routes import (
+    analytics,
     audiences,
     auth,
     campaigns,
@@ -29,3 +30,4 @@ api_v1_router.include_router(webhooks.router)
 api_v1_router.include_router(knowledge.router)
 api_v1_router.include_router(conversations.router)
 api_v1_router.include_router(notifications.router)
+api_v1_router.include_router(analytics.router)

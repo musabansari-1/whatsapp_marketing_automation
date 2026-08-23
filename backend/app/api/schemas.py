@@ -477,3 +477,35 @@ class NotificationPage(BaseModel):
 
 class MarkAllReadResponse(BaseModel):
     marked_read: int
+
+
+# ---------------------------------------------------------------- analytics (§17)
+
+
+class OverviewResponse(BaseModel):
+    """The nine §17 overview metrics, plus the totals that give them context.
+
+    Delivery counts are cumulative: a delivered message was also sent, so `sent` does
+    not fall as receipts arrive. `replies` counts *people*, not messages — a customer
+    who sends five is one reply to a salesperson reading this.
+    """
+
+    campaigns: int
+    campaigns_sending: int
+    messages_sent: int
+    delivered: int
+    read: int
+    failed: int
+    replies: int
+    total_leads: int
+    interested: int
+    qualified: int
+    demos_booked: int
+    # Scoped to the caller: notifications are per-user ([D3]).
+    unread_notifications: int
+
+
+class LeadFunnelResponse(BaseModel):
+    """Lead counts per state, every state present."""
+
+    counts: dict[str, int]
