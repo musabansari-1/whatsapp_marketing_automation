@@ -23,10 +23,11 @@ from app.core.config import (
     WhatsAppProviderName,
     get_settings,
 )
-from app.core.errors import ConfigurationError, ProviderNotImplementedError
+from app.core.errors import ConfigurationError
 from app.integrations.calendar import CalendarProvider, FakeCalendarProvider
 from app.integrations.calendar.google import GoogleCalendarProvider
 from app.integrations.crm import CRMProvider, FakeCRMProvider
+from app.integrations.crm.hubspot import HubSpotProvider
 from app.integrations.embedding import EmbeddingProvider, FakeEmbeddingProvider
 from app.integrations.embedding.local_sentence_transformer import (
     LocalSentenceTransformerProvider,
@@ -155,7 +156,16 @@ def build_crm_provider(settings: Settings) -> CRMProvider:
         case CRMProviderName.FAKE:
             return FakeCRMProvider()
         case CRMProviderName.HUBSPOT:
-            raise ProviderNotImplementedError("hubspot", "Phase 12 (HubSpot)")
+            # Guaranteed present: configuration refuses to start without it.
+            return HubSpotProvider(
+                access_token=(
+                    settings.hubspot_access_token.get_secret_value()
+                    if settings.hubspot_access_token
+                    else ""
+                ),
+                base_url=settings.hubspot_base_url,
+                timeout_seconds=settings.hubspot_timeout_seconds,
+            )
 
 
 def build_queue_provider(settings: Settings) -> QueueProvider:

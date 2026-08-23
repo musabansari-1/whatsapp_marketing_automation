@@ -53,6 +53,15 @@ class TestFakeSelection:
         monkeypatch.setenv("EMBEDDING_DIMENSION", "512")
         assert build_embedding_provider(Settings()).dimension == 512
 
+    def test_the_hubspot_provider_is_selectable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Phase 12 implemented it ([D11])."""
+        from app.integrations.crm.hubspot import HubSpotProvider
+
+        monkeypatch.setenv("CRM_PROVIDER", "hubspot")
+        monkeypatch.setenv("HUBSPOT_ACCESS_TOKEN", "token")
+
+        assert isinstance(build_crm_provider(Settings()), HubSpotProvider)
+
     def test_the_google_calendar_provider_is_selectable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -114,49 +123,62 @@ class TestFakeSelection:
         assert provider._model is None  # noqa: SLF001 - laziness is the point
 
 
-class TestUnimplementedProvidersFailLoudly:
-    @pytest.mark.parametrize(
-        ("env_var", "value", "builder", "expected_phase"),
-        [
-            ("CRM_PROVIDER", "hubspot", "crm", "Phase 12"),
-        ],
-    )
-    def test_selecting_a_future_provider_names_its_phase(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        env_var: str,
-        value: str,
-        builder: str,
-        expected_phase: str,
-    ) -> None:
-        monkeypatch.setenv(env_var, value)
-        # Satisfy the config validators so the failure comes from the registry.
-        monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-        monkeypatch.setenv("OPENROUTER_MODEL", "vendor/model")
-        monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "t")
-        monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "1")
-        monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "v")
-        monkeypatch.setenv("GOOGLE_CALENDAR_ID", "cal")
-        monkeypatch.setenv("GOOGLE_SECRET_MANAGER_PROJECT", "proj")
-        monkeypatch.setenv("GOOGLE_CALENDAR_TOKEN_SECRET_NAME", "secret")
-        monkeypatch.setenv("HUBSPOT_ACCESS_TOKEN", "t")
-        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "proj")
-        monkeypatch.setenv("GOOGLE_CLOUD_TASKS_QUEUE", "queue")
-        monkeypatch.setenv("WORKER_BASE_URL", "https://worker.example.com")
+class TestEveryProviderIsImplemented:
+    """Phase 12 was the last one. Every concrete provider now exists.
 
-        builders = {
-            "whatsapp": build_whatsapp_provider,
-            "llm": build_llm_provider,
-            "embedding": build_embedding_provider,
-            "calendar": build_calendar_provider,
-            "crm": build_crm_provider,
-            "queue": build_queue_provider,
-        }
+    This class used to assert that selecting a future provider failed with a message
+    naming its phase; nothing is left to select. What remains worth testing is that
+    each real provider can actually be built from configuration — a registry that
+    raises `ProviderNotImplementedError` in production would take the platform down at
+    startup.
+    """
 
-        with pytest.raises(ProviderNotImplementedError) as exc_info:
-            builders[builder](Settings())
+    def test_no_provider_raises_not_implemented(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for env_var, value in (
+            ("WHATSAPP_PROVIDER", "meta"),
+            ("LLM_PROVIDER", "openrouter"),
+            ("EMBEDDING_PROVIDER", "local_sentence_transformer"),
+            ("CALENDAR_PROVIDER", "google"),
+            ("CRM_PROVIDER", "hubspot"),
+            ("QUEUE_PROVIDER", "cloud_tasks"),
+        ):
+            monkeypatch.setenv(env_var, value)
 
-        assert expected_phase in str(exc_info.value)
+        # Credentials the validators require. None is real.
+        for env_var, value in (
+            ("OPENROUTER_API_KEY", "k"),
+            ("OPENROUTER_MODEL", "vendor/model"),
+            ("WHATSAPP_ACCESS_TOKEN", "t"),
+            ("WHATSAPP_PHONE_NUMBER_ID", "1"),
+            ("WHATSAPP_VERIFY_TOKEN", "v"),
+            ("WHATSAPP_BUSINESS_ACCOUNT_ID", "waba"),
+            ("WHATSAPP_APP_SECRET", "s"),
+            ("GOOGLE_CALENDAR_ID", "cal"),
+            ("GOOGLE_SECRET_MANAGER_PROJECT", "proj"),
+            ("GOOGLE_CALENDAR_TOKEN_SECRET_NAME", "secret"),
+            ("GOOGLE_OAUTH_CLIENT_ID", "client"),
+            ("GOOGLE_OAUTH_CLIENT_SECRET", "secret"),
+            ("HUBSPOT_ACCESS_TOKEN", "t"),
+            ("GOOGLE_CLOUD_PROJECT", "proj"),
+            ("GOOGLE_CLOUD_TASKS_QUEUE", "queue"),
+            ("WORKER_BASE_URL", "https://worker.example.com"),
+        ):
+            monkeypatch.setenv(env_var, value)
+
+        settings = Settings()
+        builders = (
+            build_whatsapp_provider,
+            build_llm_provider,
+            build_embedding_provider,
+            build_calendar_provider,
+            build_crm_provider,
+        )
+
+        for builder in builders:
+            try:
+                builder(settings)
+            except ProviderNotImplementedError as exc:  # pragma: no cover - the assertion
+                pytest.fail(f"{builder.__name__} is still unimplemented: {exc}")
 
     def test_the_cloud_tasks_queue_is_now_implemented(
         self, monkeypatch: pytest.MonkeyPatch

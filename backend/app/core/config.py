@@ -204,6 +204,8 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------------- CRM
     hubspot_access_token: SecretStr | None = None
+    hubspot_base_url: str = "https://api.hubapi.com"
+    hubspot_timeout_seconds: float = 20.0
 
     # ---------------------------------------------------------------- audience [D4][D20]
     audience_phone_default_region: str = "IN"
