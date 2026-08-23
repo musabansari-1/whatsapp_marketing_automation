@@ -1112,6 +1112,70 @@ A HubSpot outage or failure must NOT break:
 
 Excel remains the marketing audience source.
 
+### V1 implementation (Phase 12)
+
+Synchronization is one-way and outward. Nothing reads a CRM value back to change
+platform state, so a stale or hand-edited HubSpot record can never overwrite what the
+platform knows.
+
+**What is synchronized**, mapped in `app/domain/crm.py`:
+
+```text
+contact information   firstname, lastname, email, phone, company, jobtitle, city
+lead state            wa_lead_status
+qualification         wa_qualification  (the AI's extraction, [D18] — informational)
+source                wa_lead_source    (audience name, or "WhatsApp inbound")
+campaign              wa_campaign       (the most recent campaign that messaged them)
+booking               wa_demo_at, wa_demo_status  (confirmed bookings only)
+opt-out               wa_opted_out
+```
+
+The `wa_*` properties are **custom properties the client must create in HubSpot**.
+HubSpot silently ignores unknown properties on write, so a missing one loses data
+without erroring — which is why they are listed in one place in the code.
+
+**What is not synchronized:** the conversation transcript. It is long, personal, and
+pushing it into a third-party system is a decision nobody has made.
+
+Two mapping rules are load-bearing. Unknown fields are **omitted, not blanked** —
+HubSpot treats an empty string as a deliberate clear, so sending one would erase what a
+salesperson typed by hand. Opt-out is **always sent, including false**, because consent
+is the one field where a stale value does real harm.
+
+### When synchronization runs (Phase 12)
+
+On meaningful change, not on bulk upload:
+
+- after a conversation turn (the lead engaged; facts or status may have moved)
+- after a demo is confirmed
+- on opt-out
+
+**Confirming an audience does not synchronize its leads.** A confirmed audience can
+hold tens of thousands of uploaded numbers with no engagement, and pushing them all
+into HubSpot would flood the CRM with cold contacts nobody asked it to hold.
+
+### Isolation (Phase 12 / §14)
+
+§14's requirement — a HubSpot outage must not break WhatsApp, AI, RAG, Calendar, the
+dashboard or core PostgreSQL state — is enforced structurally:
+
+- Synchronization is its own task, so it retries without touching what triggered it.
+- `queue_crm_sync` **swallows its own failures** and returns a boolean. Its callers are
+  the conversation turn, the booking flow and the opt-out path, and none of them should
+  abandon its work because a queue call failed.
+- A permanent CRM failure is recorded on the lead (`crm_sync_error`) rather than raised,
+  because §14 forbids surfacing it at the caller and a failure nobody records is
+  invisible until someone opens HubSpot.
+
+### Identity (Phase 12 / [D11])
+
+[D11] makes the normalized phone number primary and email secondary. HubSpot's own
+contact uniqueness is **email-based**, and a WhatsApp lead often has no email — so the
+upsert searches by phone, falls back to email, and creates only when neither matches. A
+409 from a concurrent create is resolved by re-reading and updating, so a retried sync
+converges on one contact rather than producing a duplicate for the sales team to work
+from.
+
 ## 15. Database
 
 Use:

@@ -4,20 +4,19 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 13 (Dashboard) complete.** The product loop is whole and now
-visible: a customer replies, the platform retrieves knowledge, asks a model, checks
-calendar availability, books a demo, notifies the team and confirms to the customer —
-and a salesperson can follow all of it from one dashboard.
+**Current state: every feature phase is complete (1–13).** A customer replies, the
+platform retrieves knowledge, asks a model, checks calendar availability, books a demo,
+notifies the team, confirms to the customer, syncs the contact to HubSpot — and a
+salesperson can follow all of it from one dashboard.
 
-**Phase 12 (HubSpot) is skipped, not done**, and is the only outstanding feature phase
-before hardening.
+Remaining: **Phase 14 (hardening)** and **Phase 15 (production deployment)**.
 
-What is not proven is external. No integration has run against a real account: Meta,
-OpenRouter and Google are built and tested against mocks and fakes, and each needs
-credentials the client supplies. **`OPENROUTER_MODEL` is unchosen** ([D17]) and
-**qualification criteria are unconfigured** ([D37]), so no lead reaches `QUALIFIED`.
-Google Calendar additionally needs a one-time human OAuth consent before it can
-authenticate at all.
+What is not proven is external. **No integration has run against a real account**: Meta,
+OpenRouter, Google and HubSpot are all built and tested against mock transports and
+fakes, and each needs credentials the client supplies. **`OPENROUTER_MODEL` is
+unchosen** ([D17]) and **qualification criteria are unconfigured** ([D37]), so no lead
+reaches `QUALIFIED`. Google Calendar additionally needs a one-time human OAuth consent
+before it can authenticate at all.
 
 ## Layout
 
@@ -617,6 +616,56 @@ The Overview says so when it has nothing to show for a reason rather than by acc
 if leads are interested but none qualified, it points at the unset criteria ([D37])
 rather than leaving a zero to be misread.
 
+## HubSpot
+
+Synchronization is one-way and outward: PostgreSQL is the source of truth, and nothing
+reads a CRM value back to change platform state. A stale or hand-edited HubSpot record
+can never overwrite what the platform knows.
+
+`app/domain/crm.py` maps each of §14's six categories to a property — contact
+information, lead state, qualification, source and campaign, booking, and opt-out. The
+`wa_*` ones are **custom properties the client must create in HubSpot first**: HubSpot
+silently ignores unknown properties on write, so a missing one loses data without
+erroring.
+
+The conversation transcript is deliberately not synchronized. It is long, personal, and
+pushing it into a third-party system is a decision nobody made.
+
+Two mapping rules matter more than they look. Unknown fields are **omitted, not
+blanked** — HubSpot treats an empty string as a deliberate clear, so sending one would
+erase what a salesperson typed by hand. Opt-out is **always sent, including `false`**,
+because consent is the field where a stale value causes real harm.
+
+### When it runs
+
+On meaningful change — after a conversation turn, after a demo is confirmed, and on
+opt-out. **Confirming an audience does not sync its leads**: a confirmed audience can be
+tens of thousands of uploaded numbers with no engagement, and pushing them all into
+HubSpot would flood the CRM with cold contacts nobody asked it to hold.
+
+### Nothing it can break
+
+§14 requires that a HubSpot outage not break WhatsApp, the AI, RAG, Calendar, the
+dashboard or core state. That is structural, not a promise:
+
+- Synchronization is its own task and retries without touching what triggered it.
+- `queue_crm_sync` swallows its own failures and returns a boolean. Its callers — the
+  conversation turn, the booking flow, the opt-out path — never abandon their own work
+  because a queue call failed.
+- A permanent failure is recorded on the lead (`crm_sync_error`) rather than raised. §14
+  forbids surfacing it at the caller, and a failure nobody records is invisible until
+  someone opens HubSpot.
+
+### Identity
+
+[D11] makes the phone number primary and email secondary. HubSpot's own uniqueness is
+**email-based**, and a WhatsApp lead often has no email — so the upsert searches by
+phone, falls back to email, and creates only when neither matches. A 409 from a
+concurrent create is resolved by re-reading and updating, so a retry converges on one
+contact rather than leaving the sales team working from duplicates.
+
+Nothing here has run against a real HubSpot account.
+
 ## Provider abstractions
 
 Six external concerns sit behind interfaces, each with a fake used by the test suite.
@@ -630,10 +679,11 @@ provider.
 | Embedding | `EmbeddingProvider` | `FakeEmbeddingProvider`   | `LocalSentenceTransformerProvider` |
 | LLM       | `LLMProvider`       | `FakeLLMProvider`         | `OpenRouterLLMProvider`  |
 | Calendar  | `CalendarProvider`  | `FakeCalendarProvider`    | `GoogleCalendarProvider` |
-| CRM       | `CRMProvider`       | `FakeCRMProvider`         | HubSpot — Phase 12       |
+| CRM       | `CRMProvider`       | `FakeCRMProvider`         | `HubSpotProvider`        |
 
-Selecting a real provider before its phase raises `ProviderNotImplementedError` naming
-the phase, so a misconfiguration fails at startup rather than silently doing nothing.
+All six are now implemented. `ProviderNotImplementedError` remains in the registry as
+the guard for anything added later — a misconfiguration should fail at startup rather
+than silently do nothing.
 
 ## Deployment target
 
