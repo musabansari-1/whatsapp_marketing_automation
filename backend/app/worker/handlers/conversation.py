@@ -38,21 +38,33 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import tools as ai_tools
+from app.ai.agent import AgentOutcome, respond_to_customer
 from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.errors import ProviderError
 from app.core.logging import get_logger
+from app.domain.conversation import LeadStateError, can_transition_conversation
 from app.domain.enums import ConversationStatus, LeadStatus, MessageStatus
+from app.domain.qualification import rules_from_settings
+from app.domain.rag import RetrievalPolicy, RetrievalResult, retrieve
 from app.domain.retry import RetryPolicy, backoff_seconds, classify, should_retry
+from app.domain.slots import policy_from_settings
 from app.domain.whatsapp_webhook import is_within_service_window
-from app.integrations.llm import CompletionRequest, LLMCompletion, Role
 from app.integrations.llm import Message as LLMMessage
+from app.integrations.llm import Role
 from app.integrations.queue import TaskRequest
-from app.integrations.registry import build_llm_provider, build_whatsapp_provider
+from app.integrations.registry import (
+    build_calendar_provider,
+    build_embedding_provider,
+    build_llm_provider,
+    build_whatsapp_provider,
+)
 from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
 from app.persistence.models import AIRun, Conversation, Lead, WhatsAppSuppression
 from app.persistence.repositories import conversations as conversation_repo
+from app.persistence.repositories import knowledge as knowledge_repo
 from app.worker.handlers.campaign_send import RetryableSendError
 
 logger = get_logger(__name__)
@@ -175,16 +187,50 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             conversation.id,
             limit=settings.conversation_history_turns or DEFAULT_HISTORY_TURNS,
         )
-        prompt = _build_prompt(settings, history)
+        prompt = _history_messages(history)
         conversation_id = conversation.id
+        lead_id = lead.id
         lead_phone = lead.phone_e164
+        question = message.body or ""
         await session.commit()
 
     started = datetime.now(UTC)
     provider = build_llm_provider(settings)
 
+    # Retrieval happens before the model runs and outside the tool loop: §11 makes it
+    # the evidence the reply is grounded in, not something the model chooses to
+    # consult. A failure here is not fatal — the agent is told there is no evidence and
+    # uses the approved fallback rather than losing the turn.
+    retrieval = await _retrieve(settings, question)
+
     try:
-        completion = await provider.complete(CompletionRequest(messages=tuple(prompt)))
+        async with factory() as session:
+            lead = await session.get(Lead, lead_id)
+            conversation = await conversation_repo.get_conversation(session, conversation_id)
+            if lead is None or conversation is None:
+                raise ValueError(f"Conversation {conversation_id} disappeared mid-turn")
+
+            tool_context = ai_tools.ToolContext(
+                session=session,
+                lead=lead,
+                conversation=conversation,
+                slot_policy=policy_from_settings(settings),
+                calendar=build_calendar_provider(settings),
+                qualification_rules=rules_from_settings(settings.qualification_required_fields),
+            )
+
+            outcome = await respond_to_customer(
+                provider=provider,
+                system_prompt=settings.ai_system_prompt,
+                history=prompt,
+                retrieval=retrieval,
+                context=tool_context,
+                fallback_message=settings.msg_rag_fallback,
+                max_rounds=settings.ai_max_tool_rounds,
+            )
+            # Tools write through this session, so their effects are committed with
+            # the turn rather than left dangling if the send fails.
+            await session.commit()
     except ProviderError as exc:
         await _record_failed_run(conversation_id, provider.model, str(exc))
         _raise_if_retryable(settings, exc)
@@ -192,18 +238,12 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         return TurnOutcome("llm_failed", str(conversation_id)).as_dict()
 
     latency_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+    reply_text = outcome.reply.strip()
 
-    if completion.tool_calls:
-        # Phase 10 owns the authorized six. Recording the request without executing it
-        # keeps the audit trail honest about what the model asked for.
-        logger.info(
-            "conversation_tool_call_ignored",
-            tools=[call.name for call in completion.tool_calls],
-        )
-
-    reply_text = completion.text.strip()
     if not reply_text:
-        await _record_run(conversation_id, completion, latency_ms=latency_ms)
+        # The agent substitutes the approved fallback for an empty completion, so
+        # reaching here means even that was blank — a misconfiguration worth seeing.
+        await _record_outcome_run(conversation_id, outcome, latency_ms=latency_ms)
         logger.warning("conversation_empty_completion")
         return TurnOutcome("empty_completion", str(conversation_id)).as_dict()
 
@@ -247,25 +287,33 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             role=conversation_repo.ROLE_ASSISTANT,
             content=reply_text,
             message_id=sent_message.id,
-            tool_calls=_tool_calls_json(completion),
+            tool_calls={"executed": outcome.tool_calls} if outcome.tool_calls else None,
         )
         await conversation_repo.touch_outbound(session, conversation)
 
-        # We have spoken; it is the customer's turn. Only from ACTIVE: the table also
-        # permits BOOKING → WAITING_FOR_USER, but a booking conversation is waiting on
-        # a slot choice rather than on ordinary conversation, and Phase 11 owns when
-        # that ends. Applying the generic rule here would quietly drop it out of
-        # booking.
-        if conversation.status is ConversationStatus.ACTIVE:
-            await conversation_repo.transition_conversation(
-                session, conversation, ConversationStatus.WAITING_FOR_USER
-            )
+        # The AI extracted; the backend decides. `proposed_status` came from the
+        # qualification rules reading the facts a tool recorded — never from the model
+        # asserting a state ([D9], [D18]) — and it still goes through the §10 table.
+        if outcome.proposed_status is not None and outcome.proposed_status is not lead.status:
+            try:
+                await conversation_repo.transition_lead(session, lead, outcome.proposed_status)
+                logger.info(
+                    "lead_status_advanced_by_rules",
+                    new_status=outcome.proposed_status.value,
+                )
+            except LeadStateError as exc:
+                # The rules only ever propose permitted transitions, so this means the
+                # lead moved underneath us. Logged, not fatal: the reply is already
+                # sent and the next turn will re-evaluate.
+                logger.warning("lead_transition_rejected", error=str(exc))
+
+        await _apply_conversation_state(session, conversation, outcome)
 
         session.add(
             _build_run(
                 conversation_id=conversation.id,
                 lead_id=lead.id,
-                completion=completion,
+                outcome=outcome,
                 latency_ms=latency_ms,
             )
         )
@@ -278,14 +326,14 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
 # ---------------------------------------------------------------- internals
 
 
-def _build_prompt(settings: Settings, history: list[Any]) -> list[LLMMessage]:
+def _history_messages(history: list[Any]) -> list[LLMMessage]:
     """Turn the stored transcript into the provider's message shape.
 
-    The system message is configuration ([D21]) rather than a literal, and retrieved
-    knowledge is deliberately absent: RAG joins in Phase 10, where §11's rule about
-    document text never overriding instructions is enforced by `build_context`.
+    Only the conversation itself. The system prompt and the retrieved knowledge are
+    assembled by the agent, which is where §11's rule about document text never
+    overriding instructions is applied.
     """
-    messages = [LLMMessage(role=Role.SYSTEM, content=settings.ai_system_prompt)]
+    messages: list[LLMMessage] = []
 
     for turn in history:
         try:
@@ -297,6 +345,76 @@ def _build_prompt(settings: Settings, history: list[Any]) -> list[LLMMessage]:
         messages.append(LLMMessage(role=role, content=turn.content))
 
     return messages
+
+
+async def _retrieve(settings: Settings, question: str) -> RetrievalResult | None:
+    """Find knowledge relevant to what the customer asked (§11).
+
+    Returns None when retrieval is off or unavailable, which the agent reads the same
+    way as "nothing relevant": it tells the model to use the approved fallback rather
+    than answer unsupported. A retrieval failure must not lose the customer's turn —
+    the platform can still reply from the conversation itself.
+    """
+    if not settings.ai_retrieval_enabled or not question.strip():
+        return None
+
+    try:
+        embedding = build_embedding_provider(settings)
+        vector = await embedding.embed_query(question)
+
+        factory = get_session_factory()
+        async with factory() as session:
+            knowledge_base = await _knowledge_base_id(session, settings)
+            if knowledge_base is None:
+                return None
+
+            candidates = await knowledge_repo.search(
+                session,
+                knowledge_base_id=knowledge_base,
+                query_vector=vector,
+                limit=settings.rag_top_k,
+                # [D1]: comparing vectors from different models is meaningless, so a
+                # search after a model change returns nothing rather than nonsense.
+                embedding_model=embedding.model_id,
+            )
+    except Exception as exc:  # noqa: BLE001 - retrieval is best-effort by design
+        logger.warning("conversation_retrieval_failed", error=str(exc))
+        return None
+
+    return retrieve(
+        candidates,
+        policy=RetrievalPolicy(
+            top_k=settings.rag_top_k,
+            min_similarity=settings.rag_min_similarity,
+            max_context_chars=settings.rag_max_context_chars,
+        ),
+    )
+
+
+async def _knowledge_base_id(session: AsyncSession, settings: Settings) -> uuid.UUID | None:
+    """Which knowledge base the AI answers from.
+
+    Named in configuration when there are several. With none configured it uses the
+    only one, and declines to guess when several exist — answering from an arbitrary
+    knowledge base is worse than not answering.
+    """
+    bases = await knowledge_repo.list_knowledge_bases(session)
+    if not bases:
+        return None
+
+    if settings.ai_knowledge_base_name:
+        wanted = settings.ai_knowledge_base_name.casefold()
+        for base in bases:
+            if base.name.casefold() == wanted:
+                return base.id
+        logger.warning("ai_knowledge_base_not_found", configured=settings.ai_knowledge_base_name)
+        return None
+
+    if len(bases) > 1:
+        logger.warning("ai_knowledge_base_ambiguous", count=len(bases))
+        return None
+
+    return bases[0].id
 
 
 async def _is_suppressed(session: AsyncSession, phone_e164: str) -> bool:
@@ -316,24 +434,50 @@ async def _advance_to_responded(session: AsyncSession, lead: Lead) -> None:
         await conversation_repo.transition_lead(session, lead, LeadStatus.RESPONDED)
 
 
-def _tool_calls_json(completion: LLMCompletion) -> dict[str, Any] | None:
-    if not completion.tool_calls:
+async def _apply_conversation_state(
+    session: AsyncSession, conversation: Conversation, outcome: AgentOutcome
+) -> None:
+    """Move the conversation according to what the turn actually did.
+
+    A confirmed booking moves it to BOOKING — and only a confirmed one:
+    `booked_event_id` is set by the tool after Calendar returned an event, never
+    because the model said it booked something.
+    """
+    if outcome.booked_event_id and can_transition_conversation(
+        conversation.status, ConversationStatus.BOOKING
+    ):
+        await conversation_repo.transition_conversation(
+            session, conversation, ConversationStatus.BOOKING
+        )
+        return
+
+    # We have spoken; it is the customer's turn. Only from ACTIVE: the table also
+    # permits BOOKING → WAITING_FOR_USER, but a booking conversation is waiting on a
+    # slot choice rather than on ordinary conversation, and Phase 11 owns when that
+    # ends.
+    if conversation.status is ConversationStatus.ACTIVE:
+        await conversation_repo.transition_conversation(
+            session, conversation, ConversationStatus.WAITING_FOR_USER
+        )
+
+
+def _run_tool_calls(outcome: AgentOutcome) -> dict[str, Any] | None:
+    """The tool record for `ai_runs`.
+
+    Only what actually ran, with its result. §21 needs to be able to explain why a
+    customer was told what they were told, and a request that failed is as much a part
+    of that as one that succeeded.
+    """
+    if not outcome.tool_calls:
         return None
-    return {
-        "requested": [
-            {"id": call.id, "name": call.name, "arguments": call.arguments}
-            for call in completion.tool_calls
-        ],
-        # Explicit, so the audit trail does not read as though these ran.
-        "executed": [],
-    }
+    return {"executed": outcome.tool_calls}
 
 
 def _build_run(
     *,
     conversation_id: uuid.UUID,
     lead_id: uuid.UUID,
-    completion: LLMCompletion,
+    outcome: AgentOutcome,
     latency_ms: int,
 ) -> AIRun:
     from app.domain.enums import AIRunStatus
@@ -342,36 +486,39 @@ def _build_run(
         conversation_id=conversation_id,
         lead_id=lead_id,
         # Recorded per run rather than assumed: [D17] leaves the model unchosen until
-        # Phase 10 benchmarking, and it may change between runs.
-        model=completion.model,
+        # benchmarking, OpenRouter can fall back to another provider, and it may
+        # therefore differ between runs.
+        model=outcome.model,
         status=AIRunStatus.SUCCESS,
-        prompt_tokens=completion.usage.prompt_tokens,
-        completion_tokens=completion.usage.completion_tokens,
+        prompt_tokens=outcome.prompt_tokens,
+        completion_tokens=outcome.completion_tokens,
         latency_ms=latency_ms,
-        tool_calls=_tool_calls_json(completion),
+        tool_calls=_run_tool_calls(outcome),
+        # Which chunks grounded the answer (§21). Without this, a wrong answer cannot
+        # be traced back to the document that caused it.
+        retrieved_chunk_ids=(
+            {"chunk_ids": outcome.retrieved_chunk_ids, "used_fallback": outcome.used_fallback}
+            if outcome.retrieved_chunk_ids or outcome.used_fallback
+            else None
+        ),
     )
 
 
-async def _record_run(
-    conversation_id: uuid.UUID, completion: LLMCompletion, *, latency_ms: int
+async def _record_outcome_run(
+    conversation_id: uuid.UUID, outcome: AgentOutcome, *, latency_ms: int
 ) -> None:
-    from app.domain.enums import AIRunStatus
-
+    """Record a run that produced nothing to send."""
     factory = get_session_factory()
     async with factory() as session:
         conversation = await session.get(Conversation, conversation_id)
+        if conversation is None:
+            return
         session.add(
-            AIRun(
+            _build_run(
                 conversation_id=conversation_id,
-                lead_id=conversation.lead_id if conversation else None,
-                model=completion.model,
-                status=AIRunStatus.SUCCESS,
-                prompt_tokens=completion.usage.prompt_tokens,
-                completion_tokens=completion.usage.completion_tokens,
+                lead_id=conversation.lead_id,
+                outcome=outcome,
                 latency_ms=latency_ms,
-                # Recorded even though nothing was sent: a completion that asked for a
-                # tool and returned no text is exactly the case worth being able to see.
-                tool_calls=_tool_calls_json(completion),
             )
         )
         await session.commit()

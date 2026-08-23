@@ -424,19 +424,26 @@ class TestRefusals:
 
         assert transcript(conversation_id) == [("user", "Are you still there?")]
 
-    def test_an_empty_completion_sends_nothing(
+    def test_an_empty_completion_falls_back_rather_than_going_silent(
         self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
     ) -> None:
-        """An empty WhatsApp message is a provider error at best and a confusing blank
-        at worst."""
+        """Phase 10 changed this deliberately.
+
+        Phase 9 sent nothing when the model returned nothing, which leaves the customer
+        on read. §11 says insufficient output must become the approved fallback ([D21])
+        rather than silence — an empty WhatsApp message is not an option either.
+        """
+        from app.core.config import get_settings
+
         llm, whatsapp = turn_env
         llm.default_text = "   "
         _lead_id, _conversation_id, message_id = seed_turn()
 
         result = run_turn(message_id)
 
-        assert result["result"] == "empty_completion"
-        assert whatsapp.sent_texts == []
+        assert result["result"] == "replied"
+        assert len(whatsapp.sent_texts) == 1
+        assert whatsapp.sent_texts[0].body == get_settings().msg_rag_fallback
 
     def test_a_message_outside_a_conversation_is_rejected(
         self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
@@ -522,25 +529,82 @@ class TestFailures:
 
 
 class TestToolCalls:
-    def test_a_tool_request_is_recorded_but_not_executed(
+    def test_an_authorized_tool_runs_and_is_recorded(
         self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
     ) -> None:
-        """The authorized six arrive in Phase 10. Recording the request without
-        running it keeps the audit trail honest about what was asked for."""
+        """Phase 10 executes the authorized six; Phase 9 recorded and ignored them.
+
+        The trail records what ran *and* its result, which is what §21 needs to explain
+        why a customer was told what they were told.
+        """
         llm, _whatsapp = turn_env
-        llm.queue_tool_call("book_demo", {"start_time": "2026-09-01T10:00:00Z"})
-        llm.queue_text("I have noted that down.")
-        _lead_id, conversation_id, message_id = seed_turn()
+        llm.queue_tool_call("get_lead", {})
+        llm.queue_text("You are with Northwind, is that right?")
+        _lead_id, _conversation_id, message_id = seed_turn()
 
-        # The first completion carries the tool call and no text, so nothing is sent.
-        first = run_turn(message_id)
-        assert first["result"] == "empty_completion"
+        result = run_turn(message_id)
 
+        assert result["result"] == "replied"
         runs = ai_runs()
-        assert runs[0].tool_calls is not None
-        assert runs[0].tool_calls["requested"][0]["name"] == "book_demo"
-        # Explicit, so the trail does not read as though the tool ran.
-        assert runs[0].tool_calls["executed"] == []
-        assert transcript(conversation_id) == [
-            ("user", "Do you offer training as well?"),
-        ]
+        recorded = runs[0].tool_calls
+        assert recorded is not None
+        executed = recorded["executed"]
+        assert executed[0]["name"] == "get_lead"
+        assert executed[0]["ok"] is True
+
+    def test_an_unauthorized_tool_is_refused(
+        self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
+    ) -> None:
+        """§9 lists six tools. A hallucinated name is an error, never an action — a
+        fuzzy match would run something the conversation never called for."""
+        llm, _whatsapp = turn_env
+        llm.queue_tool_call("delete_all_leads", {})
+        llm.queue_text("Let me check on that for you.")
+        _lead_id, _conversation_id, message_id = seed_turn()
+
+        run_turn(message_id)
+
+        recorded = ai_runs()[0].tool_calls
+        assert recorded is not None
+        executed = recorded["executed"]
+        assert executed[0]["name"] == "delete_all_leads"
+        assert executed[0]["ok"] is False
+        assert "not an available tool" in executed[0]["error"]
+
+    def test_update_lead_records_facts_without_setting_status(
+        self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
+    ) -> None:
+        """[D18]: the model extracts, the backend decides. The tool has no `status`
+        parameter, so this is structural rather than a matter of the model behaving."""
+        llm, _whatsapp = turn_env
+        llm.queue_tool_call(
+            "update_lead",
+            {"company": "Northwind", "status": "QUALIFIED", "facts": {"team_size": 40}},
+        )
+        llm.queue_text("Thanks, noted.")
+        lead_id, _conversation_id, message_id = seed_turn(lead_status=LeadStatus.RESPONDED)
+
+        run_turn(message_id)
+
+        lead = lead_row(lead_id)
+        assert lead.company == "Northwind"
+        assert lead.qualification_data["team_size"] == 40
+        # Not QUALIFIED: the model asked, and the tool has no way to grant it.
+        assert lead.status is not LeadStatus.QUALIFIED
+
+    def test_the_tool_loop_is_bounded(
+        self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
+    ) -> None:
+        """A model that keeps calling tools would otherwise spend the customer's time
+        and the account's budget indefinitely."""
+        llm, whatsapp = turn_env
+        for _ in range(10):
+            llm.queue_tool_call("get_lead", {})
+        llm.queue_text("Sorry about that.")
+        _lead_id, _conversation_id, message_id = seed_turn()
+
+        run_turn(message_id)
+
+        # The final round is asked without tools, so the loop terminates in words.
+        assert len(llm.requests) <= 4
+        assert len(whatsapp.sent_texts) == 1
