@@ -963,6 +963,72 @@ If Calendar succeeds but a downstream notification fails:
 - failed notification retries
 - no duplicate calendar event
 
+### V1 implementation (Phase 11)
+
+The §12 sequence, and where each step lives:
+
+```text
+customer selects a slot          book_demo tool (§9)
+ ↓
+already booked?                  by deterministic event ID — before the recheck
+ ↓
+recheck against live busy time   app/domain/slots.is_slot_available
+ ↓
+Calendar event                   GoogleCalendarProvider.create_event
+ ↓
+booking row                      bookings, CONFIRMED, keyed on calendar_event_id
+ ↓
+dashboard notification           NOTIFY_BOOKING task, fan-out to every active user
+ ↓
+customer confirmation            free-form WhatsApp reply, inside the 24-hour window
+```
+
+**The already-booked check comes before the recheck, and that ordering is
+load-bearing.** On a retried turn the booking's own calendar event is now busy time, so
+rechecking first would find the slot occupied and tell the customer their demo was lost
+— when in fact it is theirs.
+
+**Notification and confirmation are a separate task.** §12 says a confirmed booking
+stays confirmed while a failed notification retries, so neither may delay nor undo a
+booking Google has already accepted. Within the task the team is told first: if the
+customer's confirmation fails, the team can still act.
+
+The customer's confirmation needs no approved template. It is a reply inside the window
+the customer opened by asking for the demo, so it does not depend on [D24].
+
+### Credentials (Phase 11 / [D19])
+
+The refresh token lives in Google Secret Manager and is read at first use, then cached
+in memory for the process lifetime — the worker stays stateless. When Google returns a
+**rotated** refresh token it is written back as a new secret version; missing that is a
+failure that hides for months, then breaks authentication everywhere at once.
+
+Local development and tests use an in-memory store and never require GCP, as [D19]
+requires.
+
+Obtaining the first refresh token is a **one-time human OAuth consent flow**. It is not
+something the platform can perform for itself, and until it is done the Google provider
+fails with a message saying so.
+
+### Idempotency (Phase 11)
+
+Three independent mechanisms, because a demo booked twice is worse than one not booked:
+
+- **Google accepts a client-supplied event ID**, derived from the conversation and the
+  slot. A retry sends the same ID, Google answers 409, and the provider fetches and
+  returns the existing event.
+- **`bookings.calendar_event_id` is unique.** A retry converges on the existing row.
+  This also covers the gap the sequence cannot close: the event is created before the
+  row is written, so a crash between them leaves an event with no record, and the next
+  attempt must find it rather than book again.
+- **`notifications` is unique on user, type and entity.** A retried fan-out re-runs for
+  everyone and duplicates for nobody, and the customer's confirmation is keyed on the
+  booking so it cannot be sent twice.
+
+`uq_bookings_confirmed_start_time` — partial, CONFIRMED only — is the database's share:
+two concurrent confirmations for the same slot cannot both commit, and a cancelled
+booking does not block rebooking the time.
+
 ## 13. Dashboard Notifications
 
 When a demo is successfully booked:

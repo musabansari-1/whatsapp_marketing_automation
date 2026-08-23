@@ -4,16 +4,17 @@ Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
 architecture source of truth, `CLAUDE.md` for development rules, and
 `PROJECT_STATUS.md` for the current implementation state.
 
-**Current state: Phase 10 (AI agent) complete.** The full loop works: a customer
-replies, the platform retrieves relevant knowledge, asks a model, runs authorized tools
-— including checking real calendar availability and booking a demo — and sends the
-reply, all within the 24-hour window and suppression rules.
+**Current state: Phase 11 (Calendar, booking and notifications) complete.** The product
+loop is whole: a customer replies, the platform retrieves knowledge, asks a model,
+checks real calendar availability, books a demo, records it, notifies the sales team and
+confirms to the customer.
 
-Two things are deliberately not finished. **`OPENROUTER_MODEL` is unchosen** ([D17]),
-so nothing has been run against a real model yet; the default configuration still uses
-`FakeLLMProvider`. **Qualification criteria are unconfigured** ([D37]), so no lead
-reaches `QUALIFIED` — the rules engine is complete and inert until the client supplies
-the fields. Sending still needs real Meta credentials and approved templates.
+What is *not* proven is external. No integration has run against a real account — Meta,
+OpenRouter and Google are all built and tested against mocks and fakes, and each needs
+credentials the client supplies. **`OPENROUTER_MODEL` is unchosen** ([D17]) and
+**qualification criteria are unconfigured** ([D37]), so no lead reaches `QUALIFIED`; the
+rules engine is complete and inert. Google Calendar additionally needs a one-time human
+OAuth consent before it can authenticate at all.
 
 ## Layout
 
@@ -512,6 +513,68 @@ the tools that ran and the chunks that grounded the reply (§21).
 the wire format, not that the prompt works, so benchmarking against representative
 conversations is the first thing to do once an API key exists.
 
+## Booking and notifications
+
+A demo the assistant books goes through §12's sequence in order:
+
+```text
+customer selects → already booked? → recheck → Calendar event → booking row
+                 → notify the team → confirm to the customer
+```
+
+**The already-booked check comes before the recheck**, and that ordering matters: on a
+retried turn the booking's own calendar event is now busy time, so rechecking first
+would report the slot as taken and tell the customer their demo was lost — when it is
+theirs.
+
+**Nothing is claimed until Google confirms.** A failed write, a lost race and a taken
+slot are all reported honestly so the assistant offers another time.
+
+Notification and confirmation run as a **separate task**. §12 says a confirmed booking
+stays confirmed while a failed notification retries, so neither may delay nor undo a
+booking Google has accepted. Within that task the team is told first: if the customer's
+confirmation fails, the team can still act. The confirmation itself is a free-form
+reply inside the 24-hour window the customer opened, so it needs no approved template.
+
+Every active internal user gets a notification ([D3]) — V1 has no lead assignment, so
+the whole team is told. V1 notifies by **dashboard and calendar only**: no email, no
+WhatsApp to salespeople.
+
+Three independent mechanisms stop a demo being booked twice: Google accepts a
+client-supplied event ID derived from the conversation and slot; `bookings` is unique on
+that ID, which also recovers the gap where an event exists but a crash prevented the row
+being written; and `notifications` is unique per user, type and entity. A partial unique
+index on confirmed bookings' `start_time` closes the concurrent-confirmation race.
+
+Endpoints:
+
+```text
+GET  /api/v1/bookings                        filter by status
+GET  /api/v1/bookings/{id}
+GET  /api/v1/notifications                   this user's own, with an unread count
+POST /api/v1/notifications/{id}/read
+POST /api/v1/notifications/read-all
+```
+
+No route takes a user ID: notifications are personal, and one salesperson must not be
+able to read or clear another's. Someone else's notification reads as 404 rather than
+403, because confirming it exists would leak that another user was notified. There is
+deliberately no endpoint that creates a booking — that would record a demo the calendar
+knows nothing about.
+
+### Google credentials ([D19])
+
+The refresh token lives in **Google Secret Manager**, read at first use and cached in
+memory so the worker stays stateless. A **rotated** token is written back as a new
+version — missing that is the failure that hides for months and then breaks
+authentication everywhere at once.
+
+Local development and tests use an in-memory store and never need GCP.
+
+**The first refresh token requires a one-time human OAuth consent flow.** The platform
+cannot perform it; until someone does, the Google provider fails with a message saying
+exactly that. Nothing here has been exercised against a real Google account.
+
 ## Provider abstractions
 
 Six external concerns sit behind interfaces, each with a fake used by the test suite.
@@ -524,7 +587,7 @@ provider.
 | Queue     | `QueueProvider`     | `InMemoryQueueProvider`   | Cloud Tasks — Phase 7    |
 | Embedding | `EmbeddingProvider` | `FakeEmbeddingProvider`   | `LocalSentenceTransformerProvider` |
 | LLM       | `LLMProvider`       | `FakeLLMProvider`         | `OpenRouterLLMProvider`  |
-| Calendar  | `CalendarProvider`  | `FakeCalendarProvider`    | Google Calendar — Phase 11 |
+| Calendar  | `CalendarProvider`  | `FakeCalendarProvider`    | `GoogleCalendarProvider` |
 | CRM       | `CRMProvider`       | `FakeCRMProvider`         | HubSpot — Phase 12       |
 
 Selecting a real provider before its phase raises `ProviderNotImplementedError` naming
