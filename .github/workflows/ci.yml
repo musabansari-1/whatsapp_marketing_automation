@@ -1,0 +1,191 @@
+# Continuous integration (§22, Phase 15).
+#
+# Runs the whole suite on every push and pull request. Until now the 1,174 backend
+# tests only ran when somebody remembered to run them locally, which is the state §22
+# describes as needing to change before production.
+#
+# The backend and frontend are separate jobs so a frontend change does not wait on the
+# backend suite, and so a failure names which half broke.
+#
+# Integration tests skip themselves when PostgreSQL is unreachable — deliberate, so the
+# suite stays green on a machine without Docker. That makes CI the only place they are
+# guaranteed to run, so the database service below is not optional: without it the job
+# would pass while silently skipping roughly half the suite. The final step asserts they
+# actually ran.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push supersedes an in-flight run of the same branch. The old result is about
+# code nobody is looking at any more.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # pgvector, not plain postgres: §15 requires the extension and the retrieval
+        # tests exercise real vector similarity.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: whatsapp_marketing_test
+        ports:
+          - 5432:5432
+        # Without this the job races the database and the first test connects to
+        # nothing.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # The port differs from local development (5442 there, to avoid a locally
+      # installed PostgreSQL owning 5432); CI has the port to itself.
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/whatsapp_marketing_test
+      # Fakes throughout. CLAUDE.md forbids a test sending a real WhatsApp message, and
+      # CI holds no credentials that could.
+      APP_ENV: test
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        # --frozen: the lockfile is the source of truth. A resolution difference
+        # between CI and a developer's machine is a bug we want to fail on, not
+        # silently paper over.
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy app tests
+
+      - name: Migrations round-trip
+        # upgrade → downgrade → upgrade, then check for drift. Catches a migration that
+        # cannot be rolled back and a model that nobody migrated — both of which would
+        # otherwise surface during a deployment.
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/whatsapp_marketing_test
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+          uv run alembic check
+
+      - name: Tests
+        run: uv run pytest -q --junitxml=results.xml
+
+      - name: Assert integration tests actually ran
+        # The suite skips integration tests when PostgreSQL is unreachable. That is
+        # correct locally and dangerous here: a misconfigured service container would
+        # produce a green run that tested none of the database behaviour.
+        run: |
+          # The count lives on each <testsuite>, not on the <testsuites> root — reading
+          # the root returns None and would fail this step for the wrong reason.
+          skipped=$(python -c "
+          import xml.etree.ElementTree as ET
+          root = ET.parse('results.xml').getroot()
+          suites = root.iter('testsuite')
+          print(sum(int(s.get('skipped', 0)) for s in suites))
+          ")
+          echo "Skipped tests: $skipped"
+          if [ "$skipped" -gt 0 ]; then
+            echo "::error::$skipped tests were skipped. CI must run the integration suite, and it did not."
+            exit 1
+          fi
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        # `ci`, not `install`: it installs exactly the lockfile and fails if
+        # package.json and the lockfile disagree.
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format
+        run: npm run format:check
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        # The build performs Next.js's own route-type check, which has caught a real
+        # error before: a page file may export only its page.
+        run: npm run build
+
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    # Only after the code is known good — building a 469 MB worker image to then find
+    # the tests fail wastes several minutes per run.
+    needs: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API image
+        # Built but not pushed. Pushing needs registry credentials, and §23's
+        # deployment is a deliberate act rather than something CI does on a merge.
+        run: docker build -f backend/Dockerfile.api -t wa-api:ci backend
+
+      - name: Build worker image
+        # Carries PyTorch and the embedding model weights, so this is the slow one.
+        run: docker build -f backend/Dockerfile.worker -t wa-worker:ci backend
+
+      - name: Verify the embedding model is baked in
+        # [D1]: the weights must be present in the image, not downloaded on a cold
+        # start. --network=none is what proves it.
+        run: |
+          docker run --rm --network=none -e HF_HUB_OFFLINE=1 wa-worker:ci \
+            python -c "from sentence_transformers import SentenceTransformer; \
+            m = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
+            print('dimension:', m.encode(['x']).shape[-1])"

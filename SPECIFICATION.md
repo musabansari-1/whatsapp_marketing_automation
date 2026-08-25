@@ -1837,6 +1837,33 @@ Fake/Inline QueueProvider
 No automated test may send a real WhatsApp message. Tests use the fake provider or a
 mock HTTP transport.
 
+### Continuous integration (Phase 15)
+
+`.github/workflows/ci.yml`, on every push to `main` and every pull request:
+
+```text
+backend    lint → format → type check → migration round-trip → tests
+frontend   lint → format → type check → tests → build
+images     API image, worker image, offline embedding-model check
+```
+
+The backend job runs against a `pgvector/pgvector:pg16` service container. The
+integration tests skip themselves when PostgreSQL is unreachable — correct on a machine
+without Docker, dangerous in CI, where it would produce a green run that exercised no
+database behaviour. A final step reads the JUnit report and fails the job if anything
+was skipped.
+
+The migration step is `upgrade → downgrade → upgrade → alembic check`, so a migration
+that cannot be reversed, and a model nobody migrated, both fail here rather than during
+a deployment.
+
+The image job runs the worker image with `--network=none` and asserts the embedding
+model loads, which is the only way to prove the weights are baked in rather than
+downloaded on a cold start **[D1]**.
+
+Images are built, never pushed. Deployment is a deliberate act, not a consequence of a
+merge.
+
 ## 23. Deployment **[D12]**
 
 ```text
@@ -1880,6 +1907,38 @@ The Next.js frontend is NOT deployed to Cloud Run in V1. Docker images are there
 Browser traffic reaches the API through the same-origin Next.js BFF proxy **[D13]**, so the browser never makes a cross-origin request and no permissive CORS configuration is needed for the dashboard. See §19.
 
 Use secure production secrets and explicit migrations.
+
+### Deployment scripts (Phase 15)
+
+`deploy/`, run in this order. Every script is idempotent, so a run interrupted by a
+missing permission can simply be repeated:
+
+```text
+setup-infrastructure.sh   APIs, Artifact Registry, service accounts, IAM, queue, empty secrets
+secrets.sh                supply credential values (interactive; never written to disk)
+oauth-consent.md          the one manual step — the Google refresh token [D19]
+deploy.sh                 build → migrate → worker → API
+schedule-sweeps.sh        Cloud Scheduler jobs for the recovery sweeps
+alerts.sh                 log-based metrics and alert policies for the silent failures
+smoke-test.sh             verification; sends nothing
+```
+
+Three service accounts, not one: API, worker, and Cloud Tasks invoker. The API is
+publicly reachable — §19 keeps it that way for the webhook — so it does not carry the
+worker's ability to read secrets or reach the calendar, HubSpot and WhatsApp.
+
+Migrations run as a Cloud Run **job**, never on service startup: a startup migration
+runs once per instance, races itself under autoscaling, and turns a schema error into a
+crash-loop instead of a failed step with a readable log. `deploy.sh` aborts if it fails.
+
+`deploy.sh` sets every external provider to `fake`. A staging deployment therefore runs
+end to end before a single credential exists, and enabling a real provider is a visible,
+deliberate act. The smoke test prints the provider configuration and warns on each one
+that is real.
+
+The runbook is `deploy/README.md`. **Nothing in `deploy/` has been executed** — that
+needs a Google Cloud project, a Neon database and a Vercel account, and production
+deployment is gated on explicit approval.
 
 ## 24. Environment Configuration
 
