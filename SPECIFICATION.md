@@ -1638,6 +1638,76 @@ cancellation must not send. See §7.
 - Protect against prompt injection.
 - Apply appropriate rate limits.
 
+### Rate limits (Phase 14, D-42 / D-45)
+
+§19's "apply appropriate rate limits", implemented for the three endpoints that need
+them. Every threshold is configuration: §19 does not say what "appropriate" is, and
+choosing numbers in code would make them a deployment problem to change.
+
+```text
+login, per IP        RATE_LIMIT_LOGIN_IP_ATTEMPTS       / RATE_LIMIT_LOGIN_WINDOW_SECONDS
+login, per account   RATE_LIMIT_LOGIN_ACCOUNT_ATTEMPTS  / RATE_LIMIT_LOGIN_WINDOW_SECONDS
+webhook, per IP      RATE_LIMIT_WEBHOOK_REQUESTS        / RATE_LIMIT_WEBHOOK_WINDOW_SECONDS
+upload, per user     RATE_LIMIT_UPLOAD_REQUESTS         / RATE_LIMIT_UPLOAD_WINDOW_SECONDS
+```
+
+**Two login scopes, because neither is sufficient alone.** Per-IP catches broad scanning
+but is defeated by a distributed attempt and can lock out an office behind one NAT
+address. Per-account protects a known user but lets an attacker lock that user out.
+Together they cover each other's gap, and the account scope is what remains when the
+`X-Forwarded-For` header — which is client-controlled — is spoofed.
+
+**Counted in the database, not in the process.** Cloud Run runs several instances, so an
+in-process counter would divide the effective limit by the instance count — the flaw
+already documented for client-side dispatch pacing under **[D28]**. For a security
+control the ceiling has to be absolute. `rate_limit_counters` is not in the §15 table
+list; it is an implementation mechanism, recorded as a deviation exactly as `sessions`
+was for **[D2]**.
+
+**Fixed windows.** One counter per key per window rather than a row per attempt. The cost
+is a boundary burst — an attacker timing requests either side of a window edge gets up to
+twice the limit in quick succession — which is stated here rather than discovered later.
+
+**Fails closed.** If the counter cannot be reached the request is refused. Letting
+requests through when the limiter is broken removes the protection at exactly the moment
+something is already wrong.
+
+Production refuses to start with `RATE_LIMIT_ENABLED=false`. The flag exists for tests
+that need many attempts, and §19 does not permit a production deployment without limits.
+
+### Recovery sweeps (Phase 14, D-15)
+
+Two scheduled tasks, both idempotent, neither event-driven — the failures they repair are
+the *absence* of an event.
+
+```text
+SWEEP_UNANSWERED_MESSAGES    inbound messages whose conversation turn was never queued
+SWEEP_RATE_LIMIT_COUNTERS    housekeeping for expired rate limit counters
+```
+
+`sweep_unanswered_messages` exists because the inbound path deliberately swallows a queue
+failure: the message is committed, and raising would reprocess the whole webhook and
+re-run its side effects. The cost is a customer who messaged and will never be answered,
+visible only in a log line. The sweep re-enqueues the turn under the same deterministic
+task name the webhook would have used, so a task somehow already queued collapses rather
+than producing a second reply.
+
+A message counts as stranded only after `SWEEP_UNANSWERED_GRACE_SECONDS`. A message
+stored seconds ago is normal, not stranded, and re-enqueueing it would race the task
+already on its way. Closed conversations are excluded: **[D36]** means a closed
+conversation is never replied into.
+
+**Scheduling these is Phase 15.** The handlers are registered and callable; nothing calls
+them on a timer yet.
+
+### Campaign completion on the failure path (Phase 14, D-03)
+
+§7's PROCESSING → COMPLETED transition is now evaluated after a settled failure as well
+as after a success. Previously it ran only on the success path, so a campaign whose last
+recipient failed stayed PROCESSING indefinitely — the recipient states were accurate and
+the campaign's own state was not. A retryable failure still leaves the campaign
+PROCESSING, because the recipient remains QUEUED and the work is genuinely outstanding.
+
 ### Same-origin BFF proxy **[D13]**
 
 The browser communicates with the application through the frontend origin only. A Next.js server-side API proxy (backend-for-frontend) forwards dashboard requests to the Cloud Run FastAPI service.
