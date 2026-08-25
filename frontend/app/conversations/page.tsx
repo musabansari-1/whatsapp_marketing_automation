@@ -14,7 +14,9 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 import { Nav } from '@/app/nav';
+import { Pager } from '@/app/pager';
 import { api, type Conversation, type ConversationStatus } from '@/lib/api';
+import { clampOffset, DEFAULT_PAGE_SIZE } from '@/lib/pagination';
 
 const STATUSES: ConversationStatus[] = ['ACTIVE', 'WAITING_FOR_USER', 'BOOKING', 'CLOSED'];
 
@@ -40,20 +42,25 @@ export default function ConversationsPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<ConversationStatus | ''>('');
+  const [offset, setOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(() => {
     setLoading(true);
     api
-      .listConversations(status || undefined)
+      .listConversations(status || undefined, DEFAULT_PAGE_SIZE, offset)
       .then((page) => {
         setConversations(page.items);
         setTotal(page.total);
+        const corrected = clampOffset(offset, page.total, DEFAULT_PAGE_SIZE);
+        if (corrected !== offset) {
+          setOffset(corrected);
+        }
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [status]);
+  }, [status, offset]);
 
   useEffect(load, [load]);
 
@@ -68,7 +75,12 @@ export default function ConversationsPage() {
 
         <select
           value={status}
-          onChange={(event) => setStatus(event.target.value as ConversationStatus | '')}
+          onChange={(event) => {
+            // Back to the first page: staying on page 5 of a shorter result set is
+            // never what was meant.
+            setOffset(0);
+            setStatus(event.target.value as ConversationStatus | '');
+          }}
           className="mt-5 rounded border border-slate-300 px-3 py-2 text-sm"
         >
           <option value="">All states</option>
@@ -117,6 +129,14 @@ export default function ConversationsPage() {
             ))}
           </ul>
         )}
+
+        {conversations.length > 0 ? (
+          <Pager
+            state={{ total, limit: DEFAULT_PAGE_SIZE, offset }}
+            shown={conversations.length}
+            onChange={setOffset}
+          />
+        ) : null}
       </main>
     </>
   );

@@ -14,7 +14,9 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { Nav } from '@/app/nav';
 import { STATUS_STYLES } from '@/app/leads/status-styles';
+import { Pager } from '@/app/pager';
 import { api, type Lead, type LeadStatus } from '@/lib/api';
+import { clampOffset, DEFAULT_PAGE_SIZE } from '@/lib/pagination';
 
 const STATUSES: LeadStatus[] = [
   'NEW',
@@ -36,22 +38,36 @@ export default function LeadsPage() {
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<LeadStatus | ''>('');
   const [search, setSearch] = useState('');
+  const [offset, setOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(() => {
     setLoading(true);
     api
-      .listLeads(status || undefined, search || undefined)
+      .listLeads(status || undefined, search || undefined, DEFAULT_PAGE_SIZE, offset)
       .then((page) => {
         setLeads(page.items);
         setTotal(page.total);
+        // A narrower filter can leave the offset past the end — the user is on page 5
+        // and would otherwise see an empty list with no indication why.
+        const corrected = clampOffset(offset, page.total, DEFAULT_PAGE_SIZE);
+        if (corrected !== offset) {
+          setOffset(corrected);
+        }
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [status, search]);
+  }, [status, search, offset]);
 
   useEffect(load, [load]);
+
+  // Changing a filter returns to the first page: staying on page 5 of a new, shorter
+  // result set is never what was meant.
+  function changeFilter(apply: () => void) {
+    setOffset(0);
+    apply();
+  }
 
   return (
     <>
@@ -66,13 +82,15 @@ export default function LeadsPage() {
           <input
             type="search"
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => changeFilter(() => setSearch(event.target.value))}
             placeholder="Name, phone, email or company"
             className="w-72 rounded border border-slate-300 px-3 py-2 text-sm"
           />
           <select
             value={status}
-            onChange={(event) => setStatus(event.target.value as LeadStatus | '')}
+            onChange={(event) =>
+              changeFilter(() => setStatus(event.target.value as LeadStatus | ''))
+            }
             className="rounded border border-slate-300 px-3 py-2 text-sm"
           >
             <option value="">All states</option>
@@ -133,6 +151,14 @@ export default function LeadsPage() {
             </tbody>
           </table>
         )}
+
+        {leads.length > 0 ? (
+          <Pager
+            state={{ total, limit: DEFAULT_PAGE_SIZE, offset }}
+            shown={leads.length}
+            onChange={setOffset}
+          />
+        ) : null}
       </main>
     </>
   );

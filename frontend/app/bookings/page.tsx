@@ -12,7 +12,9 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 import { Nav } from '@/app/nav';
+import { Pager } from '@/app/pager';
 import { api, type Booking } from '@/lib/api';
+import { clampOffset, DEFAULT_PAGE_SIZE } from '@/lib/pagination';
 
 function formatSlot(booking: Booking): string {
   // Rendered in the booking's own timezone ([D8]): the sales team reads this, and a
@@ -33,16 +35,25 @@ const STATUS_STYLES: Record<Booking['status'], string> = {
 
 export default function BookingsPage() {
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api
-      .listBookings()
-      .then((page) => setBookings(page.items))
+      .listBookings(undefined, DEFAULT_PAGE_SIZE, offset)
+      .then((page) => {
+        setBookings(page.items);
+        setTotal(page.total);
+        const corrected = clampOffset(offset, page.total, DEFAULT_PAGE_SIZE);
+        if (corrected !== offset) {
+          setOffset(corrected);
+        }
+      })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [offset]);
 
   return (
     <>
@@ -109,6 +120,14 @@ export default function BookingsPage() {
             ))}
           </ul>
         )}
+
+        {bookings.length > 0 ? (
+          <Pager
+            state={{ total, limit: DEFAULT_PAGE_SIZE, offset }}
+            shown={bookings.length}
+            onChange={setOffset}
+          />
+        ) : null}
       </main>
     </>
   );
