@@ -43,6 +43,12 @@ class TaskType(StrEnum):
     GENERATE_EMBEDDINGS = "generate_embeddings"
     SYNC_CRM_CONTACT = "sync_crm_contact"
     SYNC_WHATSAPP_TEMPLATES = "sync_whatsapp_templates"
+    # Recovery sweep for inbound messages whose conversation turn was never queued
+    # (§20). Scheduled rather than event-driven, because the failure it repairs is the
+    # absence of an event.
+    SWEEP_UNANSWERED_MESSAGES = "sweep_unanswered_messages"
+    # Housekeeping for the §19 rate limit counters.
+    SWEEP_RATE_LIMIT_COUNTERS = "sweep_rate_limit_counters"
 
 
 @dataclass(frozen=True, slots=True)

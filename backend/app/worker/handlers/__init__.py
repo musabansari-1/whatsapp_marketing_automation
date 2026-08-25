@@ -11,6 +11,7 @@ from app.worker.handlers.campaign_send import send_campaign_message
 from app.worker.handlers.conversation import process_conversation_turn
 from app.worker.handlers.crm_sync import queue_crm_sync, sync_crm_contact
 from app.worker.handlers.knowledge_ingest import ingest_knowledge_document
+from app.worker.handlers.sweeps import sweep_rate_limit_counters, sweep_unanswered_messages
 from app.worker.handlers.whatsapp import process_inbound_webhook, sync_whatsapp_templates
 from app.worker.registry import TaskRegistry, task_registry
 
@@ -32,6 +33,8 @@ def register_all(registry: TaskRegistry | None = None) -> None:
         TaskType.PROCESS_CONVERSATION_TURN: process_conversation_turn,
         TaskType.NOTIFY_BOOKING: notify_booking,
         TaskType.SYNC_CRM_CONTACT: sync_crm_contact,
+        TaskType.SWEEP_UNANSWERED_MESSAGES: sweep_unanswered_messages,
+        TaskType.SWEEP_RATE_LIMIT_COUNTERS: sweep_rate_limit_counters,
     }
 
     for task_type, handler in handlers.items():
@@ -47,6 +50,8 @@ __all__ = [
     "process_inbound_webhook",
     "register_all",
     "send_campaign_message",
+    "sweep_rate_limit_counters",
+    "sweep_unanswered_messages",
     "sync_crm_contact",
     "sync_whatsapp_templates",
 ]
