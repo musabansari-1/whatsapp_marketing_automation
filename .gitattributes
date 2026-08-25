@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings: a CRLF checkout copied to Cloud Shell or run in a
+# container fails with "bash: : command not found", which reads as a broken script
+# rather than a line-ending problem.
+*.sh text eol=lf
