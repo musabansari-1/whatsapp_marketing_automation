@@ -98,6 +98,33 @@ SALES_EMAIL = "sales@example.com"
 PASSWORD = "a-sufficiently-long-password"  # noqa: S105 - test fixture, not a credential
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limits(engine: AsyncEngine) -> Iterator[None]:
+    """Give every test its own rate limit allowance (§19).
+
+    The counters are deliberately shared through the database — that is the whole point
+    of the table — and the suite shares one database, one client address and one
+    fifteen-minute window. Without this, the fortieth test to log in is refused because
+    of the thirty-nine before it, and the failure looks like a bug in whatever that test
+    was actually checking.
+
+    Cleared rather than disabled, so a test cannot quietly come to depend on the limiter
+    being off.
+
+    Uses `run_db`, which builds its own engine: asyncpg connections are bound to the
+    loop that created them, and borrowing the session-scoped engine here fails with
+    "another operation is in progress".
+    """
+    from app.persistence.models import RateLimitCounter
+    from tests.integration.helpers import run_db
+
+    async def clear(db_session: AsyncSession) -> None:
+        await db_session.execute(delete(RateLimitCounter))
+
+    run_db(clear)
+    yield
+
+
 @pytest_asyncio.fixture
 async def seeded_users(engine: AsyncEngine) -> AsyncIterator[dict[str, str]]:
     """One admin and one salesperson, removed afterwards.

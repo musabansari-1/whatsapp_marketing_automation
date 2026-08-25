@@ -14,11 +14,16 @@ from sqlalchemy import Table, UniqueConstraint
 from app.persistence.base import Base
 from app.persistence.models import EMBEDDING_DIMENSION
 
-# Specification §15 lists 18 tables; [D16] adds whatsapp_suppressions, and [D2]'s
-# server-side sessions add `sessions` (a documented deviation from the §15 list).
+# Specification §15 lists 18 tables; [D16] adds whatsapp_suppressions, [D2]'s
+# server-side sessions add `sessions`, and §19's rate limiting adds
+# `rate_limit_counters` — the last two being documented deviations from the §15 list
+# rather than new product requirements.
 EXPECTED_TABLES = {
     "users",
     "sessions",
+    # §19 rate limiting (Phase 14). Like `sessions`, an implementation mechanism
+    # rather than a product requirement, recorded as a deviation.
+    "rate_limit_counters",
     "audiences",
     "audience_contacts",
     "leads",
@@ -65,7 +70,13 @@ class TestTables:
         assert set(Base.metadata.tables) == EXPECTED_TABLES
 
     def test_table_count(self) -> None:
-        assert len(Base.metadata.tables) == 20
+        """Twenty-one: §15's eighteen, plus `whatsapp_suppressions` ([D16]), `sessions`
+        ([D2]) and `rate_limit_counters` (§19).
+
+        Asserted as a number as well as a set so that adding a table is a deliberate
+        act — this test is the thing that made the Phase 14 addition visible.
+        """
+        assert len(Base.metadata.tables) == 21
 
 
 class TestIdentityAndDeduplication:

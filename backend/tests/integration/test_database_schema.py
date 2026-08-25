@@ -66,13 +66,21 @@ class TestExtensionAndTables:
         assert result.scalar_one() == "vector"
 
     async def test_all_tables_exist(self, session: AsyncSession) -> None:
+        """Twenty-one against a real database: §15's eighteen, plus
+        `whatsapp_suppressions` ([D16]), `sessions` ([D2]) and `rate_limit_counters`
+        (§19).
+
+        The companion in `tests/test_schema.py` asserts the same count against the
+        models. Both exist because they catch different mistakes: that one catches a
+        model nobody migrated, this one a migration that did not run.
+        """
         result = await session.execute(
             text(
                 "SELECT count(*) FROM information_schema.tables "
                 "WHERE table_schema='public' AND table_name <> 'alembic_version'"
             )
         )
-        assert result.scalar_one() == 20
+        assert result.scalar_one() == 21
 
 
 class TestDefaultsAndEnums:

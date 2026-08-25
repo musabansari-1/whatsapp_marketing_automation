@@ -19,7 +19,9 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import DbSession, Queue, SettingsDep
+from app.api.rate_limit import caller_address, enforce
 from app.core.logging import get_logger
+from app.domain.rate_limit import RateLimitScope
 from app.domain.whatsapp_webhook import verify_signature, verify_subscription
 from app.integrations.queue import TaskRequest, TaskType
 from app.persistence.repositories import webhooks as webhook_repo
@@ -68,6 +70,18 @@ async def receive_whatsapp_webhook(
     returning an error for a message we simply do not model would produce an endless
     retry loop.
     """
+    # Before reading the body (§19). §19's BFF note is explicit that "the Cloud Run API
+    # therefore remains publicly reachable for webhooks", so this endpoint is
+    # internet-facing: the signature check rejects forged calls cheaply, but nothing
+    # else bounds how many arrive. Generous, because Meta legitimately bursts and
+    # refusing a real delivery costs a customer message.
+    await enforce(
+        session,
+        settings,
+        scope=RateLimitScope.WEBHOOK_IP,
+        identifier=caller_address(request),
+    )
+
     raw_body = await request.body()
 
     if settings.whatsapp_app_secret is None:

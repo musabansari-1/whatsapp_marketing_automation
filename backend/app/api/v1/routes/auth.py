@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.api.deps import CurrentUser, DbSession, SettingsDep
+from app.api.rate_limit import enforce_login
 from app.api.schemas import LoginRequest, MessageResponse, UserResponse
 from app.core.logging import get_logger
 from app.core.security import (
@@ -50,6 +51,7 @@ def _set_session_cookie(response: Response, token: str, settings: SettingsDep) -
 @router.post("/login", response_model=UserResponse)
 async def login(
     payload: LoginRequest,
+    request: Request,
     response: Response,
     session: DbSession,
     settings: SettingsDep,
@@ -60,6 +62,11 @@ async def login(
     and take comparable time, so the endpoint cannot be used to discover which
     addresses have accounts.
     """
+    # Before any password work (§19). Argon2id makes each guess expensive, which is
+    # mitigation rather than a limit — and the cost is ours, so unlimited attempts are
+    # a denial-of-service vector as much as a credential-stuffing one.
+    await enforce_login(session, settings, request=request, email=payload.email)
+
     user = await user_repo.get_by_email(session, payload.email)
 
     if user is None:

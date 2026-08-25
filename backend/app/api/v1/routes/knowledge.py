@@ -17,6 +17,7 @@ import uuid
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 
 from app.api.deps import CurrentUser, DbSession, Queue, SettingsDep
+from app.api.rate_limit import enforce
 from app.api.schemas import (
     CreateKnowledgeBaseRequest,
     KnowledgeBaseResponse,
@@ -25,6 +26,7 @@ from app.api.schemas import (
 from app.core.logging import get_logger
 from app.domain.documents import SUPPORTED_EXTENSIONS, UnsupportedFormatError, format_for_filename
 from app.domain.enums import DocumentStatus
+from app.domain.rate_limit import RateLimitScope
 from app.integrations.queue import TaskRequest, TaskType
 from app.persistence.models import KnowledgeBase, KnowledgeDocument
 from app.persistence.repositories import knowledge as knowledge_repo
@@ -87,6 +89,16 @@ async def upload_document(
     retrievable (§11), so the dashboard shows progress rather than pretending the
     upload is usable straight away.
     """
+    # §19: uploads are authenticated, so the exposure is lower than the webhook's — but
+    # each one costs parsing and embedding work in the worker, and nothing else bounds
+    # how many a single user can start.
+    await enforce(
+        session,
+        settings,
+        scope=RateLimitScope.UPLOAD_USER,
+        identifier=str(user.id),
+    )
+
     knowledge_base = await _require_knowledge_base(session, knowledge_base_id)
 
     filename = file.filename or "untitled"

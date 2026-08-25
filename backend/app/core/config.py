@@ -244,6 +244,34 @@ class Settings(BaseSettings):
     # in Phase 10 alongside the model choice ([D17]).
     conversation_history_turns: int = 20
 
+    # ---------------------------------------------------------------- rate limits §19
+    # §19 asks for "appropriate rate limits" without saying what they are, so every
+    # threshold is configuration. Off only for a test that needs to make many attempts;
+    # production hardening refuses a disabled limiter.
+    rate_limit_enabled: bool = True
+    # Login: two scopes covering each other's gap. Per-IP is defeated by a distributed
+    # attempt and can lock out an office behind one address; per-account protects a
+    # known user but lets an attacker lock them out.
+    rate_limit_login_ip_attempts: int = 20
+    rate_limit_login_account_attempts: int = 8
+    rate_limit_login_window_seconds: int = 900
+    # Generous, because Meta legitimately bursts webhook deliveries and refusing a real
+    # one costs a customer message.
+    rate_limit_webhook_requests: int = 600
+    rate_limit_webhook_window_seconds: int = 60
+    # Tighter: uploads are authenticated and each one costs embedding work.
+    rate_limit_upload_requests: int = 30
+    rate_limit_upload_window_seconds: int = 3600
+
+    # ---------------------------------------------------------------- sweeps §20
+    # How old an inbound message must be before the sweep treats it as stranded rather
+    # than in flight. Too short and the sweep races the task already on its way; too
+    # long and a customer waits that much longer for a reply that was lost.
+    sweep_unanswered_grace_seconds: int = 600
+    # Cap per sweep run, so a backlog is worked through in batches rather than
+    # enqueueing thousands of tasks at once.
+    sweep_batch_size: int = 200
+
     # ---------------------------------------------------------------- customer copy [D21]
     # Never hard-coded in application logic.
     msg_rag_fallback: str = (
@@ -410,6 +438,10 @@ class Settings(BaseSettings):
             raise ValueError("APP_SECRET must be set to a real secret in production")
         if not self.session_cookie_secure:
             raise ValueError("SESSION_COOKIE_SECURE cannot be disabled in production")
+        if not self.rate_limit_enabled:
+            # §19 requires rate limits. The flag exists for tests that need to make many
+            # attempts; production must not be able to start without them.
+            raise ValueError("RATE_LIMIT_ENABLED cannot be disabled in production (§19)")
         if self.audience_column_schema == PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA:
             raise ValueError(
                 "AUDIENCE_COLUMN_SCHEMA is still the development placeholder. "
