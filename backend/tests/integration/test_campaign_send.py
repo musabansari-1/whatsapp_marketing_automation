@@ -223,6 +223,42 @@ class TestSuccessfulDelivery:
         assert finished.sent_count == 1
         assert finished.completed_at is not None
 
+    def test_the_campaign_completes_when_its_last_recipient_fails(
+        self, send_env: FakeWhatsAppProvider
+    ) -> None:
+        """D-03: completion used to be evaluated only after a *successful* send, so a
+        campaign whose final recipient failed stayed PROCESSING forever. The recipient
+        states were right and the campaign's own state was not."""
+        recipient_id = seed_campaign()
+        send_env.fail_permanently()
+
+        result = run_handler(recipient_id)
+        assert result["result"] == "failed_permanent"
+
+        async def campaign(session: AsyncSession) -> Campaign:
+            return (await session.execute(select(Campaign))).scalar_one()
+
+        finished = run_db(campaign)
+        assert finished.status is CampaignStatus.COMPLETED
+        assert finished.failed_count == 1
+        assert finished.completed_at is not None
+
+    def test_a_campaign_stays_processing_while_a_retry_is_due(
+        self, send_env: FakeWhatsAppProvider
+    ) -> None:
+        """The other half of D-03: a retryable failure leaves the recipient QUEUED, so
+        the campaign still has work outstanding and must not be closed."""
+        recipient_id = seed_campaign()
+        send_env.fail_retryably()
+
+        with pytest.raises(RetryableSendError):
+            run_handler(recipient_id)
+
+        async def campaign(session: AsyncSession) -> Campaign:
+            return (await session.execute(select(Campaign))).scalar_one()
+
+        assert run_db(campaign).status is CampaignStatus.PROCESSING
+
 
 class TestTransientFailure:
     def test_a_transient_failure_asks_for_a_retry(self, send_env: FakeWhatsAppProvider) -> None:
@@ -309,7 +345,14 @@ class TestPermanentFailure:
 
     def test_a_failed_campaign_still_completes(self, send_env: FakeWhatsAppProvider) -> None:
         """A campaign whose recipients failed is finished, not stuck. There is no
-        PARTIAL state; the counts carry the breakdown."""
+        PARTIAL state; the counts carry the breakdown.
+
+        This assertion changed in Phase 14. It previously asserted PROCESSING and
+        described that as "still PROCESSING until the next pass" — but there was no next
+        pass, which was D-03: completion was only ever evaluated after a *successful*
+        send, so a campaign whose last recipient failed never closed. The test name was
+        right and the assertion was wrong.
+        """
         recipient_id = seed_campaign()
         send_env.fail_permanently()
         run_handler(recipient_id)
@@ -317,11 +360,11 @@ class TestPermanentFailure:
         async def campaign(session: AsyncSession) -> Campaign:
             return (await session.execute(select(Campaign))).scalar_one()
 
-        # The handler only completes a campaign after a successful send, so the
-        # recipient is settled but the campaign is still PROCESSING until the next
-        # pass. Assert the recipient outcome, which is what drives reporting.
         assert recipient_row(recipient_id).status is RecipientStatus.FAILED
-        assert run_db(campaign).status is CampaignStatus.PROCESSING
+
+        finished = run_db(campaign)
+        assert finished.status is CampaignStatus.COMPLETED
+        assert finished.failed_count == 1
 
 
 class TestIdempotency:

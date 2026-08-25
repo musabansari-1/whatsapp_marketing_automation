@@ -225,7 +225,14 @@ async def _process(
             )
         )
     except Exception as exc:
-        return _handle_failure(session, settings, recipient, exc, attempts_made=attempts_made)
+        # `_handle_failure` raises `RetryableSendError` when another attempt is due, so
+        # reaching the lines below means this recipient has genuinely settled as FAILED
+        # — and it may have been the campaign's last outstanding one. Without this the
+        # campaign stays PROCESSING forever whenever its final recipient fails (D-03).
+        outcome = _handle_failure(session, settings, recipient, exc, attempts_made=attempts_made)
+        await session.flush()
+        await _complete_campaign_if_finished(session, campaign)
+        return outcome
 
     session.add(
         Message(
@@ -318,6 +325,10 @@ async def _complete_campaign_if_finished(session: AsyncSession, campaign: Campai
     COMPLETED covers partial success: a campaign where some recipients failed is
     still finished, and `sent_count`/`failed_count` carry the breakdown. There is no
     PARTIAL state, by decision.
+
+    Called from both the success and the failure path. Only the success path used to
+    call it, so a campaign whose last recipient failed never left PROCESSING — the
+    recipient states stayed correct and the campaign's own state did not.
     """
     outstanding = (
         await session.execute(
