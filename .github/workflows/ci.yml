@@ -1,6 +1,6 @@
 # Continuous integration (§22, Phase 15).
 #
-# Runs the whole suite on every push and pull request. Until now the 1,174 backend
+# Runs the whole suite on every push and pull request. Until now the 1,181 backend
 # tests only ran when somebody remembered to run them locally, which is the state §22
 # describes as needing to change before production.
 #

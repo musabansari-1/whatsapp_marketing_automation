@@ -20,8 +20,29 @@ which is the normal experience the first time.
 7. smoke-test.sh             verify — sends nothing
 ```
 
+Two companion documents, neither of them a script:
+
+```text
+STAGING_READINESS.md   what must exist before a real-provider deployment
+STAGING_E2E_PLAN.md    the 26 scenarios to run once it does
+```
+
 Vercel is separate and simpler: connect the repository, set `INTERNAL_API_BASE_URL` to
 the Cloud Run API URL, deploy. The frontend is **not** deployed to Cloud Run ([D12]).
+
+## Two different first deployments
+
+Worth separating, because they have very different prerequisites:
+
+- **Fake-provider staging** needs only an account and a database. Every external provider
+  defaults to `fake`, so the whole loop runs end to end before a single credential
+  exists. This is what the scripts above are for, and it can happen today.
+- **Real-provider staging** needs credentials, client input and business decisions.
+  `STAGING_READINESS.md` is the gate; `STAGING_E2E_PLAN.md` is what to run once it is
+  passed. Neither has been started.
+
+The distinction matters because the second is the first deployment where a mistake
+reaches a real person.
 
 ---
 
@@ -33,7 +54,7 @@ the Cloud Run API URL, deploy. The frontend is **not** deployed to Cloud Run ([D
 | Cloud Run service `wa-worker` | Background execution; loads the embedding model ([D1]) | `deploy.sh` |
 | Cloud Run job `wa-migrate` | Explicit migrations (§23) | `deploy.sh` |
 | Cloud Tasks queue `wa-tasks` | Asynchronous dispatch (§18) | `setup-infrastructure.sh` |
-| Cloud Scheduler ×2 | The recovery sweeps (§20, D-15, D-43) | `schedule-sweeps.sh` |
+| Cloud Scheduler ×3 | The recovery sweep and two housekeeping sweeps (§20, D-15, D-43) | `schedule-sweeps.sh` |
 | Secret Manager ×9 | Credentials (§19, [D19]) | `setup-infrastructure.sh` (empty), `secrets.sh` (values) |
 | Artifact Registry | Container images | `setup-infrastructure.sh` |
 | Service accounts ×3 | API, worker, invoker | `setup-infrastructure.sh` |
@@ -186,7 +207,7 @@ PROJECT_ID=my-project ./deploy/smoke-test.sh
 - the API answers `/health` and reaches the database via `/readiness`
 - the worker is **not** publicly reachable, and answers when given an OIDC token — which
   also proves the path Cloud Tasks depends on
-- all nine task handlers are registered
+- all ten task handlers are registered
 - the webhook verification handshake works, and a wrong token is refused
 - an unsigned webhook delivery is rejected (§8)
 - an unauthenticated dashboard call is refused

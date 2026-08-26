@@ -2,7 +2,7 @@
 # Post-deployment smoke test (§22, Phase 15).
 #
 # Answers one question: did this deployment come up correctly? It is not a test suite —
-# CI runs 1,243 of those. It checks the things only a real deployment can be wrong
+# CI runs 1,250 of those. It checks the things only a real deployment can be wrong
 # about: whether the services start, reach the database, hold their secrets, and see
 # each other.
 #
@@ -57,8 +57,15 @@ check "responds to /health" \
 check "reaches the database (/readiness)" \
   curl -fsS --max-time 15 "${API_URL}/readiness"
 
+# Read APP_ENV from the deployed service rather than the operator's shell. What is
+# actually running is the authoritative answer, and a smoke test that skipped the
+# production checks because nobody exported APP_ENV would be worse than useless.
+DEPLOYED_ENV="$(gcloud run services describe "$API_SERVICE" --region "$REGION" --project "$PROJECT_ID" \
+  --format 'value(spec.template.spec.containers[0].env.filter("name:APP_ENV").extract("value"))' 2>/dev/null || true)"
+echo "  APP_ENV: ${DEPLOYED_ENV:-unknown}"
+
 # §19: docs are disabled in production. A 200 here means APP_ENV is not what you think.
-if [ "${APP_ENV:-staging}" = "production" ]; then
+if [ "$DEPLOYED_ENV" = "production" ]; then
   check "API docs are disabled (§19)" \
     bash -c "! curl -fsS --max-time 10 '${API_URL}/docs'"
 fi
@@ -94,6 +101,7 @@ EXPECTED_TASKS=(
   sync_whatsapp_templates
   sweep_unanswered_messages
   sweep_rate_limit_counters
+  sweep_expired_sessions
 )
 
 REGISTERED="$(curl -fsS --max-time 10 -H "Authorization: Bearer ${TOKEN}" "${WORKER_URL}/health" 2>/dev/null || echo '{}')"

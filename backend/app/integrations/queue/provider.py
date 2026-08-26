@@ -49,6 +49,9 @@ class TaskType(StrEnum):
     SWEEP_UNANSWERED_MESSAGES = "sweep_unanswered_messages"
     # Housekeeping for the §19 rate limit counters.
     SWEEP_RATE_LIMIT_COUNTERS = "sweep_rate_limit_counters"
+    # Housekeeping for expired session rows (D-43). Expiry is already enforced when a
+    # session is read, so this is growth control, not access control.
+    SWEEP_EXPIRED_SESSIONS = "sweep_expired_sessions"
 
 
 @dataclass(frozen=True, slots=True)

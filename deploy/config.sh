@@ -29,6 +29,32 @@ API_SERVICE="${API_SERVICE:-wa-api}"
 WORKER_SERVICE="${WORKER_SERVICE:-wa-worker}"
 MIGRATE_JOB="${MIGRATE_JOB:-wa-migrate}"
 
+# Scaling. Named here rather than left inline in deploy.sh so every knob this deployment
+# has is in one file.
+#
+# API_MIN_INSTANCES defaults to 1: Meta retries a webhook that times out, and a cold
+# start under an inbound burst turns one slow reply into a redelivery storm.
+# WORKER_MAX_INSTANCES bounds concurrency against the LLM and WhatsApp providers, each
+# of which has its own rate limit.
+API_MIN_INSTANCES="${API_MIN_INSTANCES:-1}"
+API_MAX_INSTANCES="${API_MAX_INSTANCES:-10}"
+WORKER_MAX_INSTANCES="${WORKER_MAX_INSTANCES:-10}"
+
+# ---------------------------------------------------------------- environments
+#
+# Staging and production are separate Google Cloud **projects**, not two sets of names in
+# one. Every resource below — services, queue, secrets, scheduler jobs — is named without
+# an environment suffix, so pointing PROJECT_ID at a project that already holds the other
+# environment would deploy straight over it.
+#
+#     PROJECT_ID=acme-wa-staging    ./deploy/deploy.sh                     # APP_ENV=staging by default
+#     PROJECT_ID=acme-wa-production APP_ENV=production ./deploy/deploy.sh
+#
+# Separate projects also keep the two sets of secrets apart, which is the part that
+# matters: a staging deployment holding production's WhatsApp token can message real
+# customers. If one project must host both, override API_SERVICE, WORKER_SERVICE,
+# MIGRATE_JOB, TASKS_QUEUE, REPOSITORY and every secret name — and expect to regret it.
+
 # Artifact Registry, not Container Registry: gcr.io is deprecated.
 REPOSITORY="${REPOSITORY:-whatsapp-marketing}"
 IMAGE_HOST="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}"
@@ -93,6 +119,12 @@ SECRET_CALENDAR_TOKEN="${SECRET_CALENDAR_TOKEN:-google-calendar-refresh-token}"
 
 SWEEP_UNANSWERED_SCHEDULE="${SWEEP_UNANSWERED_SCHEDULE:-*/15 * * * *}"
 SWEEP_COUNTERS_SCHEDULE="${SWEEP_COUNTERS_SCHEDULE:-0 * * * *}"
+# Daily. Sessions expire on a scale of days, so an hourly run would find nothing most
+# of the time (D-43).
+SWEEP_SESSIONS_SCHEDULE="${SWEEP_SESSIONS_SCHEDULE:-30 3 * * *}"
+# Etc/UTC deliberately: these are housekeeping intervals, not customer-facing times, and
+# a UTC schedule does not shift twice a year. DEMO_TIMEZONE is the separate setting that
+# governs when demos may be offered.
 SCHEDULER_TIMEZONE="${SCHEDULER_TIMEZONE:-Etc/UTC}"
 
 # ---------------------------------------------------------------- helpers

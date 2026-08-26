@@ -18,6 +18,12 @@ enqueued at worst once more and answered at most once.
 The sweep is deliberately conservative about *when* a message counts as stranded. A
 message stored seconds ago is normal, not stranded, and re-enqueueing it would race the
 task already on its way.
+
+Two housekeeping sweeps sit alongside it — expired rate limit counters (§19) and expired
+sessions (D-43). Neither is a correctness concern: both delete rows that are already
+unreachable. They are here because the alternative is a table that grows for the life of
+the deployment. Each is a separate task so a failure in one cannot stop the others, and
+so they can be scheduled at different intervals.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from app.integrations.registry import build_queue_provider
 from app.persistence.database import get_session_factory
 from app.persistence.models import Conversation, Message
 from app.persistence.repositories import rate_limits as rate_limit_repo
+from app.persistence.repositories import sessions as session_repo
 from app.worker.handlers.conversation import reply_idempotency_key
 
 logger = get_logger(__name__)
@@ -116,6 +123,29 @@ async def sweep_rate_limit_counters(task: TaskRequest) -> dict[str, int | str]:
     return {"result": "swept", "removed": removed}
 
 
+async def sweep_expired_sessions(task: TaskRequest) -> dict[str, int | str]:
+    """Delete session rows whose expiry has passed (D-43).
+
+    `sessions.delete_expired` has existed since Phase 3 with no caller, so expired rows
+    accumulated for the life of a deployment. This is the caller.
+
+    Housekeeping, not access control: **[D2]** expiry is enforced when a session is read,
+    so an expired row grants nothing whether it is deleted or not. What it costs is
+    unbounded growth in the one table every authenticated request touches.
+
+    Deliberately not batched. Unlike the unanswered sweep this deletes rows that are
+    already unreachable, so there is no correctness reason to limit how many go at once,
+    and a partial run would simply leave the rest for the next hour.
+    """
+    factory = get_session_factory()
+    async with factory() as session:
+        removed = await session_repo.delete_expired(session)
+        await session.commit()
+
+    logger.info("sweep_expired_sessions", removed=removed)
+    return {"result": "swept", "removed": removed}
+
+
 async def find_unanswered_messages(
     session: AsyncSession, *, grace_seconds: int, limit: int
 ) -> list[uuid.UUID]:
@@ -176,6 +206,7 @@ __all__ = [
     "REPLY_KEY_PREFIX",
     "find_unanswered_messages",
     "reply_key_for",
+    "sweep_expired_sessions",
     "sweep_rate_limit_counters",
     "sweep_unanswered_messages",
 ]

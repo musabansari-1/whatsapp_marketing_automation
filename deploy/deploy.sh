@@ -88,8 +88,23 @@ common_env=(
   "WORKER_SERVICE_ACCOUNT_EMAIL=${INVOKER_SA}"
 )
 
+# These are applied with --update-env-vars, not --set-env-vars, and the difference is
+# load-bearing. --set replaces the service's entire environment, which would delete every
+# variable an operator set by hand — OPENROUTER_MODEL, AUDIENCE_COLUMN_SCHEMA,
+# QUALIFICATION_REQUIRED_FIELDS, GOOGLE_CALENDAR_ID, the MSG_* copy. The runbook
+# instructs setting exactly those by hand, so the next deploy would silently undo the
+# configuration and, under APP_ENV=production, the service would refuse to start.
+#
+# The cost of --update is that removing a variable from the list above no longer removes
+# it from the service; that needs an explicit --remove-env-vars. A deploy that forgets a
+# setting is a worse failure than one that leaves a stale variable behind.
+
 # Secret *references*, not values: Cloud Run resolves them at start, so nothing appears
 # in the service definition or in `gcloud run services describe` (D-46).
+#
+# --set-secrets here, deliberately unlike the environment above: this list is complete,
+# nothing outside it is set by hand, and being declarative means a secret removed from
+# the list is genuinely detached rather than lingering.
 common_secrets=(
   "APP_SECRET=app-secret:latest"
   "DATABASE_URL=database-url:latest"
@@ -123,7 +138,7 @@ gcloud run deploy "$WORKER_SERVICE" \
   --no-allow-unauthenticated \
   --memory 4Gi --cpu 2 --concurrency 1 --timeout 900 \
   --min-instances 0 --max-instances "${WORKER_MAX_INSTANCES:-10}" \
-  --set-env-vars "$(join "${common_env[@]}")" \
+  --update-env-vars "$(join "${common_env[@]}")" \
   --set-secrets "$(join "${common_secrets[@]}")"
 
 WORKER_URL="$(gcloud run services describe "$WORKER_SERVICE" \
@@ -144,7 +159,7 @@ gcloud run deploy "$API_SERVICE" \
   --allow-unauthenticated \
   --memory 1Gi --cpu 1 --concurrency 80 --timeout 60 \
   --min-instances "${API_MIN_INSTANCES:-1}" --max-instances "${API_MAX_INSTANCES:-10}" \
-  --set-env-vars "$(join "${common_env[@]}"),WORKER_BASE_URL=${WORKER_URL}" \
+  --update-env-vars "$(join "${common_env[@]}"),WORKER_BASE_URL=${WORKER_URL}" \
   --set-secrets "$(join "${common_secrets[@]}")"
 
 API_URL="$(gcloud run services describe "$API_SERVICE" \

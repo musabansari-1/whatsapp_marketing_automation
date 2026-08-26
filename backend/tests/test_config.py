@@ -194,6 +194,17 @@ class TestCustomerFacingCopy:
         assert Settings().msg_rag_fallback == "Custom fallback."
 
 
+class TestSuiteIsolation:
+    def test_the_suite_does_not_read_a_developers_env_file(self) -> None:
+        """`Settings` names `.env`; the suite must not.
+
+        Without this, every assertion about a *default* silently becomes an assertion
+        about whatever `backend/.env` happens to contain — green in CI, which has no
+        such file, and red on a developer's machine, which does.
+        """
+        assert Settings.model_config["env_file"] is None
+
+
 class TestProductionHardening:
     def test_production_rejects_default_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("APP_ENV", "production")
@@ -218,6 +229,23 @@ class TestProductionHardening:
         monkeypatch.setenv("APP_ENV", "production")
         monkeypatch.setenv("APP_SECRET", "a-real-secret")
         with pytest.raises(ValueError, match="AUDIENCE_COLUMN_SCHEMA"):
+            Settings()
+
+    def test_production_refuses_a_disabled_rate_limiter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§19 requires rate limits, and `RATE_LIMIT_ENABLED` exists only for tests.
+
+        The guard shipped with Phase 14a untested, which is the state in which a
+        production gate quietly disappears in a refactor.
+        """
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_SECRET", "a-real-secret")
+        monkeypatch.setenv(
+            "AUDIENCE_COLUMN_SCHEMA", '[{"source": "Mobile", "field": "phone", "required": true}]'
+        )
+        monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
+        with pytest.raises(ValueError, match="RATE_LIMIT_ENABLED"):
             Settings()
 
     def test_production_accepts_hardened_config(self, monkeypatch: pytest.MonkeyPatch) -> None:

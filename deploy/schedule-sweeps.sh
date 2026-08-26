@@ -67,10 +67,17 @@ schedule "wa-sweep-unanswered" "$SWEEP_UNANSWERED_SCHEDULE" \
   "Re-enqueue conversation turns that were never queued (D-15)"
 
 # Hourly is ample: these rows are already unreachable, and this is housekeeping rather
-# than correctness (D-43).
+# than correctness (§19).
 schedule "wa-sweep-rate-limits" "$SWEEP_COUNTERS_SCHEDULE" \
   "sweep_rate_limit_counters" \
   "Delete expired rate limit counters (§19)"
+
+# Daily. Expiry is enforced when a session is read ([D2]), so an expired row grants
+# nothing whether it is deleted or not — this is growth control on the one table every
+# authenticated request touches (D-43).
+schedule "wa-sweep-sessions" "$SWEEP_SESSIONS_SCHEDULE" \
+  "sweep_expired_sessions" \
+  "Delete expired session rows (D-43)"
 
 log "Scheduled"
 cat <<EOF

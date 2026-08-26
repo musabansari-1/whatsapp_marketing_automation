@@ -29,7 +29,17 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     A developer's real .env must not change test outcomes, and a real credential must
     never be reachable from the suite. Provider-selection and secret variables are
     stripped so every test starts from fake providers.
+
+    Stripping `os.environ` is not enough on its own: `Settings.model_config` names
+    `.env`, and pydantic-settings reads that file directly for any field the environment
+    does not supply. With a `backend/.env` present — the normal state for local
+    development — tests asserting a field's *default* saw the file's value instead. CI
+    has no `.env`, so the suite stayed green there while failing locally, which is the
+    exact confusion this fixture exists to prevent. Detaching the file makes the two
+    environments agree.
     """
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+
     for key in list(os.environ):
         if key.upper().startswith(
             (

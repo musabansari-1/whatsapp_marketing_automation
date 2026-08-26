@@ -1675,15 +1675,19 @@ something is already wrong.
 Production refuses to start with `RATE_LIMIT_ENABLED=false`. The flag exists for tests
 that need many attempts, and §19 does not permit a production deployment without limits.
 
-### Recovery sweeps (Phase 14, D-15)
+### Recovery sweeps (Phase 14, D-15 / D-43)
 
-Two scheduled tasks, both idempotent, neither event-driven — the failures they repair are
-the *absence* of an event.
+Three scheduled tasks, all idempotent, none event-driven — the failure the first repairs
+is the *absence* of an event, and the other two are housekeeping no event announces.
 
 ```text
 SWEEP_UNANSWERED_MESSAGES    inbound messages whose conversation turn was never queued
 SWEEP_RATE_LIMIT_COUNTERS    housekeeping for expired rate limit counters
+SWEEP_EXPIRED_SESSIONS       housekeeping for expired session rows (D-43)
 ```
+
+Separate tasks rather than one, so a failure in any of them cannot stop the others, and
+so each can run at its own interval.
 
 `sweep_unanswered_messages` exists because the inbound path deliberately swallows a queue
 failure: the message is committed, and raising would reprocess the whole webhook and
@@ -1697,8 +1701,15 @@ stored seconds ago is normal, not stranded, and re-enqueueing it would race the 
 already on its way. Closed conversations are excluded: **[D36]** means a closed
 conversation is never replied into.
 
-**Scheduling these is Phase 15.** The handlers are registered and callable; nothing calls
-them on a timer yet.
+`sweep_expired_sessions` calls `sessions.delete_expired`, which had existed since Phase 3
+with no caller. It is growth control, not access control: **[D2]** expiry is enforced when
+a session is read, so an expired row grants nothing whether it is deleted or not. A
+*revoked* but unexpired session is deliberately left alone — revocation is also enforced
+on read, and deleting the row early would only lose the trail.
+
+`deploy/schedule-sweeps.sh` creates a Cloud Scheduler job for each. The handlers are
+registered and callable without it; nothing runs them on a timer until that script is
+executed against a real deployment.
 
 ### Campaign completion on the failure path (Phase 14, D-03)
 
