@@ -35,8 +35,8 @@ export function Pager({
   const pages = pageCount(state.total, state.limit);
 
   return (
-    <div className="mt-4 flex items-center justify-between text-sm">
-      <p className="text-slate-600">{rangeLabel(state, shown)}</p>
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+      <p className="text-ink-muted">{rangeLabel(state, shown)}</p>
 
       {pages > 1 ? (
         <div className="flex items-center gap-2">
@@ -44,18 +44,18 @@ export function Pager({
             type="button"
             onClick={() => onChange(previousOffset(state))}
             disabled={!hasPrevious(state)}
-            className="rounded border border-slate-300 px-3 py-1.5 disabled:opacity-40"
+            className="rounded-lg border border-line bg-white px-3 py-1.5 text-ink transition hover:bg-canvas disabled:opacity-40"
           >
             Previous
           </button>
-          <span className="text-slate-600">
+          <span className="tabular-nums text-ink-muted">
             Page {currentPage(state.offset, state.limit)} of {pages}
           </span>
           <button
             type="button"
             onClick={() => onChange(nextOffset(state))}
             disabled={!hasNext(state)}
-            className="rounded border border-slate-300 px-3 py-1.5 disabled:opacity-40"
+            className="rounded-lg border border-line bg-white px-3 py-1.5 text-ink transition hover:bg-canvas disabled:opacity-40"
           >
             Next
           </button>
