@@ -14,16 +14,10 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { Nav } from '@/app/nav';
-import { api, type DocumentStatus, type KnowledgeBase, type KnowledgeDocument } from '@/lib/api';
-
-const STATUS_STYLES: Record<DocumentStatus, string> = {
-  READY: 'bg-emerald-100 text-emerald-800',
-  PENDING: 'bg-slate-100 text-slate-700',
-  PROCESSING: 'bg-sky-100 text-sky-800',
-  FAILED: 'bg-red-100 text-red-800',
-  ARCHIVED: 'bg-slate-200 text-slate-600',
-};
+import { AppShell } from '@/components/shell';
+import { StatusBadge } from '@/components/status-badge';
+import { Alert, Button, Card, EmptyState, PageHeader } from '@/components/ui';
+import { api, type KnowledgeBase, type KnowledgeDocument } from '@/lib/api';
 
 export default function KnowledgePage() {
   const [bases, setBases] = useState<KnowledgeBase[]>([]);
@@ -108,96 +102,106 @@ export default function KnowledgePage() {
   );
 
   return (
-    <>
-      <Nav />
-      <main className="mx-auto max-w-4xl px-6 py-10">
-        <h1 className="text-xl font-semibold tracking-tight">Knowledge base</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          What the assistant is allowed to answer from. Only READY documents are used.
-        </p>
+    <AppShell>
+      <PageHeader
+        title="Knowledge base"
+        description="What the assistant is allowed to answer from. Only READY documents are used."
+      />
 
-        {error ? (
-          <p className="mt-5 rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            {error}
-          </p>
-        ) : null}
+      {error ? <Alert className="mb-6">{error}</Alert> : null}
 
-        <section className="mt-6 flex flex-wrap items-end gap-4">
-          <div>
-            <label htmlFor="kb" className="block text-sm text-slate-600">
-              Knowledge base
-            </label>
-            <select
-              id="kb"
-              value={selected}
-              onChange={(event) => setSelected(event.target.value)}
-              className="mt-1 rounded border border-slate-300 px-3 py-2 text-sm"
-            >
-              {bases.length === 0 ? <option value="">None yet</option> : null}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
+        <Card>
+          <h2 className="text-sm font-semibold">Collections</h2>
+          {bases.length === 0 ? (
+            <p className="mt-3 text-sm text-ink-muted">None yet.</p>
+          ) : (
+            <ul className="mt-3 space-y-1">
               {bases.map((base) => (
-                <option key={base.id} value={base.id}>
-                  {base.name}
-                </option>
+                <li key={base.id}>
+                  <button
+                    type="button"
+                    onClick={() => setSelected(base.id)}
+                    className={
+                      selected === base.id
+                        ? 'w-full rounded-lg bg-ink px-3 py-2 text-left text-sm font-medium text-white'
+                        : 'w-full rounded-lg px-3 py-2 text-left text-sm text-ink-muted hover:bg-canvas hover:text-ink'
+                    }
+                  >
+                    {base.name}
+                  </button>
+                </li>
               ))}
-            </select>
-          </div>
+            </ul>
+          )}
 
-          <form onSubmit={createBase} className="flex items-end gap-2">
-            <div>
-              <label htmlFor="new-kb" className="block text-sm text-slate-600">
-                New knowledge base
+          <form onSubmit={createBase} className="mt-5 space-y-2 border-t border-line pt-4">
+            <label htmlFor="new-kb" className="block text-xs font-medium text-ink-muted">
+              New knowledge base
+            </label>
+            <input
+              id="new-kb"
+              value={newBaseName}
+              onChange={(event) => setNewBaseName(event.target.value)}
+              placeholder="Product FAQs"
+              className="ui-input"
+            />
+            <Button type="submit" variant="secondary" className="w-full">
+              Create
+            </Button>
+          </form>
+        </Card>
+
+        <div className="space-y-4">
+          {selected ? (
+            <Card>
+              <label htmlFor="upload" className="block text-sm font-semibold">
+                Upload a document
+              </label>
+              <p className="mt-1 text-xs text-ink-muted">
+                .txt, .md or .pdf. Ingestion runs in the background, so a new document starts as
+                PENDING.
+              </p>
+              <label
+                htmlFor="upload"
+                className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-dashed border-line bg-canvas px-4 py-3 text-sm"
+              >
+                <span className="text-ink-muted">
+                  {busy ? 'Uploading…' : 'Choose a file to ingest'}
+                </span>
+                <span className="rounded-md bg-white px-2 py-1 text-xs font-medium text-ink shadow-sm">
+                  Browse
+                </span>
               </label>
               <input
-                id="new-kb"
-                value={newBaseName}
-                onChange={(event) => setNewBaseName(event.target.value)}
-                placeholder="Product FAQs"
-                className="mt-1 rounded border border-slate-300 px-3 py-2 text-sm"
+                id="upload"
+                type="file"
+                accept=".txt,.md,.pdf"
+                onChange={upload}
+                disabled={busy}
+                className="sr-only"
               />
-            </div>
-            <button
-              type="submit"
-              className="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white"
-            >
-              Create
-            </button>
-          </form>
-        </section>
+            </Card>
+          ) : null}
 
-        {selected ? (
-          <section className="mt-6 rounded border border-slate-200 bg-white p-4">
-            <label htmlFor="upload" className="block text-sm font-medium">
-              Upload a document
-            </label>
-            <p className="mt-1 text-xs text-slate-500">
-              .txt, .md or .pdf. Ingestion runs in the background, so a new document starts as
-              PENDING.
-            </p>
-            <input
-              id="upload"
-              type="file"
-              accept=".txt,.md,.pdf"
-              onChange={upload}
-              disabled={busy}
-              className="mt-2 text-sm"
-            />
-          </section>
-        ) : null}
-
-        <section className="mt-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium">Documents</h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold">Documents</h2>
             <div className="flex items-center gap-3 text-sm">
-              <label className="flex items-center gap-2 text-slate-600">
+              <label className="flex items-center gap-2 text-ink-muted">
                 <input
                   type="checkbox"
                   checked={includeArchived}
                   onChange={(event) => setIncludeArchived(event.target.checked)}
+                  className="rounded border-line"
                 />
                 Show archived
               </label>
               {pending ? (
-                <button type="button" onClick={loadDocuments} className="underline">
+                <button
+                  type="button"
+                  onClick={loadDocuments}
+                  className="font-medium text-forest hover:underline"
+                >
                   Refresh
                 </button>
               ) : null}
@@ -205,38 +209,36 @@ export default function KnowledgePage() {
           </div>
 
           {documents.length === 0 ? (
-            <p className="mt-2 rounded border border-slate-200 bg-white p-6 text-sm text-slate-600">
-              No documents yet.
-            </p>
+            <EmptyState
+              title="No documents yet"
+              description="Only READY documents are retrieved. A failed ingestion shows its error here so a missing answer is not a mystery."
+            />
           ) : (
-            <ul className="mt-2 space-y-2">
+            <ul className="space-y-2">
               {documents.map((document) => (
-                <li key={document.id} className="rounded border border-slate-200 bg-white p-4">
+                <li
+                  key={document.id}
+                  className="rounded-2xl border border-line bg-white p-4 shadow-card"
+                >
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="font-medium">{document.title}</p>
-                      <p className="text-xs text-slate-500">
+                      <p className="mt-0.5 text-xs text-ink-muted">
                         {document.chunk_count} chunk
                         {document.chunk_count === 1 ? '' : 's'}
                         {document.byte_size ? ` · ${Math.ceil(document.byte_size / 1024)} KB` : ''}
                       </p>
                       {document.error_message ? (
-                        <p className="mt-1 text-sm text-red-700">{document.error_message}</p>
+                        <p className="mt-1 text-sm text-red-800">{document.error_message}</p>
                       ) : null}
                     </div>
                     <div className="flex shrink-0 items-center gap-3">
-                      <span
-                        className={`rounded px-2 py-1 text-xs font-medium ${
-                          STATUS_STYLES[document.status]
-                        }`}
-                      >
-                        {document.status}
-                      </span>
+                      <StatusBadge status={document.status} />
                       {document.status === 'ARCHIVED' ? null : (
                         <button
                           type="button"
                           onClick={() => archive(document.id)}
-                          className="text-sm text-slate-600 underline"
+                          className="text-sm text-ink-muted hover:text-ink"
                         >
                           Archive
                         </button>
@@ -247,8 +249,8 @@ export default function KnowledgePage() {
               ))}
             </ul>
           )}
-        </section>
-      </main>
-    </>
+        </div>
+      </div>
+    </AppShell>
   );
 }

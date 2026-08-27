@@ -12,12 +12,13 @@
 
 'use client';
 
-import Link from 'next/link';
 import { use, useCallback, useEffect, useState } from 'react';
 
-import { Nav } from '@/app/nav';
-import { STATUS_STYLES } from '@/app/leads/status-styles';
+import { AppShell } from '@/components/shell';
+import { StatusBadge } from '@/components/status-badge';
+import { Alert, Card, PageHeader, Skeleton } from '@/components/ui';
 import { api, type Booking, type ConversationDetail, type Lead } from '@/lib/api';
+import { cx } from '@/lib/cx';
 
 function formatWhen(value: string): string {
   return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
@@ -53,63 +54,42 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
 
   if (loading) {
     return (
-      <>
-        <Nav />
-        <main className="mx-auto max-w-4xl px-6 py-10 text-sm text-slate-600">Loading…</main>
-      </>
+      <AppShell>
+        <Skeleton className="h-72" />
+      </AppShell>
     );
   }
 
   if (error || !lead) {
     return (
-      <>
-        <Nav />
-        <main className="mx-auto max-w-4xl px-6 py-10">
-          <p className="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            {error ?? 'Lead not found'}
-          </p>
-        </main>
-      </>
+      <AppShell>
+        <Alert>{error ?? 'Lead not found'}</Alert>
+      </AppShell>
     );
   }
 
   const facts = Object.entries(lead.qualification_data ?? {});
 
   return (
-    <>
-      <Nav />
-      <main className="mx-auto max-w-4xl px-6 py-10">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">
-              {lead.full_name ?? lead.phone_e164}
-            </h1>
-            <p className="mt-1 text-sm text-slate-600">{lead.phone_e164}</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <span
-              className={`rounded px-2 py-1 text-xs font-medium ${
-                STATUS_STYLES[lead.status] ?? 'bg-slate-100 text-slate-700'
-              }`}
-            >
-              {lead.status}
-            </span>
-            <Link href="/leads" className="text-sm text-slate-600 underline">
-              Back
-            </Link>
-          </div>
-        </div>
+    <AppShell>
+      <PageHeader
+        back={{ href: '/leads', label: 'Leads' }}
+        title={lead.full_name ?? lead.phone_e164}
+        description={<span className="font-mono text-xs">{lead.phone_e164}</span>}
+        actions={<StatusBadge status={lead.status} />}
+      />
 
-        {lead.opted_out ? (
-          <p className="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-            This customer has opted out. Nothing further will be sent to them.
-          </p>
-        ) : null}
+      {lead.opted_out ? (
+        <Alert className="mb-6">
+          This customer has opted out. Nothing further will be sent to them.
+        </Alert>
+      ) : null}
 
-        <section className="mt-6 grid gap-4 sm:grid-cols-2">
-          <div className="rounded border border-slate-200 bg-white p-4">
-            <h2 className="text-sm font-medium">Details</h2>
-            <dl className="mt-2 space-y-1 text-sm">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <div className="space-y-4">
+          <Card>
+            <h2 className="text-sm font-semibold">Details</h2>
+            <dl className="mt-3 space-y-2 text-sm">
               <Detail label="Email" value={lead.email} />
               <Detail label="Company" value={lead.company} />
               <Detail label="Role" value={lead.designation} />
@@ -124,49 +104,51 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                 value={lead.last_contacted_at ? formatWhen(lead.last_contacted_at) : null}
               />
             </dl>
-          </div>
+          </Card>
 
-          <div className="rounded border border-slate-200 bg-white p-4">
-            <h2 className="text-sm font-medium">What the assistant learned</h2>
+          <Card>
+            <h2 className="text-sm font-semibold">What the assistant learned</h2>
             {facts.length === 0 ? (
-              <p className="mt-2 text-sm text-slate-600">Nothing extracted yet.</p>
+              <p className="mt-2 text-sm text-ink-muted">Nothing extracted yet.</p>
             ) : (
-              <dl className="mt-2 space-y-1 text-sm">
+              <dl className="mt-3 space-y-2 text-sm">
                 {facts.map(([key, value]) => (
                   <div key={key} className="flex gap-2">
-                    <dt className="w-32 shrink-0 text-slate-500">{key}</dt>
+                    <dt className="w-32 shrink-0 text-ink-muted">{key}</dt>
                     <dd>{String(value)}</dd>
                   </div>
                 ))}
               </dl>
             )}
-          </div>
-        </section>
+          </Card>
 
-        {bookings.length > 0 ? (
-          <section className="mt-6 rounded border border-slate-200 bg-white p-4">
-            <h2 className="text-sm font-medium">Demos</h2>
-            <ul className="mt-2 space-y-1 text-sm">
-              {bookings.map((booking) => (
-                <li key={booking.id}>
-                  {new Date(booking.start_time).toLocaleString('en-GB', {
-                    dateStyle: 'full',
-                    timeStyle: 'short',
-                    // The booking's own timezone, not the browser's ([D8]).
-                    timeZone: booking.timezone,
-                  })}{' '}
-                  <span className="text-slate-500">({booking.status})</span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
+          {bookings.length > 0 ? (
+            <Card>
+              <h2 className="text-sm font-semibold">Demos</h2>
+              <ul className="mt-3 space-y-2 text-sm">
+                {bookings.map((booking) => (
+                  <li key={booking.id} className="flex items-start justify-between gap-3">
+                    <span>
+                      {new Date(booking.start_time).toLocaleString('en-GB', {
+                        dateStyle: 'full',
+                        timeStyle: 'short',
+                        // The booking's own timezone, not the browser's ([D8]).
+                        timeZone: booking.timezone,
+                      })}
+                    </span>
+                    <StatusBadge status={booking.status} />
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          ) : null}
+        </div>
 
-        <section className="mt-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium">Conversation</h2>
+        <section>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold">Conversation</h2>
             {conversation ? (
-              <span className="text-xs text-slate-500">
+              <span className="text-xs text-ink-muted">
                 {conversation.conversation.status}
                 {conversation.within_service_window
                   ? ' — can reply freely'
@@ -176,42 +158,44 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
           </div>
 
           {!conversation ? (
-            <p className="mt-2 rounded border border-slate-200 bg-white p-4 text-sm text-slate-600">
-              No conversation yet.
-            </p>
+            <Card>
+              <p className="text-sm text-ink-muted">No conversation yet.</p>
+            </Card>
           ) : (
-            <ul className="mt-2 space-y-2">
+            <div className="space-y-3 rounded-2xl border border-line bg-white p-4 shadow-card">
               {conversation.turns.map((turn) => (
-                <li
+                <div
                   key={turn.id}
-                  className={`max-w-[80%] rounded p-3 text-sm ${
+                  className={cx(
+                    'max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed',
                     turn.role === 'user'
-                      ? 'bg-white border border-slate-200'
-                      : 'ml-auto bg-slate-900 text-white'
-                  }`}
+                      ? 'border border-line bg-canvas text-ink'
+                      : 'ml-auto bg-ink text-white',
+                  )}
                 >
                   <p className="whitespace-pre-wrap">{turn.content}</p>
                   <p
-                    className={`mt-1 text-xs ${
-                      turn.role === 'user' ? 'text-slate-500' : 'text-slate-300'
-                    }`}
+                    className={cx(
+                      'mt-1.5 text-[11px]',
+                      turn.role === 'user' ? 'text-ink-muted' : 'text-white/55',
+                    )}
                   >
                     {formatWhen(turn.created_at)}
                   </p>
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </section>
-      </main>
-    </>
+      </div>
+    </AppShell>
   );
 }
 
 function Detail({ label, value }: { label: string; value: string | null }) {
   return (
     <div className="flex gap-2">
-      <dt className="w-32 shrink-0 text-slate-500">{label}</dt>
+      <dt className="w-32 shrink-0 text-ink-muted">{label}</dt>
       <dd>{value ?? '—'}</dd>
     </div>
   );

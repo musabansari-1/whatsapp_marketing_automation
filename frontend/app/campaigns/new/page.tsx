@@ -9,10 +9,11 @@
 
 'use client';
 
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
+import { AppShell } from '@/components/shell';
+import { Alert, Button, Card, PageHeader, Skeleton } from '@/components/ui';
 import { api, type AudienceSummary, type WhatsAppTemplate } from '@/lib/api';
 
 export default function NewCampaignPage() {
@@ -54,33 +55,32 @@ export default function NewCampaignPage() {
   const selectedTemplate = templates.find((t) => t.id === templateId);
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
-      <Link href="/campaigns" className="text-sm text-slate-600 underline">
-        Back to campaigns
-      </Link>
-      <h1 className="mt-4 text-xl font-semibold tracking-tight">New campaign</h1>
+    <AppShell>
+      <PageHeader
+        back={{ href: '/campaigns', label: 'Campaigns' }}
+        title="New campaign"
+        description="Creating prepares the campaign and freezes its recipients. It does not send anything."
+      />
 
       {loading ? (
-        <p className="mt-6 text-sm text-slate-500">Loading...</p>
+        <Skeleton className="h-64" />
       ) : (
-        <>
-          {templates.length === 0 && (
-            <p className="mt-6 rounded-md bg-amber-50 p-3 text-sm text-amber-900">
+        <div className="max-w-xl space-y-4">
+          {templates.length === 0 ? (
+            <Alert tone="warning">
               No approved marketing templates are available. Templates are approved by Meta and
               synchronized into this platform; that synchronization arrives in Phase 6. A campaign
               cannot be created until at least one approved template exists.
-            </p>
-          )}
+            </Alert>
+          ) : null}
 
-          {audiences.length === 0 && (
-            <p className="mt-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900">
-              No confirmed audiences. Upload and confirm one first.
-            </p>
-          )}
+          {audiences.length === 0 ? (
+            <Alert tone="warning">No confirmed audiences. Upload and confirm one first.</Alert>
+          ) : null}
 
-          <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label htmlFor="name" className="block text-sm font-medium text-slate-700">
+              <label htmlFor="name" className="block text-sm font-medium text-ink">
                 Campaign name
               </label>
               <input
@@ -89,12 +89,12 @@ export default function NewCampaignPage() {
                 required
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                className="ui-input mt-1.5"
               />
             </div>
 
             <div>
-              <label htmlFor="audience" className="block text-sm font-medium text-slate-700">
+              <label htmlFor="audience" className="block text-sm font-medium text-ink">
                 Audience
               </label>
               <select
@@ -102,7 +102,7 @@ export default function NewCampaignPage() {
                 required
                 value={audienceId}
                 onChange={(event) => setAudienceId(event.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                className="ui-select mt-1.5"
               >
                 <option value="">Select a confirmed audience</option>
                 {audiences.map((audience) => (
@@ -114,7 +114,7 @@ export default function NewCampaignPage() {
             </div>
 
             <div>
-              <label htmlFor="template" className="block text-sm font-medium text-slate-700">
+              <label htmlFor="template" className="block text-sm font-medium text-ink">
                 Approved template
               </label>
               <select
@@ -122,7 +122,7 @@ export default function NewCampaignPage() {
                 required
                 value={templateId}
                 onChange={(event) => setTemplateId(event.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                className="ui-select mt-1.5"
               >
                 <option value="">Select a template</option>
                 {templates.map((template) => (
@@ -133,32 +133,25 @@ export default function NewCampaignPage() {
               </select>
             </div>
 
-            {selectedTemplate?.body_preview && (
-              <div className="rounded-lg border border-slate-200 bg-white p-4">
-                <h2 className="text-xs font-medium uppercase text-slate-500">Template preview</h2>
-                <p className="mt-2 whitespace-pre-wrap text-sm">{selectedTemplate.body_preview}</p>
-              </div>
-            )}
+            {selectedTemplate?.body_preview ? (
+              <Card>
+                <h2 className="text-[11px] font-semibold uppercase tracking-section text-ink-muted">
+                  Template preview
+                </h2>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
+                  {selectedTemplate.body_preview}
+                </p>
+              </Card>
+            ) : null}
 
-            {error && (
-              <p role="alert" className="text-sm text-red-700">
-                {error}
-              </p>
-            )}
+            {error ? <Alert>{error}</Alert> : null}
 
-            <button
-              type="submit"
-              disabled={busy || !audienceId || !templateId}
-              className="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-            >
-              {busy ? 'Preparing...' : 'Create campaign'}
-            </button>
-            <p className="text-xs text-slate-500">
-              Creating prepares the campaign and freezes its recipients. It does not send anything.
-            </p>
+            <Button type="submit" disabled={busy || !audienceId || !templateId}>
+              {busy ? 'Preparing…' : 'Create campaign'}
+            </Button>
           </form>
-        </>
+        </div>
       )}
-    </main>
+    </AppShell>
   );
 }

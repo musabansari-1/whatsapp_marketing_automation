@@ -12,6 +12,9 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
+import { AppShell } from '@/components/shell';
+import { StatusBadge } from '@/components/status-badge';
+import { Alert, Button, Card, PageHeader, StatCard } from '@/components/ui';
 import { api, type AudienceContact, type AudienceSchema, type AudienceSummary } from '@/lib/api';
 
 export default function UploadAudiencePage() {
@@ -63,45 +66,53 @@ export default function UploadAudiencePage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
-      <Link href="/audiences" className="text-sm text-slate-600 underline">
-        Back to audiences
-      </Link>
-      <h1 className="mt-4 text-xl font-semibold tracking-tight">Upload an audience</h1>
+    <AppShell>
+      <PageHeader
+        back={{ href: '/audiences', label: 'Audiences' }}
+        title="Upload an audience"
+        description="Validate first. Confirming stores the contacts; it still does not send anything."
+      />
 
-      {schema && (
-        <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="text-sm font-medium">Expected columns</h2>
-          <ul className="mt-2 space-y-1 text-sm text-slate-700">
+      {schema ? (
+        <Card className="mb-6">
+          <h2 className="text-sm font-semibold">Expected columns</h2>
+          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
             {schema.columns.map((column) => (
-              <li key={column.source}>
+              <li
+                key={column.source}
+                className="flex items-center justify-between rounded-lg bg-canvas px-3 py-2 text-sm"
+              >
                 <span className="font-mono text-xs">{column.source}</span>
                 {column.required ? (
-                  <span className="ml-2 text-xs text-red-700">required</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-red-700">
+                    required
+                  </span>
                 ) : (
-                  <span className="ml-2 text-xs text-slate-400">optional</span>
+                  <span className="text-[11px] uppercase tracking-wide text-ink-faint">
+                    optional
+                  </span>
                 )}
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-xs text-slate-500">
+          <p className="mt-3 text-xs text-ink-muted">
             Numbers without a country code are read as {schema.phone_default_region} numbers. Up to{' '}
             {schema.max_rows.toLocaleString()} rows.
           </p>
-          {schema.is_placeholder && (
-            <p className="mt-3 rounded-md bg-amber-50 p-3 text-xs text-amber-900">
+          {schema.is_placeholder ? (
+            <Alert tone="warning" className="mt-3">
               These are development placeholder columns, not a confirmed client format. Set{' '}
               <span className="font-mono">AUDIENCE_COLUMN_SCHEMA</span> once the real column names
               are known. No code change is needed.
-            </p>
-          )}
-        </section>
-      )}
+            </Alert>
+          ) : null}
+        </Card>
+      ) : null}
 
-      {!audience && (
-        <form onSubmit={handleUpload} className="mt-6 space-y-4">
+      {!audience ? (
+        <form onSubmit={handleUpload} className="space-y-4">
           <div>
-            <label htmlFor="name" className="block text-sm font-medium text-slate-700">
+            <label htmlFor="name" className="block text-sm font-medium text-ink">
               Audience name (optional)
             </label>
             <input
@@ -110,13 +121,24 @@ export default function UploadAudiencePage() {
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Defaults to the file name"
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+              className="ui-input mt-1.5"
             />
           </div>
 
           <div>
-            <label htmlFor="file" className="block text-sm font-medium text-slate-700">
+            <label htmlFor="file" className="block text-sm font-medium text-ink">
               Excel file (.xlsx)
+            </label>
+            <label
+              htmlFor="file"
+              className="mt-1.5 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-line bg-white px-6 py-10 text-center shadow-card transition hover:border-forest/40"
+            >
+              <span className="text-sm font-medium text-ink">
+                {file ? file.name : 'Choose a spreadsheet'}
+              </span>
+              <span className="mt-1 text-xs text-ink-muted">
+                .xlsx only. Nothing is sent at this step.
+              </span>
             </label>
             <input
               id="file"
@@ -124,59 +146,50 @@ export default function UploadAudiencePage() {
               accept=".xlsx"
               required
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              className="mt-1 w-full text-sm"
+              className="sr-only"
             />
           </div>
 
-          <button
-            type="submit"
-            disabled={busy || !file}
-            className="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-          >
-            {busy ? 'Validating...' : 'Validate file'}
-          </button>
+          <Button type="submit" disabled={busy || !file}>
+            {busy ? 'Validating…' : 'Validate file'}
+          </Button>
         </form>
-      )}
+      ) : null}
 
-      {error && (
-        <p role="alert" className="mt-4 text-sm text-red-700">
-          {error}
-        </p>
-      )}
+      {error ? <Alert className="mt-4">{error}</Alert> : null}
 
-      {audience && (
-        <section className="mt-8">
-          <h2 className="text-sm font-medium">Preview</h2>
-          <div className="mt-2 grid grid-cols-4 gap-3 text-sm">
-            <Stat label="Rows" value={audience.total_rows} />
-            <Stat label="Valid" value={audience.valid_rows} tone="text-emerald-700" />
-            <Stat label="Invalid" value={audience.invalid_rows} tone="text-red-700" />
-            <Stat label="Duplicate" value={audience.duplicate_rows} tone="text-amber-700" />
+      {audience ? (
+        <section className="mt-2 space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard label="Rows" value={audience.total_rows} />
+            <StatCard label="Valid" value={audience.valid_rows} tone="text-forest" />
+            <StatCard label="Invalid" value={audience.invalid_rows} tone="text-red-800" />
+            <StatCard label="Duplicate" value={audience.duplicate_rows} tone="text-amber-800" />
           </div>
 
-          <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-            <table className="w-full text-sm">
-              <thead className="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
+          <div className="ui-table-wrap">
+            <table className="ui-table">
+              <thead>
                 <tr>
-                  <th className="px-3 py-2 font-medium">Row</th>
-                  <th className="px-3 py-2 font-medium">Phone</th>
-                  <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th>Row</th>
+                  <th>Phone</th>
+                  <th>Name</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {sample.map((contact) => (
-                  <tr key={contact.id} className="border-b border-slate-100 last:border-0">
-                    <td className="px-3 py-2 tabular-nums">{contact.row_number}</td>
-                    <td className="px-3 py-2 font-mono text-xs">{contact.phone_e164 ?? '-'}</td>
-                    <td className="px-3 py-2">{contact.full_name ?? '-'}</td>
-                    <td className="px-3 py-2">
+                  <tr key={contact.id}>
+                    <td className="tabular-nums">{contact.row_number}</td>
+                    <td className="font-mono text-xs">{contact.phone_e164 ?? '—'}</td>
+                    <td>{contact.full_name ?? '—'}</td>
+                    <td>
                       {contact.validation_status === 'VALID' ? (
-                        <span className="text-emerald-700">Valid</span>
+                        <StatusBadge status="VALID" />
                       ) : (
-                        <span className="text-red-700">
+                        <span className="text-sm text-red-800">
                           {contact.validation_status}
-                          {contact.validation_error ? ` - ${contact.validation_error}` : ''}
+                          {contact.validation_error ? ` — ${contact.validation_error}` : ''}
                         </span>
                       )}
                     </td>
@@ -186,33 +199,26 @@ export default function UploadAudiencePage() {
             </table>
           </div>
 
-          <div className="mt-4 flex items-center gap-3">
-            <button
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
               type="button"
               onClick={handleConfirm}
               disabled={busy || audience.valid_rows === 0}
-              className="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
             >
-              {busy ? 'Confirming...' : `Confirm ${audience.valid_rows} contacts`}
-            </button>
-            <Link href={`/audiences/${audience.id}`} className="text-sm underline">
+              {busy ? 'Confirming…' : `Confirm ${audience.valid_rows} contacts`}
+            </Button>
+            <Link
+              href={`/audiences/${audience.id}`}
+              className="text-sm font-medium text-ink-muted hover:text-ink"
+            >
               Review all rows
             </Link>
           </div>
-          <p className="mt-2 text-xs text-slate-500">
+          <p className="text-xs text-ink-muted">
             Confirming stores the audience. It does not start a campaign or send anything.
           </p>
         </section>
-      )}
-    </main>
-  );
-}
-
-function Stat({ label, value, tone }: { label: string; value: number; tone?: string }) {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-3">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className={`mt-1 text-lg font-semibold tabular-nums ${tone ?? ''}`}>{value}</div>
-    </div>
+      ) : null}
+    </AppShell>
   );
 }

@@ -9,37 +9,20 @@
  * through the BFF proxy ([D13]).
  */
 
-import { LogoutButton } from '@/app/logout-button';
-import { Nav } from '@/app/nav';
+import { AppShell } from '@/components/shell';
+import { PageHeader } from '@/components/ui';
 import { OverviewMetrics } from '@/app/overview';
-import { getCurrentUser } from '@/lib/session';
 
-// Reflects live session state, so it must not be prerendered at build time.
 export const dynamic = 'force-dynamic';
 
-export default async function OverviewPage() {
-  const user = await getCurrentUser();
-
+export default function OverviewPage() {
   return (
-    <>
-      <Nav />
-      <main className="mx-auto max-w-5xl px-6 py-10">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">Overview</h1>
-            {user ? (
-              <p className="mt-1 text-sm text-slate-600">
-                {user.email} — <span className="font-mono text-xs">{user.role}</span>
-              </p>
-            ) : null}
-          </div>
-          {user ? <LogoutButton /> : null}
-        </div>
-
-        <div className="mt-8">
-          <OverviewMetrics />
-        </div>
-      </main>
-    </>
+    <AppShell>
+      <PageHeader
+        title="Overview"
+        description="Reach, engagement and outcomes — enough to see whether the pipeline is moving without opening another page."
+      />
+      <OverviewMetrics />
+    </AppShell>
   );
 }

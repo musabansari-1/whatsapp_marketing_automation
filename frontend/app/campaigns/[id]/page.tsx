@@ -7,10 +7,12 @@
 
 'use client';
 
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
+import { AppShell } from '@/components/shell';
+import { StatusBadge } from '@/components/status-badge';
+import { Alert, Button, Card, FilterChip, PageHeader, Skeleton, StatCard } from '@/components/ui';
 import { api, type CampaignDetail, type CampaignRecipient, type RecipientStatus } from '@/lib/api';
 
 const FILTERS: { label: string; value: RecipientStatus | 'ALL' }[] = [
@@ -91,53 +93,65 @@ export default function CampaignDetailPage() {
   const campaign = detail?.campaign;
 
   return (
-    <main className="mx-auto max-w-4xl px-6 py-12">
-      <Link href="/campaigns" className="text-sm text-slate-600 underline">
-        Back to campaigns
-      </Link>
+    <AppShell>
+      {error ? <Alert className="mb-4">{error}</Alert> : null}
+      {notice ? (
+        <Alert tone="success" className="mb-4">
+          {notice}
+        </Alert>
+      ) : null}
 
-      {error && (
-        <p role="alert" className="mt-4 text-sm text-red-700">
-          {error}
-        </p>
-      )}
-      {notice && <p className="mt-4 text-sm text-emerald-700">{notice}</p>}
-
-      {detail && campaign && (
+      {!detail || !campaign ? (
+        <Skeleton className="h-64" />
+      ) : (
         <>
-          <div className="mt-4">
-            <h1 className="text-xl font-semibold tracking-tight">{campaign.name}</h1>
-            <p className="mt-1 text-sm text-slate-600">
-              Status <span className="font-mono text-xs">{campaign.status}</span> &middot; template{' '}
-              <span className="font-mono text-xs">{detail.template.name}</span>
-            </p>
+          <PageHeader
+            back={{ href: '/campaigns', label: 'Campaigns' }}
+            title={campaign.name}
+            description={
+              <span className="flex flex-wrap items-center gap-2">
+                <StatusBadge status={campaign.status} />
+                <span>template {detail.template.name}</span>
+              </span>
+            }
+          />
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard label="Recipients" value={campaign.total_recipients} />
+            <StatCard label="Pending" value={detail.pending_recipients} />
+            <StatCard label="Sent" value={campaign.sent_count} tone="text-forest" />
+            <StatCard label="Skipped" value={campaign.skipped_count} tone="text-amber-800" />
           </div>
 
-          <div className="mt-6 grid grid-cols-4 gap-3">
-            <Stat label="Recipients" value={campaign.total_recipients} />
-            <Stat label="Pending" value={detail.pending_recipients} />
-            <Stat label="Sent" value={campaign.sent_count} tone="text-emerald-700" />
-            <Stat label="Skipped" value={campaign.skipped_count} tone="text-amber-700" />
-          </div>
+          {detail.template.body_preview ? (
+            <Card className="mt-4">
+              <h2 className="text-[11px] font-semibold uppercase tracking-section text-ink-muted">
+                Message
+              </h2>
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
+                {detail.template.body_preview}
+              </p>
+            </Card>
+          ) : null}
 
-          {detail.template.body_preview && (
-            <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
-              <h2 className="text-xs font-medium uppercase text-slate-500">Message</h2>
-              <p className="mt-2 whitespace-pre-wrap text-sm">{detail.template.body_preview}</p>
-            </div>
-          )}
-
-          {campaign.status === 'READY' && (
-            <div className="mt-6 rounded-lg border border-slate-300 bg-white p-5">
+          {campaign.status === 'READY' ? (
+            <Card className="mt-4 border-ink/10">
               {!confirming ? (
-                <button
-                  type="button"
-                  onClick={() => setConfirming(true)}
-                  disabled={detail.pending_recipients === 0}
-                  className="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-                >
-                  Send broadcast
-                </button>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Send broadcast</p>
+                    <p className="mt-0.5 text-xs text-ink-muted">
+                      READY means prepared, not sending. This is the explicit click.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={() => setConfirming(true)}
+                    disabled={detail.pending_recipients === 0}
+                  >
+                    Send broadcast
+                  </Button>
+                </div>
               ) : (
                 <div>
                   <p className="text-sm">
@@ -145,83 +159,66 @@ export default function CampaignDetailPage() {
                     be undone.
                   </p>
                   <div className="mt-3 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={handleSend}
-                      disabled={busy}
-                      className="rounded-md bg-red-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-                    >
-                      {busy ? 'Starting...' : 'Yes, send now'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirming(false)}
-                      className="rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    >
+                    <Button type="button" variant="danger" onClick={handleSend} disabled={busy}>
+                      {busy ? 'Starting…' : 'Yes, send now'}
+                    </Button>
+                    <Button type="button" variant="secondary" onClick={() => setConfirming(false)}>
                       Cancel
-                    </button>
+                    </Button>
                   </div>
                 </div>
               )}
-            </div>
-          )}
+            </Card>
+          ) : null}
 
-          {(campaign.status === 'PROCESSING' ||
-            campaign.status === 'READY' ||
-            campaign.status === 'PAUSED') && (
+          {campaign.status === 'PROCESSING' ||
+          campaign.status === 'READY' ||
+          campaign.status === 'PAUSED' ? (
             <div className="mt-4">
-              <button
-                type="button"
-                onClick={handleCancel}
-                disabled={busy}
-                className="rounded-md border border-red-300 px-3 py-2 text-sm text-red-700 disabled:opacity-60"
-              >
+              <Button type="button" variant="danger-outline" onClick={handleCancel} disabled={busy}>
                 Cancel campaign
-              </button>
-              <p className="mt-1 text-xs text-slate-500">
+              </Button>
+              <p className="mt-1.5 text-xs text-ink-muted">
                 Stops anything not yet sent. Messages already delivered cannot be recalled.
               </p>
             </div>
-          )}
+          ) : null}
 
-          <div className="mt-6 flex gap-2">
+          <div className="mt-8 mb-4 flex flex-wrap gap-2">
             {FILTERS.map((option) => (
-              <button
+              <FilterChip
                 key={option.value}
-                type="button"
+                active={filter === option.value}
                 onClick={() => setFilter(option.value)}
-                className={`rounded-md border px-3 py-1.5 text-sm ${
-                  filter === option.value
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 text-slate-700'
-                }`}
               >
                 {option.label}
-              </button>
+              </FilterChip>
             ))}
           </div>
 
-          <p className="mt-3 text-xs text-slate-500">
+          <p className="mb-2 text-xs text-ink-muted">
             Showing {recipients.length} of {total}
           </p>
 
-          <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-            <table className="w-full text-sm">
-              <thead className="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
+          <div className="ui-table-wrap">
+            <table className="ui-table">
+              <thead>
                 <tr>
-                  <th className="px-3 py-2 font-medium">Phone</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Attempts</th>
-                  <th className="px-3 py-2 font-medium">Error</th>
+                  <th>Phone</th>
+                  <th>Status</th>
+                  <th>Attempts</th>
+                  <th>Error</th>
                 </tr>
               </thead>
               <tbody>
                 {recipients.map((recipient) => (
-                  <tr key={recipient.id} className="border-b border-slate-100 last:border-0">
-                    <td className="px-3 py-2 font-mono text-xs">{recipient.phone_e164}</td>
-                    <td className="px-3 py-2">{recipient.status}</td>
-                    <td className="px-3 py-2 tabular-nums">{recipient.attempts}</td>
-                    <td className="px-3 py-2 text-red-700">{recipient.error_message ?? ''}</td>
+                  <tr key={recipient.id}>
+                    <td className="font-mono text-xs">{recipient.phone_e164}</td>
+                    <td>
+                      <StatusBadge status={recipient.status} />
+                    </td>
+                    <td className="tabular-nums">{recipient.attempts}</td>
+                    <td className="text-red-800">{recipient.error_message ?? ''}</td>
                   </tr>
                 ))}
               </tbody>
@@ -229,15 +226,6 @@ export default function CampaignDetailPage() {
           </div>
         </>
       )}
-    </main>
-  );
-}
-
-function Stat({ label, value, tone }: { label: string; value: number; tone?: string }) {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-3">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className={`mt-1 text-lg font-semibold tabular-nums ${tone ?? ''}`}>{value}</div>
-    </div>
+    </AppShell>
   );
 }

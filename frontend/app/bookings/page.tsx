@@ -11,8 +11,10 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
-import { Nav } from '@/app/nav';
 import { Pager } from '@/app/pager';
+import { AppShell } from '@/components/shell';
+import { StatusBadge } from '@/components/status-badge';
+import { Alert, EmptyState, PageHeader, Skeleton } from '@/components/ui';
 import { api, type Booking } from '@/lib/api';
 import { clampOffset, DEFAULT_PAGE_SIZE } from '@/lib/pagination';
 
@@ -25,13 +27,6 @@ function formatSlot(booking: Booking): string {
     timeZone: booking.timezone,
   });
 }
-
-const STATUS_STYLES: Record<Booking['status'], string> = {
-  CONFIRMED: 'bg-emerald-100 text-emerald-800',
-  PENDING: 'bg-amber-100 text-amber-800',
-  CANCELLED: 'bg-slate-200 text-slate-700',
-  FAILED: 'bg-red-100 text-red-800',
-};
 
 export default function BookingsPage() {
   const [bookings, setBookings] = useState<Booking[]>([]);
@@ -56,79 +51,70 @@ export default function BookingsPage() {
   }, [offset]);
 
   return (
-    <>
-      <Nav />
-      <main className="mx-auto max-w-4xl px-6 py-12">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">Demos</h1>
-            <p className="mt-1 text-sm text-slate-600">
-              Booked by the assistant and confirmed by Google Calendar.
-            </p>
-          </div>
-          <Link href="/" className="text-sm text-slate-600 underline">
-            Back
-          </Link>
-        </div>
+    <AppShell>
+      <PageHeader
+        title="Demos"
+        description="Booked by the assistant and confirmed by Google Calendar. There is no way to create one from here."
+      />
 
-        {error ? (
-          <p className="mt-6 rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            {error}
-          </p>
-        ) : null}
+      {error ? <Alert className="mb-6">{error}</Alert> : null}
 
-        {loading ? (
-          <p className="mt-6 text-sm text-slate-600">Loading…</p>
-        ) : bookings.length === 0 ? (
-          <p className="mt-6 rounded border border-slate-200 bg-white p-6 text-sm text-slate-600">
-            No demos booked yet.
-          </p>
-        ) : (
-          <ul className="mt-6 space-y-3">
+      {loading ? (
+        <Skeleton className="h-48" />
+      ) : bookings.length === 0 ? (
+        <EmptyState
+          title="No demos booked yet"
+          description="A demo appears here only after Calendar confirms the event. A zero is empty pipeline, not a missing feature."
+        />
+      ) : (
+        <>
+          <ul className="space-y-3">
             {bookings.map((booking) => (
-              <li key={booking.id} className="rounded border border-slate-200 bg-white p-4">
+              <li
+                key={booking.id}
+                className="rounded-2xl border border-line bg-white p-5 shadow-card"
+              >
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <p className="font-medium">{formatSlot(booking)}</p>
-                    <p className="text-sm text-slate-600">{booking.timezone}</p>
+                    <p className="font-medium tracking-tight">{formatSlot(booking)}</p>
+                    <p className="mt-0.5 text-sm text-ink-muted">{booking.timezone}</p>
                     {booking.customer_email ? (
-                      <p className="mt-1 text-sm text-slate-600">{booking.customer_email}</p>
+                      <p className="mt-1 text-sm text-ink-muted">{booking.customer_email}</p>
                     ) : null}
                     {booking.failure_reason ? (
-                      <p className="mt-1 text-sm text-red-700">{booking.failure_reason}</p>
+                      <p className="mt-1 text-sm text-red-800">{booking.failure_reason}</p>
                     ) : null}
                   </div>
-                  <span
-                    className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${
-                      STATUS_STYLES[booking.status]
-                    }`}
-                  >
-                    {booking.status}
-                  </span>
+                  <StatusBadge status={booking.status} />
                 </div>
-                {booking.meeting_link ? (
-                  <a
-                    href={booking.meeting_link}
-                    className="mt-2 inline-block text-sm text-slate-700 underline"
-                    target="_blank"
-                    rel="noreferrer"
+                <div className="mt-3 flex flex-wrap gap-4 text-sm">
+                  <Link
+                    href={`/leads/${booking.lead_id}`}
+                    className="font-medium text-ink hover:text-forest"
                   >
-                    Open in calendar
-                  </a>
-                ) : null}
+                    Open lead
+                  </Link>
+                  {booking.meeting_link ? (
+                    <a
+                      href={booking.meeting_link}
+                      className="font-medium text-ink-muted hover:text-ink"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open in calendar
+                    </a>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
-        )}
-
-        {bookings.length > 0 ? (
           <Pager
             state={{ total, limit: DEFAULT_PAGE_SIZE, offset }}
             shown={bookings.length}
             onChange={setOffset}
           />
-        ) : null}
-      </main>
-    </>
+        </>
+      )}
+    </AppShell>
   );
 }

@@ -13,19 +13,14 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
-import { Nav } from '@/app/nav';
 import { Pager } from '@/app/pager';
+import { AppShell } from '@/components/shell';
+import { StatusBadge } from '@/components/status-badge';
+import { Alert, EmptyState, PageHeader, Skeleton } from '@/components/ui';
 import { api, type Conversation, type ConversationStatus } from '@/lib/api';
 import { clampOffset, DEFAULT_PAGE_SIZE } from '@/lib/pagination';
 
 const STATUSES: ConversationStatus[] = ['ACTIVE', 'WAITING_FOR_USER', 'BOOKING', 'CLOSED'];
-
-const STATUS_STYLES: Record<ConversationStatus, string> = {
-  ACTIVE: 'bg-sky-100 text-sky-800',
-  WAITING_FOR_USER: 'bg-slate-100 text-slate-700',
-  BOOKING: 'bg-emerald-100 text-emerald-800',
-  CLOSED: 'bg-slate-200 text-slate-600',
-};
 
 function lastActivity(conversation: Conversation): string {
   const stamps = [conversation.last_inbound_at, conversation.last_outbound_at].filter(
@@ -65,79 +60,66 @@ export default function ConversationsPage() {
   useEffect(load, [load]);
 
   return (
-    <>
-      <Nav />
-      <main className="mx-auto max-w-4xl px-6 py-10">
-        <h1 className="text-xl font-semibold tracking-tight">Conversations</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          {total} {total === 1 ? 'conversation' : 'conversations'}, most recent first
-        </p>
+    <AppShell>
+      <PageHeader
+        title="Conversations"
+        description={`${total} ${total === 1 ? 'conversation' : 'conversations'}, most recent first. Read-only — replies are sent by the worker.`}
+      />
 
-        <select
-          value={status}
-          onChange={(event) => {
-            // Back to the first page: staying on page 5 of a shorter result set is
-            // never what was meant.
-            setOffset(0);
-            setStatus(event.target.value as ConversationStatus | '');
-          }}
-          className="mt-5 rounded border border-slate-300 px-3 py-2 text-sm"
-        >
-          <option value="">All states</option>
-          {STATUSES.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
+      <select
+        value={status}
+        onChange={(event) => {
+          // Back to the first page: staying on page 5 of a shorter result set is
+          // never what was meant.
+          setOffset(0);
+          setStatus(event.target.value as ConversationStatus | '');
+        }}
+        className="ui-select mb-6 w-full max-w-[16rem]"
+      >
+        <option value="">All states</option>
+        {STATUSES.map((option) => (
+          <option key={option} value={option}>
+            {option.replaceAll('_', ' ')}
+          </option>
+        ))}
+      </select>
 
-        {error ? (
-          <p className="mt-6 rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            {error}
-          </p>
-        ) : null}
+      {error ? <Alert className="mb-6">{error}</Alert> : null}
 
-        {loading ? (
-          <p className="mt-6 text-sm text-slate-600">Loading…</p>
-        ) : conversations.length === 0 ? (
-          <p className="mt-6 rounded border border-slate-200 bg-white p-6 text-sm text-slate-600">
-            No conversations yet. One starts when a customer replies.
-          </p>
-        ) : (
-          <ul className="mt-6 space-y-2">
+      {loading ? (
+        <Skeleton className="h-48" />
+      ) : conversations.length === 0 ? (
+        <EmptyState
+          title="No conversations yet"
+          description="One starts when a customer replies. There is no send button here: the worker owns the 24-hour window."
+        />
+      ) : (
+        <>
+          <ul className="space-y-2">
             {conversations.map((conversation) => (
-              <li
-                key={conversation.id}
-                className="flex items-center justify-between rounded border border-slate-200 bg-white p-4"
-              >
-                <div>
-                  <Link href={`/leads/${conversation.lead_id}`} className="text-sm underline">
-                    Open lead
-                  </Link>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Last activity {lastActivity(conversation)}
-                  </p>
-                </div>
-                <span
-                  className={`rounded px-2 py-1 text-xs font-medium ${
-                    STATUS_STYLES[conversation.status]
-                  }`}
+              <li key={conversation.id}>
+                <Link
+                  href={`/leads/${conversation.lead_id}`}
+                  className="flex items-center justify-between rounded-2xl border border-line bg-white p-4 shadow-card transition hover:border-ink/15 hover:shadow-lift"
                 >
-                  {conversation.status}
-                </span>
+                  <div>
+                    <p className="text-sm font-medium text-ink">Open lead</p>
+                    <p className="mt-1 text-xs text-ink-muted">
+                      Last activity {lastActivity(conversation)}
+                    </p>
+                  </div>
+                  <StatusBadge status={conversation.status} />
+                </Link>
               </li>
             ))}
           </ul>
-        )}
-
-        {conversations.length > 0 ? (
           <Pager
             state={{ total, limit: DEFAULT_PAGE_SIZE, offset }}
             shown={conversations.length}
             onChange={setOffset}
           />
-        ) : null}
-      </main>
-    </>
+        </>
+      )}
+    </AppShell>
   );
 }

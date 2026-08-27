@@ -7,10 +7,12 @@
 
 'use client';
 
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
+import { AppShell } from '@/components/shell';
+import { StatusBadge } from '@/components/status-badge';
+import { Alert, Button, FilterChip, PageHeader, Skeleton } from '@/components/ui';
 import { api, type AudienceContact, type AudienceSummary, type ValidationStatus } from '@/lib/api';
 
 const FILTERS: { label: string; value: ValidationStatus | 'ALL' }[] = [
@@ -63,91 +65,82 @@ export default function AudienceDetailPage() {
   }
 
   return (
-    <main className="mx-auto max-w-4xl px-6 py-12">
-      <Link href="/audiences" className="text-sm text-slate-600 underline">
-        Back to audiences
-      </Link>
+    <AppShell>
+      {error ? <Alert className="mb-4">{error}</Alert> : null}
 
-      {error && (
-        <p role="alert" className="mt-4 text-sm text-red-700">
-          {error}
-        </p>
-      )}
-
-      {audience && (
+      {!audience ? (
+        <Skeleton className="h-64" />
+      ) : (
         <>
-          <div className="mt-4 flex items-start justify-between gap-4">
-            <div>
-              <h1 className="text-xl font-semibold tracking-tight">{audience.name}</h1>
-              <p className="mt-1 text-sm text-slate-600">
-                {audience.total_rows} rows &middot; {audience.valid_rows} valid &middot;{' '}
-                {audience.invalid_rows} invalid &middot; {audience.duplicate_rows} duplicate
-              </p>
-            </div>
-            {audience.status === 'PENDING_CONFIRMATION' ? (
-              <button
-                type="button"
-                onClick={handleConfirm}
-                disabled={busy || audience.valid_rows === 0}
-                className="shrink-0 rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-              >
-                {busy ? 'Confirming...' : 'Confirm audience'}
-              </button>
-            ) : (
-              <span className="shrink-0 text-sm text-emerald-700">Confirmed</span>
-            )}
-          </div>
+          <PageHeader
+            back={{ href: '/audiences', label: 'Audiences' }}
+            title={audience.name}
+            description={
+              <>
+                {audience.total_rows} rows · {audience.valid_rows} valid · {audience.invalid_rows}{' '}
+                invalid · {audience.duplicate_rows} duplicate
+              </>
+            }
+            actions={
+              audience.status === 'PENDING_CONFIRMATION' ? (
+                <Button
+                  type="button"
+                  onClick={handleConfirm}
+                  disabled={busy || audience.valid_rows === 0}
+                >
+                  {busy ? 'Confirming…' : 'Confirm audience'}
+                </Button>
+              ) : (
+                <StatusBadge status="CONFIRMED" />
+              )
+            }
+          />
 
-          <div className="mt-6 flex gap-2">
+          <div className="mb-4 flex flex-wrap gap-2">
             {FILTERS.map((option) => (
-              <button
+              <FilterChip
                 key={option.value}
-                type="button"
+                active={filter === option.value}
                 onClick={() => setFilter(option.value)}
-                className={`rounded-md border px-3 py-1.5 text-sm ${
-                  filter === option.value
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 text-slate-700'
-                }`}
               >
                 {option.label}
-              </button>
+              </FilterChip>
             ))}
           </div>
 
-          <p className="mt-3 text-xs text-slate-500">
+          <p className="mb-2 text-xs text-ink-muted">
             Showing {contacts.length} of {total}
           </p>
 
-          <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-            <table className="w-full text-sm">
-              <thead className="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
+          <div className="ui-table-wrap">
+            <table className="ui-table">
+              <thead>
                 <tr>
-                  <th className="px-3 py-2 font-medium">Row</th>
-                  <th className="px-3 py-2 font-medium">Phone</th>
-                  <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 font-medium">Email</th>
-                  <th className="px-3 py-2 font-medium">Company</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th>Row</th>
+                  <th>Phone</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Company</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {contacts.map((contact) => (
-                  <tr key={contact.id} className="border-b border-slate-100 last:border-0">
-                    <td className="px-3 py-2 tabular-nums">{contact.row_number}</td>
-                    <td className="px-3 py-2 font-mono text-xs">{contact.phone_e164 ?? '-'}</td>
-                    <td className="px-3 py-2">{contact.full_name ?? '-'}</td>
-                    <td className="px-3 py-2">{contact.email ?? '-'}</td>
-                    <td className="px-3 py-2">{contact.company ?? '-'}</td>
-                    <td className="px-3 py-2">
+                  <tr key={contact.id}>
+                    <td className="tabular-nums">{contact.row_number}</td>
+                    <td className="font-mono text-xs">{contact.phone_e164 ?? '—'}</td>
+                    <td>{contact.full_name ?? '—'}</td>
+                    <td>{contact.email ?? '—'}</td>
+                    <td>{contact.company ?? '—'}</td>
+                    <td>
                       {contact.validation_status === 'VALID' ? (
-                        <span className="text-emerald-700">Valid</span>
+                        <StatusBadge status="VALID" />
                       ) : (
                         <span
                           className={
                             contact.validation_status === 'DUPLICATE'
-                              ? 'text-amber-700'
-                              : 'text-red-700'
+                              ? 'text-sm text-amber-800'
+                              : 'text-sm text-red-800'
                           }
                         >
                           {contact.validation_error ?? contact.validation_status}
@@ -161,6 +154,6 @@ export default function AudienceDetailPage() {
           </div>
         </>
       )}
-    </main>
+    </AppShell>
   );
 }
