@@ -154,6 +154,14 @@ export interface KnowledgeDocument {
   archived_at: string | null;
 }
 
+export interface SessionUser {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: 'ADMIN' | 'SALESPERSON';
+  is_active: boolean;
+}
+
 export interface Overview {
   campaigns: number;
   campaigns_sending: number;
@@ -306,6 +314,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getMe: () => request<SessionUser>('/auth/me'),
+
   audienceSchema: () => request<AudienceSchema>('/audiences/schema'),
 
   listAudiences: () => request<AudienceSummary[]>('/audiences'),
