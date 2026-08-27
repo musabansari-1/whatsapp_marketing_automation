@@ -1,3 +1,185 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --color-canvas: 246 247 246;
+    --color-ink: 23 25 24;
+    --color-ink-muted: 94 101 97;
+    --color-ink-faint: 158 165 161;
+    --color-line: 229 231 229;
+    --color-forest: 4 122 87;
+    --color-forest-bright: 16 185 129;
+  }
+
+  html {
+    @apply antialiased;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: rgb(var(--color-canvas));
+    color: rgb(var(--color-ink));
+    background-image:
+      radial-gradient(1100px 480px at -5% -12%, rgb(16 185 129 / 0.055), transparent 55%),
+      radial-gradient(900px 420px at 105% -5%, rgb(23 25 24 / 0.035), transparent 50%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: rgb(16 185 129 / 0.22);
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--color-forest) / 0.55);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgb(23 25 24 / 0.16);
+    border: 3px solid rgb(var(--color-canvas));
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(23 25 24 / 0.28);
+  }
+}
+
+@layer components {
+  .ui-input {
+    @apply w-full rounded-xl border bg-white px-3.5 py-2.5 text-sm shadow-input outline-none transition;
+    border-color: rgb(var(--color-line));
+    color: rgb(var(--color-ink));
+  }
+
+  .ui-input::placeholder {
+    color: rgb(var(--color-ink-faint));
+  }
+
+  .ui-input:hover {
+    border-color: rgb(var(--color-ink-faint) / 0.6);
+  }
+
+  .ui-input:focus {
+    border-color: rgb(var(--color-forest));
+    box-shadow: 0 0 0 3px rgb(var(--color-forest) / 0.14);
+  }
+
+  .ui-select {
+    @apply w-full appearance-none rounded-xl border bg-white px-3.5 py-2.5 pr-10 text-sm shadow-input outline-none transition;
+    border-color: rgb(var(--color-line));
+    color: rgb(var(--color-ink));
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%239EA5A1' stroke-width='1.8' viewBox='0 0 24 24'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.8rem center;
+  }
+
+  .ui-select:hover {
+    border-color: rgb(var(--color-ink-faint) / 0.6);
+  }
+
+  .ui-select:focus {
+    border-color: rgb(var(--color-forest));
+    box-shadow: 0 0 0 3px rgb(var(--color-forest) / 0.14);
+  }
+
+  .ui-table-wrap {
+    @apply overflow-x-auto rounded-2xl border bg-white;
+    border-color: rgb(var(--color-line));
+    box-shadow: 0 1px 2px rgb(23 25 24 / 0.03), 0 12px 32px -12px rgb(23 25 24 / 0.07);
+  }
+
+  .ui-table {
+    @apply w-full text-sm;
+  }
+
+  .ui-table thead {
+    @apply border-b text-left text-[11px] font-semibold uppercase;
+    border-color: rgb(var(--color-line));
+    background-color: rgb(var(--color-canvas) / 0.75);
+    letter-spacing: 0.12em;
+    color: rgb(var(--color-ink-muted));
+  }
+
+  .ui-table th {
+    @apply px-5 py-3.5 font-semibold;
+  }
+
+  .ui-table td {
+    @apply px-5 py-4 align-middle;
+  }
+
+  .ui-table tbody tr {
+    @apply border-b last:border-0 transition-colors;
+    border-color: rgb(var(--color-line) / 0.7);
+  }
+
+  .ui-table tbody tr:hover {
+    background-color: rgb(16 185 129 / 0.03);
+  }
+}
+
+@layer utilities {
+  .animate-fade-up {
+    animation: fade-up 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.4s ease both;
+  }
+
+  .animate-shimmer {
+    animation: shimmer 1.8s linear infinite;
+  }
+
+  .stagger > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger > *:nth-child(2) { animation-delay: 60ms; }
+  .stagger > *:nth-child(3) { animation-delay: 120ms; }
+  .stagger > *:nth-child(4) { animation-delay: 180ms; }
+  .stagger > *:nth-child(5) { animation-delay: 240ms; }
+  .stagger > *:nth-child(6) { animation-delay: 300ms; }
+  .stagger > *:nth-child(7) { animation-delay: 360ms; }
+  .stagger > *:nth-child(8) { animation-delay: 420ms; }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -200px 0;
+  }
+  to {
+    background-position: 200px 0;
+  }
+}
