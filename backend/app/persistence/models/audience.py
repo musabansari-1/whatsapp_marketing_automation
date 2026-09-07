@@ -70,6 +70,21 @@ class AudienceContact(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     row_number: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    # Audience membership ([D55]). Set at confirmation for VALID rows, when the contact
+    # is promoted to a lead.
+    #
+    # This is the relationship a campaign's recipient snapshot reads. `Lead
+    # .source_audience_id` cannot serve that purpose: it records only where a lead was
+    # *first* seen and is deliberately not updated on re-import, so a lead appearing in
+    # a second audience stayed invisible to that audience's campaigns.
+    #
+    # Nullable because §6 stores INVALID and DUPLICATE rows too, and neither becomes a
+    # lead. SET NULL rather than CASCADE on delete: the row is an audit record of what
+    # was uploaded, and it must survive the lead going away.
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("leads.id", ondelete="SET NULL")
+    )
+
     raw_row: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     # The canonical V1 contact fields ([D25]). Nullable even for the required ones:
     # §6 stores invalid rows too, and an INVALID row is precisely one where a required
@@ -93,4 +108,6 @@ class AudienceContact(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_audience_contacts_audience_id", "audience_id"),
         Index("ix_audience_contacts_audience_status", "audience_id", "validation_status"),
         Index("ix_audience_contacts_phone_e164", "phone_e164"),
+        # The recipient snapshot joins leads to this table by audience.
+        Index("ix_audience_contacts_lead_id", "lead_id"),
     )

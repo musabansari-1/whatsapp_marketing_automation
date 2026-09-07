@@ -62,6 +62,11 @@ The architecture is event-driven using Google Cloud Run and Google Cloud Tasks.
 - Unrestricted autonomous AI
 - Multi-tenant SaaS architecture unless separately requested
 
+**Multi-product is not multi-tenant.** §28 introduces multiple products operated by one
+organisation, with one internal team and one deployment. The exclusion above stays in
+force for its actual subject: organisation-level tenancy, billing and public tenant
+signup remain out of scope.
+
 ## 3. Users
 
 ### Internal user
@@ -833,14 +838,18 @@ object storage, with the task carrying only a reference — a V2 change.**
 
 ### Retrieval filters
 
-Two filters are mandatory on every search:
+Three filters are mandatory on every search:
 
+- **Product scope (§28, [D56]).** Retrieval requires a product and searches only that
+  product's knowledge bases. There is no default and no fallback: a product with no
+  knowledge retrieves nothing and the AI uses the approved fallback message. Shared
+  product knowledge (`segment_id IS NULL`) is visible to every segment of that product.
 - **READY documents only.** A pending, failed or archived document must not contribute
   content to an answer.
 - **Matching embedding model.** Cosine distance between vectors from different models
   is arithmetically valid and semantically meaningless, so **[D1]**'s prohibition is
   enforced in the query, not merely intended. Each chunk records the model that
-  produced it.
+  produced it. One embedding model serves every product; **[D1]** forbids mixing.
 
 Archiving a document stops retrieval but does not delete its chunks: answers already
 given cite chunk IDs in `ai_runs`, and deleting would break that trail.
@@ -870,7 +879,14 @@ CalendarProvider
 └── GoogleCalendarProvider
 ```
 
-V1 uses Google OAuth against ONE shared sales calendar. Per-salesperson calendars are not implemented in V1.
+V1 uses Google OAuth against one shared sales calendar **per product** (§28, **[D43]**).
+Per-salesperson calendars are not implemented in V1.
+
+**Superseded in part.** The original clause read "ONE shared sales calendar" for the
+whole platform. §28 gives each product its own `google_calendar_id`, reached through a
+single shared Google operations account with all product calendars shared into it — so
+one OAuth client and one refresh token still serve every product, and **[D19]**'s
+credential handling is unchanged.
 
 `FakeCalendarProvider` must be used in automated tests.
 
@@ -2216,3 +2232,174 @@ Provider abstractions are mandatory for all six external concerns: WhatsApp, LLM
 | D37 | Final qualification criteria remain a Phase 10 decision. The AI extracts; the backend applies authoritative rules. |
 | D38 | Google Calendar and HubSpot credentials remain with their own phases. No production credentials in Phase 7. |
 | D39 | Scheduled campaigns are out of V1. No cron sending, no automatic scheduled broadcasts, no autonomous execution, despite `SCHEDULED`/`scheduled_for` existing in the model. |
+
+## 28. Multi-Product Architecture
+
+Added 2026-09-07, following the product owner's approval of the implementation
+readiness report. The platform serves **three products operated by one organisation**,
+and must accept a fourth without a new deployment, a copied codebase or product-specific
+branching.
+
+```text
+Product 1        the original product; behaviour unchanged by this section [D54]
+SustainX         segments for marketing targeting only; one shared AI behaviour
+Life Herba       segments with genuinely different AI behaviour; one shared knowledge base
+```
+
+**Multi-product is not multi-tenancy.** One organisation, one internal team, one
+deployment, one database. No organisations table, no billing, no tenant signup. See §2.
+
+### 28.1 The separation this section rests on
+
+Four concerns that a single-product platform was free to conflate, and must not:
+
+```text
+what the AI knows        →  product-level knowledge base
+how the AI behaves       →  product AI configuration, optional segment override
+who marketing targets    →  segment
+which product applies    →  product: calendar, CTA, WhatsApp identity, templates
+```
+
+A segment changes *who is targeted* and *may* change *how the AI behaves*. It never
+changes *what the AI knows*, unless a segment-restricted knowledge base is later added
+for genuine business reasons.
+
+### 28.2 Products and segments
+
+A **product** owns its identity, WhatsApp number, calendar, templates, knowledge,
+default AI configuration, CTA and business rules.
+
+A **segment** belongs to exactly one product and exists for marketing targeting. Segments
+are ordinary rows with a per-product unique slug, never a database enum **[D49]** —
+both products expect to add more, and a migration per segment is not acceptable.
+
+```text
+SustainX     Government, Industry, …          marketing targeting only
+Life Herba   Healthcare Professionals, Wellness Centers, Pharmacies, Consumers, …
+             marketing targeting *and* AI behaviour
+```
+
+### 28.3 Knowledge
+
+Knowledge belongs to a **product**. One shared knowledge base per product covers that
+product's whole ecosystem, and every segment of that product retrieves from it.
+
+This is a requirement, not an optimisation. A Life Herba pharmacist asking *"how do
+consumers purchase medicines?"* must be answered from the shared ecosystem knowledge.
+Splitting knowledge per segment would make that question unanswerable.
+
+`knowledge_bases.segment_id` exists and is nullable. NULL means shared across the
+product's segments, which is the only value used at launch. A non-NULL value would
+restrict a base to one segment; the retrieval filter already handles it, so adding
+restricted knowledge later is a data change with no code change **[D56]**.
+
+### 28.4 AI configuration and inheritance
+
+One configuration table keyed by product and optional segment. A NULL `segment_id` is
+the product default; a row with a segment holds **sparse overrides**, where a NULL
+column means "inherit".
+
+```text
+resolve(product, segment) = COALESCE(segment row, product default) per field
+```
+
+```text
+SustainX     one product row. No segment rows. Every segment resolves identically.
+Life Herba   one product row plus sparse segment rows overriding system prompt,
+             qualification criteria and conversation behaviour where they differ.
+```
+
+Configuration is never duplicated: a segment row states only what differs.
+
+### 28.5 Conversation context
+
+Every conversation carries `product_id` (mandatory) and `segment_id` (nullable),
+**snapshotted at creation and never re-derived** **[D48]**.
+
+```text
+product   from the receiving WhatsApp number [D40], always resolvable
+segment   from the originating campaign, where there is one; otherwise NULL
+```
+
+Segment is nullable for three real cases: a product-wide campaign, an organic inbound
+lead with no campaign history, and SustainX, whose AI behaviour does not depend on
+segment at all.
+
+**Once established, a conversation's operative segment never changes.** A lead later
+appearing in another segment's audience does not retarget a conversation already under
+way. This follows the same reasoning as **[D30]**'s frozen recipient snapshot: context
+that a customer interaction depends on is frozen, not re-read.
+
+### 28.6 Leads, audiences and segments
+
+A lead belongs to **one product** **[D41]**. The same human reachable on one phone
+number may be a lead in several products, and their SustainX qualification state must
+never overwrite their Life Herba state.
+
+Within one product, a lead is **never duplicated because it belongs to several
+segments** **[D48]**. A Life Herba business may legitimately be both a Pharmacy and a
+Wellness Center. Segment membership is expressed through audience membership, not
+through a column on the lead.
+
+```text
+audience_contacts.lead_id    the membership relationship
+audiences.segment_id         what that membership targets
+leads.source_audience_id     provenance only — first seen in
+```
+
+**Campaign recipient snapshots select through audience membership** **[D55]**. Selecting
+by `leads.source_audience_id` is incorrect: that column records only where a lead was
+first seen and is never updated on re-import, so a lead present in two audiences was
+silently excluded from the second one's campaigns.
+
+### 28.7 Opt-out is unchanged
+
+Opt-out stays **global at the normalized phone level** across every product **[D42]**.
+**[D5]**, **[D16]** and **[D26]** remain in force exactly as written.
+
+A phone number that opts out is suppressed for the whole platform, whichever product's
+number received the STOP. Two consequences follow, and both are requirements rather
+than details:
+
+- The `leads.opted_out` mirror is set on **every** lead row sharing that phone number,
+  not only the one that received the message. A stale `false` on another product's lead
+  is a consent error visible in the dashboard and forwarded to the CRM.
+- Suppression is checked by **phone**, never by lead, at both snapshot and send. This is
+  already how §7 works, and it is why global opt-out survives per-product leads intact.
+
+### 28.8 Isolation is enforced by the backend
+
+The following must be impossible through the API, not merely absent from the UI:
+
+```text
+a campaign using another product's audience, template or segment
+retrieval reaching another product's knowledge
+a booking landing in another product's calendar
+an inbound message routed to a product that does not own the receiving number
+reading another product's leads, conversations or analytics
+```
+
+Unknown or unconfigured inbound numbers **fail closed** **[D45]**: logged, alerted, never
+assigned to a default product. Retrieval without a product is not expressible.
+
+### Decisions resolved 2026-09-07 (multi-product)
+
+| ID | Decision |
+|---|---|
+| D40 | One WhatsApp number per product. Inbound routing uses Meta's `metadata.phone_number_id`, which the webhook parser must retain. Unknown numbers fail closed. |
+| D41 | One lead per product. The same phone may exist as a lead in several products; per-product status, qualification and conversation state never overwrite each other. Within a product a lead is never duplicated for belonging to several segments. |
+| D42 | Opt-out stays global at the normalized phone level across all products. **[D5]**/**[D16]**/**[D26]** unchanged. Product-scoped STOP is explicitly not implemented. The `opted_out` mirror propagates to every lead sharing the phone. |
+| D43 | Each product has its own `google_calendar_id`. One shared Google operations account holds access to every product calendar, so one OAuth client and one refresh token serve all products. **[D19]** credential handling is unchanged. Per-product credentials are supported by the schema but unused. |
+| D44 | One HubSpot portal, one contact per human. Product-specific state uses product-prefixed properties so products cannot overwrite each other. Per-product leads must not create duplicate contacts. |
+| D45 | Inbound-first conversations resolve their product from the receiving number. There is no default product. Segment may remain unknown; the system must handle an unknown segment rather than guess one. |
+| D46 | All internal users may access all products. No `user_products` table and no product-scoped RBAC. ADMIN/SALESPERSON per **[D33]** unchanged. Backend product scoping is still enforced. |
+| D47 | Booking notifications continue to reach every active internal user **[D3]**. Every notification must identify its product unambiguously. No per-product subscriptions. |
+| D48 | A lead may belong to several segments within a product. `lead.segment_id` is not the authoritative model; audience membership is. A conversation snapshots its operative segment at creation and never changes it. |
+| D49 | Segments are ordinary database rows owned by a product, with per-product unique slugs. Never a database enum. Seed names supplied separately. |
+| D50 | One Meta App holding the products' WhatsApp numbers, subject to what Meta permits for the account. The architecture must remain able to move to separate Apps without redesign. |
+| D51 | Audience column mapping is configurable per product, with a global fallback. **[D25]**'s canonical fields are unchanged; only the source headers vary. |
+| D52 | Slot policy **[D8]** gains optional per-product overrides over global defaults. Each product has its own calendar regardless of whether policies differ. |
+| D53 | Analytics serve both per-product and combined all-products views, plus segment breakdown within a product, from one scoped query architecture rather than separate implementations. |
+| D54 | Product 1 remains behaviourally unchanged. Its configuration is backfilled from current environment values, and a regression test proves its behaviour after migration matches before. |
+| D55 | Audience membership is `audience_contacts.lead_id`. `leads.source_audience_id` is provenance only. Campaign snapshots select through membership. |
+| D56 | Retrieval requires a product and cannot be expressed without one. No fallback knowledge base. A product with no knowledge retrieves nothing and answers with the approved fallback. Shared product knowledge is visible to every segment. |

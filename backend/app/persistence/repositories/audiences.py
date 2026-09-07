@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -199,7 +200,43 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uu
     )
     await session.execute(statement)
     await session.flush()
+
+    await link_contacts_to_leads(session, audience_id)
     return len(rows)
+
+
+async def link_contacts_to_leads(session: AsyncSession, audience_id: uuid.UUID) -> int:
+    """Record which lead each valid contact became ([D55]).
+
+    This is the audience *membership* relationship, and it is what a campaign's
+    recipient snapshot reads. It has to be a link per contact rather than a column on
+    the lead, because a lead legitimately belongs to several audiences — the same
+    number uploaded in two files is one lead in both of them.
+
+    Only VALID rows are linked. INVALID rows have no usable phone, and a DUPLICATE row
+    is a repeat of a number within the same file whose first occurrence is already
+    VALID and already linked, so linking it again would add nothing.
+
+    Idempotent: re-confirming an audience matches the same rows to the same leads.
+
+    The match is on the normalized phone alone, which is unambiguous only while
+    `leads.phone_e164` is globally unique. **Phase 19 ([D41]) makes leads per-product**,
+    at which point one phone matches several leads and this join must also carry the
+    audience's product. Left as a note rather than written early, because the column it
+    would need does not exist yet.
+    """
+    statement = (
+        update(AudienceContact)
+        .where(
+            AudienceContact.audience_id == audience_id,
+            AudienceContact.validation_status == ContactValidationStatus.VALID,
+            AudienceContact.phone_e164 == Lead.phone_e164,
+        )
+        .values(lead_id=Lead.id)
+    )
+    result = await session.execute(statement)
+    await session.flush()
+    return int(cast("CursorResult[Any]", result).rowcount or 0)
 
 
 async def confirm(session: AsyncSession, audience: Audience) -> None:

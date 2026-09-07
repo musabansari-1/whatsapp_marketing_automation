@@ -13,8 +13,14 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.campaign import META_STATUS_APPROVED, recipient_status_for
-from app.domain.enums import CampaignStatus, RecipientStatus, TemplateCategory
+from app.domain.enums import (
+    CampaignStatus,
+    ContactValidationStatus,
+    RecipientStatus,
+    TemplateCategory,
+)
 from app.persistence.models import (
+    AudienceContact,
     Campaign,
     CampaignRecipient,
     Lead,
@@ -90,6 +96,14 @@ async def build_snapshot(session: AsyncSession, campaign: Campaign) -> int:
     changes do not alter a campaign already created. Rows are copied here, including
     the phone number, so nothing downstream re-reads the audience.
 
+    Recipients are selected through **audience membership** — `audience_contacts
+    .lead_id` — and not through `Lead.source_audience_id` ([D55]). The distinction is
+    not academic. `source_audience_id` records where a lead was *first* seen and is
+    deliberately not updated when the same number appears in a later file, so
+    selecting by it silently omitted every lead this audience shared with an earlier
+    one. A campaign simply reached fewer people than its audience contained, with no
+    error to notice.
+
     [D16] is applied at snapshot time: a number on the global suppression list is
     recorded SKIPPED rather than PENDING, so it is never enqueued. The send path
     checks again, because a customer can opt out between preparation and sending.
@@ -107,7 +121,16 @@ async def build_snapshot(session: AsyncSession, campaign: Campaign) -> int:
                 Lead.phone_e164,
                 Lead.phone_e164.in_(suppressed).label("suppressed"),
             )
-            .where(Lead.source_audience_id == campaign.audience_id)
+            .join(AudienceContact, AudienceContact.lead_id == Lead.id)
+            .where(
+                AudienceContact.audience_id == campaign.audience_id,
+                AudienceContact.validation_status == ContactValidationStatus.VALID,
+            )
+            # Defensive: within one audience a phone yields one VALID row, later
+            # repeats being DUPLICATE, so this should never collapse anything today.
+            # It costs nothing and stops a change in duplicate handling from quietly
+            # producing two recipient rows for one lead.
+            .distinct()
             .order_by(Lead.phone_e164)
         )
     ).all()
