@@ -1,4 +1,5 @@
-"""ORM models — the 19 tables of specification §15 plus [D16]'s suppression table.
+"""ORM models — specification §15's tables, [D16]'s suppression table, the §19
+rate limit counters and §28's product, segment and AI configuration tables.
 
 Importing this package registers every model on `Base.metadata`, which is what
 Alembic autogenerate reflects against. `app/persistence/base.py` imports it for that
@@ -29,6 +30,7 @@ from app.persistence.models.knowledge import (
 )
 from app.persistence.models.lead import Lead, WhatsAppSuppression
 from app.persistence.models.notification import Notification
+from app.persistence.models.product import AIConfiguration, Product, Segment
 from app.persistence.models.rate_limit import RateLimitCounter
 from app.persistence.models.session import Session
 from app.persistence.models.user import User
@@ -36,6 +38,7 @@ from app.persistence.models.user import User
 __all__ = [
     "EMBEDDING_DIMENSION",
     "META_STATUS_APPROVED",
+    "AIConfiguration",
     "AIRun",
     "Audience",
     "AudienceContact",
@@ -51,7 +54,9 @@ __all__ = [
     "Lead",
     "Message",
     "Notification",
+    "Product",
     "RateLimitCounter",
+    "Segment",
     "Session",
     "User",
     "WebhookEvent",

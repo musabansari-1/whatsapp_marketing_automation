@@ -42,6 +42,11 @@ EXPECTED_TABLES = {
     "knowledge_documents",
     "knowledge_chunks",
     "knowledge_ingestion_jobs",
+    # Section 28 multi-product foundation (Phase 17). Not part of the original
+    # §15 list: they carry the product architecture the specification gained later.
+    "products",
+    "segments",
+    "ai_configurations",
 }
 
 
@@ -70,13 +75,15 @@ class TestTables:
         assert set(Base.metadata.tables) == EXPECTED_TABLES
 
     def test_table_count(self) -> None:
-        """Twenty-one: §15's eighteen, plus `whatsapp_suppressions` ([D16]), `sessions`
-        ([D2]) and `rate_limit_counters` (§19).
+        """Twenty-four: §15's eighteen, plus `whatsapp_suppressions` ([D16]), `sessions`
+        ([D2]), `rate_limit_counters` (§19), and §28's `products`, `segments` and
+        `ai_configurations`.
 
         Asserted as a number as well as a set so that adding a table is a deliberate
-        act — this test is the thing that made the Phase 14 addition visible.
+        act — this test is the thing that made the Phase 14 and Phase 17 additions
+        visible.
         """
-        assert len(Base.metadata.tables) == 21
+        assert len(Base.metadata.tables) == 24
 
 
 class TestIdentityAndDeduplication:

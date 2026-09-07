@@ -80,7 +80,7 @@ class TestExtensionAndTables:
                 "WHERE table_schema='public' AND table_name <> 'alembic_version'"
             )
         )
-        assert result.scalar_one() == 21
+        assert result.scalar_one() == 24
 
 
 class TestDefaultsAndEnums:

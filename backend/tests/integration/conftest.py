@@ -14,13 +14,14 @@ transaction that is rolled back, so tests cannot see each other's rows.
 from __future__ import annotations
 
 import os
+import uuid
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
@@ -68,6 +69,38 @@ async def engine() -> AsyncIterator[AsyncEngine]:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.drop_all)
     await engine.dispose()
+
+
+@pytest.fixture
+def seeded_product(engine: AsyncEngine) -> uuid.UUID:
+    """The product every existing row belongs to, as the migration seeds it (§28).
+
+    The suite builds its schema with `create_all`, not by running migrations, so the
+    row `d3f8b21c60ae` inserts is absent here. This fixture is its counterpart: from
+    Phase 18 onwards, scoped tables require a product, and tests need one for the same
+    reason a real database does.
+
+    It deliberately does **not** reproduce the migration's slug or display name. Those
+    are temporary configuration, and a test that only passes for one particular slug
+    would make renaming the product a code change instead of a data change.
+    """
+    from app.persistence.models import Product
+
+    async def ensure(session: AsyncSession) -> uuid.UUID:
+        existing = (
+            await session.execute(select(Product).order_by(Product.created_at).limit(1))
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing.id
+
+        product = Product(slug=f"seeded-{uuid.uuid4().hex[:8]}", display_name="Seeded product")
+        session.add(product)
+        await session.flush()
+        return product.id
+
+    from tests.integration.helpers import run_db
+
+    return run_db(ensure)
 
 
 @pytest_asyncio.fixture
