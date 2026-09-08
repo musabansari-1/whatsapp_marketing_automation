@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
@@ -40,6 +41,18 @@ class Conversation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "conversations"
 
+    # §28 product scope. Nullable during the transition: conversations are created
+    # from inbound webhooks, which cannot resolve a product until Phase 23 routes
+    # on phone_number_id. Phase 22 snapshots both columns (§28.5).
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
+    # Nullable by design, permanently: §28 allows a product-wide entity, and a
+    # product may have no segments at all. Never filled with a placeholder.
+    segment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("segments.id", ondelete="RESTRICT")
+    )
+
     lead_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
     )
@@ -64,6 +77,17 @@ class Conversation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_conversations_lead_id", "lead_id"),
         Index("ix_conversations_status", "status"),
+        Index("ix_conversations_product_id", "product_id"),
+        Index("ix_conversations_segment_id", "segment_id"),
+        # A segment must belong to this row's own product (§28.8). MATCH SIMPLE
+        # skips the check when either column is NULL, so a product-wide row is
+        # unaffected, and so is one with no product yet during the transition.
+        ForeignKeyConstraint(
+            ["product_id", "segment_id"],
+            ["segments.product_id", "segments.id"],
+            name="fk_conversations_segment_within_product",
+            ondelete="RESTRICT",
+        ),
     )
 
 
@@ -79,6 +103,13 @@ class Message(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
 
     __tablename__ = "messages"
+
+    # §28 product scope. Nullable during the transition: a message inherits its
+    # product from its campaign or conversation, neither of which has one until
+    # Phases 19 and 23.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
 
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("leads.id", ondelete="SET NULL")
@@ -122,6 +153,7 @@ class Message(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_messages_conversation_id", "conversation_id"),
         Index("ix_messages_status", "status"),
         Index("ix_messages_phone_e164", "phone_e164"),
+        Index("ix_messages_product_id", "product_id"),
     )
 
 
@@ -204,6 +236,12 @@ class AIRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "ai_runs"
 
+    # §28 product scope. Nullable during the transition: a run inherits its product
+    # from its conversation, which has none until Phase 22.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
+
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
     )
@@ -232,4 +270,5 @@ class AIRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_ai_runs_lead_id", "lead_id"),
         Index("ix_ai_runs_status", "status"),
         Index("ix_ai_runs_correlation_id", "correlation_id"),
+        Index("ix_ai_runs_product_id", "product_id"),
     )

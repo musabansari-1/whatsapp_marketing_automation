@@ -33,6 +33,20 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "leads"
 
+    # §28 product scope. Nullable during the transition: leads are created by
+    # audience promotion and by inbound webhooks, and neither can supply a
+    # product until Phase 19.
+    #
+    # There is deliberately **no** `segment_id` here ([D48]). A lead may belong
+    # to several segments within a product, so a single column would be
+    # misleading, duplicate membership state, and eventually be mistaken for
+    # authority. Segment membership is `audience_contacts` -> `audiences
+    # .segment_id`; the operative segment for AI behaviour lives on the
+    # conversation snapshot.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
+
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
     full_name: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
@@ -81,6 +95,7 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_leads_status", "status"),
         Index("ix_leads_email", "email"),
+        Index("ix_leads_product_id", "product_id"),
         Index("ix_leads_source_audience_id", "source_audience_id"),
         # The [D18] qualification rules read inside this document.
         Index("ix_leads_qualification_data", "qualification_data", postgresql_using="gin"),

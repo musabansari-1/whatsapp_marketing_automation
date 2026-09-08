@@ -5,7 +5,15 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Enum, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -26,6 +34,18 @@ class Audience(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
 
     __tablename__ = "audiences"
+
+    # §28 product scope. Nullable during the transition: `POST /audiences/upload` takes
+    # no product and cannot derive one until Phase 19 supplies the internal-authoring
+    # resolver. `tests/test_product_scope.py` records that debt and its closing phase.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
+    # Nullable by design, permanently: §28 allows a product-wide audience, and a
+    # product may have no segments at all.
+    segment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("segments.id", ondelete="RESTRICT")
+    )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     source_filename: Mapped[str | None] = mapped_column(String(512))
@@ -48,6 +68,21 @@ class Audience(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="audience", cascade="all, delete-orphan"
     )
     campaigns: Mapped[list[Campaign]] = relationship(back_populates="audience")
+
+    __table_args__ = (
+        Index("ix_audiences_product_id", "product_id"),
+        Index("ix_audiences_segment_id", "segment_id"),
+        # A segment must belong to the audience's own product (§28.8), enforced as
+        # referential integrity rather than a service check. MATCH SIMPLE skips the
+        # check when either column is NULL, so a product-wide audience — and, during
+        # the transition, an audience with no product yet — is unaffected.
+        ForeignKeyConstraint(
+            ["product_id", "segment_id"],
+            ["segments.product_id", "segments.id"],
+            name="fk_audiences_segment_within_product",
+            ondelete="RESTRICT",
+        ),
+    )
 
 
 class AudienceContact(Base, UUIDPrimaryKeyMixin, TimestampMixin):

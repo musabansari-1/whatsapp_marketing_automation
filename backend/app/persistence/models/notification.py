@@ -42,6 +42,14 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "notifications"
 
+    # §28 product scope, and the one column here that is nullable **by design**
+    # rather than as transitional debt: NULL means a notification that is not
+    # about any one product. [D47] requires every product-specific notification to
+    # identify its product, which Phase 24 fills in for bookings.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
+
     user_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -70,4 +78,5 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         # The bell badge queries unread notifications for the current user.
         Index("ix_notifications_user_unread", "user_id", "is_read"),
         Index("ix_notifications_created_at", "created_at"),
+        Index("ix_notifications_product_id", "product_id"),
     )

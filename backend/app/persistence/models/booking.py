@@ -47,6 +47,13 @@ class Booking(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "bookings"
 
+    # §28 product scope. Nullable during the transition: a booking inherits its
+    # product from its conversation, which has none until Phase 22. Phase 24
+    # also changes the confirmed-slot unique index to (product_id, start_time).
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
+
     lead_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
     )
@@ -81,6 +88,7 @@ class Booking(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         # suffix only.
         CheckConstraint("end_time > start_time", name="end_after_start"),
         Index("ix_bookings_lead_id", "lead_id"),
+        Index("ix_bookings_product_id", "product_id"),
         Index("ix_bookings_conversation_id", "conversation_id"),
         Index("ix_bookings_status", "status"),
         Index("ix_bookings_start_time", "start_time"),

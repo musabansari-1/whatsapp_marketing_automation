@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -44,11 +45,38 @@ class KnowledgeBase(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "knowledge_bases"
 
+    # §28 product scope. Nullable during the transition: `POST /knowledge-bases`
+    # takes no product until Phase 26. The global unique on `name` therefore
+    # stays in force until then: replacing it with a product-scoped unique now
+    # would let two NULL-product bases share a name, weakening today's rule.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
+    # Nullable by design, permanently: §28 allows a product-wide entity, and a
+    # product may have no segments at all. Never filled with a placeholder.
+    segment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("segments.id", ondelete="RESTRICT")
+    )
+
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     description: Mapped[str | None] = mapped_column(Text)
 
     documents: Mapped[list[KnowledgeDocument]] = relationship(
         back_populates="knowledge_base", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_knowledge_bases_product_id", "product_id"),
+        Index("ix_knowledge_bases_segment_id", "segment_id"),
+        # A segment must belong to this row's own product (§28.8). MATCH SIMPLE
+        # skips the check when either column is NULL, so a product-wide row is
+        # unaffected, and so is one with no product yet during the transition.
+        ForeignKeyConstraint(
+            ["product_id", "segment_id"],
+            ["segments.product_id", "segments.id"],
+            name="fk_knowledge_bases_segment_within_product",
+            ondelete="RESTRICT",
+        ),
     )
 
 

@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -43,6 +44,14 @@ class WhatsAppTemplate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "whatsapp_templates"
 
+    # §28 product scope. Nullable during the transition: template sync pulls a
+    # WABA's templates with no product context until Phase 23 makes the sync
+    # product-aware. The global (name, language) uniqueness therefore stays in
+    # force until then — see the Phase 18 note in PROJECT_STATUS.md.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
+
     name: Mapped[str] = mapped_column(String(512), nullable=False)
     language: Mapped[str] = mapped_column(String(20), nullable=False)
     provider_template_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
@@ -60,6 +69,7 @@ class WhatsAppTemplate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         # Meta identifies a template by name plus language.
         UniqueConstraint("name", "language", name="uq_whatsapp_templates_name_language"),
         Index("ix_whatsapp_templates_provider_status", "provider_status"),
+        Index("ix_whatsapp_templates_product_id", "product_id"),
     )
 
 
@@ -67,6 +77,17 @@ class Campaign(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """A broadcast. Human-initiated (§7); sending itself is asynchronous."""
 
     __tablename__ = "campaigns"
+
+    # §28 product scope. Nullable during the transition: a campaign inherits its
+    # product from its audience, which has none until Phase 19.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    )
+    # Nullable by design, permanently: §28 allows a product-wide entity, and a
+    # product may have no segments at all. Never filled with a placeholder.
+    segment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("segments.id", ondelete="RESTRICT")
+    )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[CampaignStatus] = mapped_column(
@@ -110,6 +131,17 @@ class Campaign(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_campaigns_status", "status"),
         Index("ix_campaigns_audience_id", "audience_id"),
         Index("ix_campaigns_template_id", "template_id"),
+        Index("ix_campaigns_product_id", "product_id"),
+        Index("ix_campaigns_segment_id", "segment_id"),
+        # A segment must belong to this row's own product (§28.8). MATCH SIMPLE
+        # skips the check when either column is NULL, so a product-wide row is
+        # unaffected, and so is one with no product yet during the transition.
+        ForeignKeyConstraint(
+            ["product_id", "segment_id"],
+            ["segments.product_id", "segments.id"],
+            name="fk_campaigns_segment_within_product",
+            ondelete="RESTRICT",
+        ),
     )
 
 
