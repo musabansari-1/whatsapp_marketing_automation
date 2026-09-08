@@ -14,6 +14,7 @@ from sqlalchemy.orm import aliased
 from app.domain.audience import ValidatedRow, ValidationSummary
 from app.domain.enums import AudienceStatus, ContactValidationStatus
 from app.persistence.models import Audience, AudienceContact, Lead
+from app.persistence.repositories import suppressions as suppression_repo
 
 
 async def create_with_contacts(
@@ -217,6 +218,12 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience: Audie
     )
     await session.execute(statement)
     await session.flush()
+
+    # A number that opted out before this audience was uploaded must arrive already
+    # suppressed ([D42]). Covers the rows just created *and* any transitional row this
+    # promotion adopted, so neither can appear contactable in the dashboard or reach
+    # the CRM saying otherwise.
+    await suppression_repo.enforce_mirror(session, [row["phone_e164"] for row in rows])
 
     await link_contacts_to_leads(session, audience_id, product_id=product_id)
     return len(rows)

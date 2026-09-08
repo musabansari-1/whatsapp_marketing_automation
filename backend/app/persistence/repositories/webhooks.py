@@ -31,6 +31,7 @@ from app.persistence.models import (
     WebhookEvent,
     WhatsAppSuppression,
 )
+from app.persistence.repositories import suppressions as suppression_repo
 
 # Meta status -> the recipient status it implies. Only forward progress is applied;
 # see `apply_status_to_recipient`.
@@ -193,6 +194,13 @@ async def get_or_create_lead(
     if full_name and not lead.full_name:
         lead.full_name = full_name
         await session.flush()
+
+    # A number suppressed earlier must not come back as a contactable lead. Cheap, and
+    # it closes the window where an opted-out customer messages again and the row looks
+    # fresh until something else notices.
+    if await suppression_repo.enforce_mirror_for(session, phone_e164):
+        await session.refresh(lead)
+
     return lead
 
 
@@ -298,11 +306,23 @@ async def suppress(
     source_message_id: str | None,
     reason: SuppressionReason = SuppressionReason.OPT_OUT_KEYWORD,
 ) -> bool:
-    """Record a global opt-out ([D5], [D16]).
+    """Record a global opt-out ([D5], [D16], [D42]).
 
-    Writes the phone-level suppression row, which is authoritative and outlives the
-    lead, and mirrors the flag onto the lead for display. Returns False when the
-    number was already suppressed, so a repeated STOP does not re-notify.
+    Writes the phone-level suppression row — authoritative, global across every product,
+    and outliving any lead — then makes **every** lead sharing that number agree with it.
+
+    Propagating to all of them rather than to the one in this conversation is what [D41]
+    made necessary: consent belongs to the person, and one human can now be a lead in
+    several products. A STOP through Academicae has to suppress the SustainX row too, or
+    the dashboard and the CRM would show a contactable lead for someone who has said
+    stop.
+
+    The suppression row and the mirrors are written in the caller's transaction, so
+    there is no committed state where one exists without the other.
+
+    Returns False when the number was already suppressed, so a repeated STOP does not
+    re-notify. The mirror is enforced either way, which is what makes a repeat safe
+    rather than merely harmless.
     """
     statement = (
         pg_insert(WhatsAppSuppression)
@@ -315,10 +335,12 @@ async def suppress(
         .on_conflict_do_nothing(index_elements=[WhatsAppSuppression.phone_e164])
     )
     result = await session.execute(statement)
-
-    lead.opted_out = True
-    lead.status = LeadStatus.OPTED_OUT
     await session.flush()
+
+    # Every lead for this number, in every product, including rows created before this
+    # STOP and rows that have no product yet. `enforce_mirror` owns the documented
+    # exception to `transition_lead`.
+    await suppression_repo.enforce_mirror_for(session, lead.phone_e164)
 
     # ON CONFLICT DO NOTHING reports zero rows when the number was already
     # suppressed, which is how a repeated STOP is distinguished from a new one.
