@@ -35,11 +35,10 @@ class Audience(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "audiences"
 
-    # §28 product scope. Nullable during the transition: `POST /audiences/upload` takes
-    # no product and cannot derive one until Phase 19 supplies the internal-authoring
-    # resolver. `tests/test_product_scope.py` records that debt and its closing phase.
-    product_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    # §28 product scope, NOT NULL since Phase 19: `POST /audiences/upload` now resolves
+    # a product, explicitly or through the sole-active-product compatibility rule.
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
     # Nullable by design, permanently: §28 allows a product-wide audience, and a
     # product may have no segments at all.

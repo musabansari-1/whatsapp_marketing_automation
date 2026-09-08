@@ -38,7 +38,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from app.worker.handlers.campaign_send import RetryableSendError, send_campaign_message
-from tests.integration.helpers import get_test_database_url, run_db
+from tests.integration.helpers import ensure_product_id, get_test_database_url, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -93,7 +93,7 @@ def seed_campaign(
     """Create a campaign with one recipient, returning the recipient id."""
 
     async def seed(session: AsyncSession) -> str:
-        audience = Audience(name="A")
+        audience = Audience(name="A", product_id=await ensure_product_id(session))
         template = WhatsAppTemplate(
             name="q3_promo",
             language="en",
@@ -107,7 +107,12 @@ def seed_campaign(
         await session.flush()
 
         campaign = Campaign(
-            name="C", audience_id=audience.id, template_id=template.id, status=status
+            name="C",
+            audience_id=audience.id,
+            # Derived from the audience, as the repository does (§28.6).
+            product_id=audience.product_id,
+            template_id=template.id,
+            status=status,
         )
         session.add(campaign)
         await session.flush()

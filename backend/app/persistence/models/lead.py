@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -47,7 +47,7 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
     )
 
-    phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
+    phone_e164: Mapped[str] = mapped_column(String(20), nullable=False)
     full_name: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
     # Carried through from the audience so promotion discards nothing ([D25]).
@@ -96,6 +96,25 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_leads_status", "status"),
         Index("ix_leads_email", "email"),
         Index("ix_leads_product_id", "product_id"),
+        # Lead identity is (product, phone) ([D41]). Two partial indexes rather than
+        # one plain unique: `product_id` stays nullable until Phase 23, and SQL treats
+        # NULLs as distinct, so a plain UNIQUE (product_id, phone_e164) would enforce
+        # nothing at all for the transitional rows that most need it.
+        Index(
+            "uq_leads_product_phone",
+            "product_id",
+            "phone_e164",
+            unique=True,
+            postgresql_where=text("product_id IS NOT NULL"),
+        ),
+        # Transitional: one lead per phone in the not-yet-routed lane. Removed in
+        # Phase 23 together with the nullability it covers.
+        Index(
+            "uq_leads_transitional_phone",
+            "phone_e164",
+            unique=True,
+            postgresql_where=text("product_id IS NULL"),
+        ),
         Index("ix_leads_source_audience_id", "source_audience_id"),
         # The [D18] qualification rules read inside this document.
         Index("ix_leads_qualification_data", "qualification_data", postgresql_using="gin"),

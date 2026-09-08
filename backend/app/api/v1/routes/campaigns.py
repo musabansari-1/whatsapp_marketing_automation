@@ -100,10 +100,24 @@ async def create_campaign(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
 
+    # A campaign may not reach across products (§28.8). The template's product is still
+    # nullable until Phase 23 makes the sync product-aware, so this checks only what it
+    # can know: a template that *has* a product must be this campaign's product. The
+    # check becomes total when the column does, without changing shape.
+    if (
+        template.product_id is not None
+        and audience.product_id is not None
+        and template.product_id != audience.product_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="That template belongs to a different product",
+        )
+
     campaign = await campaign_repo.create(
         session,
         name=payload.name,
-        audience_id=payload.audience_id,
+        audience=audience,
         template_id=payload.template_id,
         created_by_id=user.id,
     )

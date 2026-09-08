@@ -37,7 +37,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from tests.integration.conftest import ADMIN_EMAIL, SALES_EMAIL, login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import ensure_product_id, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -320,7 +320,11 @@ class TestCampaignMetrics:
         login(client)
 
         async def create(session: AsyncSession) -> None:
-            audience = Audience(name="Batch", status="CONFIRMED")
+            audience = Audience(
+                name="Batch",
+                status="CONFIRMED",
+                product_id=await ensure_product_id(session),
+            )
             template = WhatsAppTemplate(
                 name="promo",
                 language="en",
@@ -339,6 +343,9 @@ class TestCampaignMetrics:
                     Campaign(
                         name=f"Campaign {status.value}",
                         audience_id=audience.id,
+                        # As `campaign_repo.create` does: a campaign takes its product
+                        # from its audience and never chooses one (§28.6).
+                        product_id=audience.product_id,
                         template_id=template.id,
                         status=status,
                     )

@@ -38,6 +38,7 @@ pytestmark = pytest.mark.integration
 # The revision Phase 18 upgrades from, and the one it introduces.
 BEFORE_PHASE_18 = "d3f8b21c60ae"
 PHASE_18 = "e5c74a1b8d09"
+PHASE_19 = "f2a9c31e7b45"
 
 # The row Phase 17 seeds and Phase 18 renames. Fixed so the backfill is unambiguous.
 ACADEMICAE_ID = uuid.UUID("00000000-0000-4000-8000-000000000001")
@@ -379,3 +380,137 @@ class TestUpgradePath:
 
         assert _scalar(scratch_database, "SELECT slug FROM products") == "academicae"
         assert _scalar(scratch_database, "SELECT count(*) FROM leads WHERE product_id IS NULL") == 0
+
+
+class TestPhase19OneWayDoor:
+    """Product-scoped lead identity, and the boundary where it stops reversing.
+
+    [D41] is called a one-way door for a concrete reason, and this pins where the door
+    actually closes rather than asserting it in prose.
+    """
+
+    def test_the_downgrade_works_while_one_product_holds_the_phone(
+        self, scratch_database: str
+    ) -> None:
+        """The state this migration is applied in, so the reversal must work there."""
+        _alembic(scratch_database, PHASE_19, direction="up")
+
+        _exec(
+            scratch_database,
+            [
+                (
+                    "INSERT INTO leads (phone_e164, status, qualification_data, opted_out,"
+                    " product_id) VALUES ('+919876540001', 'NEW', '{}', false, :product)",
+                    {"product": ACADEMICAE_ID},
+                )
+            ],
+            autocommit=False,
+        )
+
+        _alembic(scratch_database, PHASE_18, direction="down")
+
+        # The global rule is back, and the row survived.
+        assert (
+            _scalar(
+                scratch_database,
+                "SELECT count(*) FROM leads WHERE phone_e164 = '+919876540001'",
+            )
+            == 1
+        )
+
+        _alembic(scratch_database, PHASE_19, direction="up")
+
+    def test_the_downgrade_refuses_once_two_products_hold_one_phone(
+        self, scratch_database: str
+    ) -> None:
+        """The door closing.
+
+        Two products holding one number is exactly what [D41] exists to allow, and it is
+        also what a global unique on the phone cannot represent. The downgrade must fail
+        rather than decide which product's status, qualification and conversation history
+        to discard — a choice nothing in the data can make.
+        """
+        second = uuid.uuid4()
+        _exec(
+            scratch_database,
+            [
+                (
+                    "INSERT INTO products (id, slug, display_name)"
+                    " VALUES (:id, 'second-product', 'Second product')",
+                    {"id": second},
+                ),
+                (
+                    "INSERT INTO leads (phone_e164, status, qualification_data, opted_out,"
+                    " product_id) VALUES ('+919876540002', 'NEW', '{}', false, :product)",
+                    {"product": ACADEMICAE_ID},
+                ),
+                (
+                    "INSERT INTO leads (phone_e164, status, qualification_data, opted_out,"
+                    " product_id) VALUES ('+919876540002', 'NEW', '{}', false, :product)",
+                    {"product": second},
+                ),
+            ],
+            autocommit=False,
+        )
+
+        # Both rows exist, which is the point of the phase.
+        assert (
+            _scalar(
+                scratch_database,
+                "SELECT count(*) FROM leads WHERE phone_e164 = '+919876540002'",
+            )
+            == 2
+        )
+
+        with pytest.raises(IntegrityError):
+            _alembic(scratch_database, PHASE_18, direction="down")
+
+        # Nothing was lost in the attempt.
+        assert (
+            _scalar(
+                scratch_database,
+                "SELECT count(*) FROM leads WHERE phone_e164 = '+919876540002'",
+            )
+            == 2
+        )
+
+        _exec(
+            scratch_database,
+            [
+                ("DELETE FROM leads WHERE phone_e164 = '+919876540002'", {}),
+                ("DELETE FROM products WHERE id = :id", {"id": second}),
+            ],
+            autocommit=False,
+        )
+
+    def test_the_transitional_lane_rejects_duplicates(self, scratch_database: str) -> None:
+        """A lead with no product yet is still one lead per number.
+
+        Without the partial index over `product_id IS NULL` this would be unconstrained,
+        because SQL treats NULLs as distinct — the exact hole a plain
+        UNIQUE (product_id, phone_e164) would have left open.
+        """
+        _exec(
+            scratch_database,
+            [
+                (
+                    "INSERT INTO leads (phone_e164, status, qualification_data, opted_out)"
+                    " VALUES ('+919876540003', 'NEW', '{}', false)",
+                    {},
+                )
+            ],
+            autocommit=False,
+        )
+
+        with pytest.raises(IntegrityError):
+            _exec(
+                scratch_database,
+                [
+                    (
+                        "INSERT INTO leads (phone_e164, status, qualification_data,"
+                        " opted_out) VALUES ('+919876540003', 'NEW', '{}', false)",
+                        {},
+                    )
+                ],
+                autocommit=False,
+            )

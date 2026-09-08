@@ -20,6 +20,7 @@ from app.domain.enums import (
     TemplateCategory,
 )
 from app.persistence.models import (
+    Audience,
     AudienceContact,
     Campaign,
     CampaignRecipient,
@@ -61,13 +62,22 @@ async def create(
     session: AsyncSession,
     *,
     name: str,
-    audience_id: uuid.UUID,
+    audience: Audience,
     template_id: uuid.UUID,
     created_by_id: uuid.UUID | None,
 ) -> Campaign:
+    """Create a campaign, taking its product and segment from its audience (§28.6).
+
+    Neither is a choice the caller gets to make. A campaign sends to an audience, the
+    audience already belongs to a product and — where it is targeted — to a segment, so
+    deriving both is the only answer that cannot disagree with the recipients. It also
+    makes a cross-product campaign impossible to express rather than merely rejected.
+    """
     campaign = Campaign(
         name=name,
-        audience_id=audience_id,
+        audience_id=audience.id,
+        product_id=audience.product_id,
+        segment_id=audience.segment_id,
         template_id=template_id,
         created_by_id=created_by_id,
         status=CampaignStatus.DRAFT,

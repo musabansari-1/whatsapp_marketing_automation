@@ -78,10 +78,11 @@ class Campaign(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "campaigns"
 
-    # §28 product scope. Nullable during the transition: a campaign inherits its
-    # product from its audience, which has none until Phase 19.
-    product_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    # §28 product scope, NOT NULL since Phase 19. Taken from the campaign's audience
+    # and never chosen independently (§28.6), so a cross-product campaign cannot be
+    # expressed rather than merely being rejected.
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
     # Nullable by design, permanently: §28 allows a product-wide entity, and a
     # product may have no segments at all. Never filled with a placeholder.

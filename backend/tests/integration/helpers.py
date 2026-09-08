@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
@@ -43,3 +44,30 @@ def run_db(operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
             await engine.dispose()
 
     return asyncio.run(_run())
+
+
+async def ensure_product_id(session: AsyncSession) -> uuid.UUID:
+    """The product a test's rows belong to, creating one if the schema has none.
+
+    Since Phase 19, `audiences.product_id` and `campaigns.product_id` are NOT NULL — a
+    real database always has the product the migration seeds, but the suite builds its
+    schema with `create_all`, so fixtures have to supply one.
+
+    Reuses whatever product already exists rather than adding another, and never asserts
+    which one it is: the slug and display name are configuration and a test that depended
+    on them would make renaming the product a code change.
+    """
+    from sqlalchemy import select
+
+    from app.persistence.models import Product
+
+    existing = (
+        await session.execute(select(Product).order_by(Product.created_at).limit(1))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing.id
+
+    product = Product(slug=f"fixture-{uuid.uuid4().hex[:8]}", display_name="Fixture product")
+    session.add(product)
+    await session.flush()
+    return product.id

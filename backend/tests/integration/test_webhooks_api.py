@@ -38,7 +38,7 @@ from app.persistence.models import (
     WhatsAppSuppression,
 )
 from app.worker.handlers.whatsapp import process_inbound_webhook
-from tests.integration.helpers import get_test_database_url, run_db
+from tests.integration.helpers import ensure_product_id, get_test_database_url, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -437,7 +437,7 @@ class TestOptOut:
         async def seed(session: AsyncSession) -> None:
             from app.persistence.models import Audience, WhatsAppTemplate
 
-            audience = Audience(name="A")
+            audience = Audience(name="A", product_id=await ensure_product_id(session))
             template = WhatsAppTemplate(
                 name="t",
                 language="en",
@@ -449,7 +449,12 @@ class TestOptOut:
             session.add_all([audience, template, lead])
             await session.flush()
 
-            campaign = Campaign(name="C", audience_id=audience.id, template_id=template.id)
+            campaign = Campaign(
+                name="C",
+                audience_id=audience.id,
+                product_id=audience.product_id,
+                template_id=template.id,
+            )
             session.add(campaign)
             await session.flush()
             session.add(

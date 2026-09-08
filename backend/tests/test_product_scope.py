@@ -32,9 +32,14 @@ import app.persistence.models  # noqa: F401  # isort: skip
 #: Nullable today because the write path cannot yet supply a product. The phase named is
 #: the one that teaches it to — after which that phase tightens the column.
 NULLABLE_DEBT: dict[str, tuple[int, str]] = {
-    "leads": (19, "promotion and inbound creation cannot resolve a product yet"),
-    "audiences": (19, "POST /audiences/upload takes no product"),
-    "campaigns": (19, "inherits from its audience, which has no product yet"),
+    # Closed in Phase 19: audience upload resolves a product, and a campaign takes its
+    # product from its audience. `audiences` and `campaigns` are no longer here.
+    #
+    # `leads` was originally listed against Phase 19 and that was wrong: promotion can
+    # supply a product from the audience, but the **inbound** path cannot until routing
+    # on `metadata.phone_number_id` arrives, and [D45] forbids guessing one. Phase 23
+    # closes it, after attributing or refusing any transitional rows.
+    "leads": (23, "the inbound path cannot resolve a product until phone_number_id routing"),
     "conversations": (22, "Phase 22 snapshots product and segment at creation (§28.5)"),
     "messages": (23, "inherits from campaign or conversation"),
     "ai_runs": (22, "inherits from its conversation"),
@@ -72,7 +77,13 @@ DERIVED: dict[str, str] = {
     "knowledge_ingestion_jobs": "-> knowledge_documents",
 }
 
-SCOPED = set(NULLABLE_DEBT) | set(NULLABLE_BY_DESIGN)
+#: Product-owned and already NOT NULL. Their write paths resolve a product.
+CLOSED: dict[str, str] = {
+    "audiences": "closed in Phase 19; upload resolves a product explicitly or by sole-active",
+    "campaigns": "closed in Phase 19; taken from the campaign's audience (§28.6)",
+}
+
+SCOPED = set(NULLABLE_DEBT) | set(NULLABLE_BY_DESIGN) | set(CLOSED)
 ALL_CLASSIFIED = SCOPED | set(INTENTIONALLY_GLOBAL) | set(DERIVED)
 
 
@@ -94,6 +105,7 @@ class TestEveryTableIsClassified:
         groups = [
             set(NULLABLE_DEBT),
             set(NULLABLE_BY_DESIGN),
+            set(CLOSED),
             set(INTENTIONALLY_GLOBAL),
             set(DERIVED),
         ]
@@ -137,6 +149,25 @@ class TestNullabilityDebt:
         phase, reason = entry
         assert 19 <= phase <= 27, f"{name}: closing phase {phase} is not a real phase"
         assert reason.strip(), f"{name}: no reason recorded"
+
+    @pytest.mark.parametrize("name", sorted(CLOSED))
+    def test_a_closed_column_is_not_null(self, name: str) -> None:
+        """Debt that has been paid must show as paid.
+
+        A table listed as closed while its column is still nullable would be a register
+        that flatters itself, which is worse than no register.
+        """
+        assert _table(name).columns["product_id"].nullable is False
+
+    def test_leads_closes_in_phase_23_not_19(self) -> None:
+        """Recorded because the plan originally said Phase 19, and that was wrong.
+
+        Promotion can supply a product from the audience, but the inbound webhook path
+        cannot until routing on `metadata.phone_number_id` exists ([D40], [D45]). Phase
+        19 therefore introduces product-scoped identity without closing the nullability.
+        """
+        phase, _reason = NULLABLE_DEBT["leads"]
+        assert phase == 23
 
     def test_notifications_is_not_debt(self) -> None:
         """It is nullable by design and no phase should ever tighten it."""

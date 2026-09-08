@@ -25,7 +25,7 @@ from app.integrations.queue import TaskRequest, TaskType
 from app.persistence.models import Audience, Booking, Conversation, Lead, Message
 from app.worker.handlers.campaign_send import RetryableSendError
 from app.worker.handlers.crm_sync import queue_crm_sync, sync_crm_contact
-from tests.integration.helpers import get_test_database_url, run_db
+from tests.integration.helpers import ensure_product_id, get_test_database_url, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -69,7 +69,11 @@ def seed_lead(
     async def create(session: AsyncSession) -> str:
         audience_id = None
         if with_audience:
-            audience = Audience(name="August batch", status="CONFIRMED")
+            audience = Audience(
+                name="August batch",
+                status="CONFIRMED",
+                product_id=await ensure_product_id(session),
+            )
             session.add(audience)
             await session.flush()
             audience_id = audience.id

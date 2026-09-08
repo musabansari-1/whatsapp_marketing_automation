@@ -9,6 +9,7 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.domain.audience import ValidatedRow, ValidationSummary
 from app.domain.enums import AudienceStatus, ContactValidationStatus
@@ -22,6 +23,8 @@ async def create_with_contacts(
     source_filename: str | None,
     uploaded_by_id: uuid.UUID | None,
     summary: ValidationSummary,
+    product_id: uuid.UUID,
+    segment_id: uuid.UUID | None = None,
 ) -> Audience:
     """Store an audience and every parsed row, valid or not.
 
@@ -30,6 +33,8 @@ async def create_with_contacts(
     """
     audience = Audience(
         name=name,
+        product_id=product_id,
+        segment_id=segment_id,
         source_filename=source_filename,
         uploaded_by_id=uploaded_by_id,
         status=AudienceStatus.PENDING_CONFIRMATION,
@@ -130,7 +135,7 @@ async def count_contacts(
     return int(result.scalar_one())
 
 
-async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uuid.UUID) -> int:
+async def promote_valid_contacts_to_leads(session: AsyncSession, audience: Audience) -> int:
     """Upsert the audience's valid contacts into `leads`.
 
     Runs on confirmation, which is the point §6 calls "audience stored" and the moment
@@ -149,6 +154,9 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uu
     lead's `status` is never touched here: it belongs to the conversation lifecycle,
     and re-importing a number must not reset a qualified lead to NEW.
     """
+    audience_id = audience.id
+    product_id = audience.product_id
+
     source = (
         select(
             AudienceContact.phone_e164,
@@ -171,9 +179,14 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uu
     if not rows:
         return 0
 
+    await _adopt_transitional_leads(
+        session, product_id=product_id, phones=[row["phone_e164"] for row in rows]
+    )
+
     statement = pg_insert(Lead).values(
         [
             {
+                "product_id": product_id,
                 "phone_e164": row["phone_e164"],
                 "full_name": row["full_name"],
                 "email": row["email"],
@@ -186,7 +199,11 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uu
         ]
     )
     statement = statement.on_conflict_do_update(
-        index_elements=[Lead.phone_e164],
+        # The partial index over product-known leads ([D41]). Naming the predicate is
+        # what tells PostgreSQL which of the two lead uniqueness rules this targets;
+        # without it the statement is ambiguous and fails.
+        index_elements=[Lead.product_id, Lead.phone_e164],
+        index_where=Lead.product_id.is_not(None),
         set_={
             # coalesce, so a sparser later upload cannot blank out detail an earlier
             # one supplied ([D35]: the audience file is authoritative, but a missing
@@ -201,11 +218,54 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience_id: uu
     await session.execute(statement)
     await session.flush()
 
-    await link_contacts_to_leads(session, audience_id)
+    await link_contacts_to_leads(session, audience_id, product_id=product_id)
     return len(rows)
 
 
-async def link_contacts_to_leads(session: AsyncSession, audience_id: uuid.UUID) -> int:
+async def _adopt_transitional_leads(
+    session: AsyncSession, *, product_id: uuid.UUID | None, phones: Sequence[str]
+) -> int:
+    """Claim leads the legacy inbound path created with no product yet.
+
+    Until Phase 23 routes inbound messages by `phone_number_id`, a customer who messages
+    first produces a lead with `product_id IS NULL` ([D45] forbids guessing one). If that
+    number is later uploaded in an audience, the audience *is* the product context for
+    it — an admin said so — and claiming the existing row is right.
+
+    Without this, promotion would create a second lead for the same human and the inbound
+    path would then find two rows for one phone and refuse, which is a live failure in
+    ordinary single-product use: message first, get uploaded second.
+
+    Skipped where the product already has a lead for that number, since adopting would
+    then collide with the product-known uniqueness rule and the existing row is the one
+    that should survive.
+    """
+    if product_id is None or not phones:
+        return 0
+
+    owned = aliased(Lead)
+    already_owned = (
+        select(owned.id)
+        .where(owned.product_id == product_id, owned.phone_e164 == Lead.phone_e164)
+        .exists()
+    )
+
+    result = await session.execute(
+        update(Lead)
+        .where(
+            Lead.product_id.is_(None),
+            Lead.phone_e164.in_(list(phones)),
+            ~already_owned,
+        )
+        .values(product_id=product_id)
+    )
+    await session.flush()
+    return int(cast("CursorResult[Any]", result).rowcount or 0)
+
+
+async def link_contacts_to_leads(
+    session: AsyncSession, audience_id: uuid.UUID, *, product_id: uuid.UUID | None
+) -> int:
     """Record which lead each valid contact became ([D55]).
 
     This is the audience *membership* relationship, and it is what a campaign's
@@ -219,11 +279,10 @@ async def link_contacts_to_leads(session: AsyncSession, audience_id: uuid.UUID) 
 
     Idempotent: re-confirming an audience matches the same rows to the same leads.
 
-    The match is on the normalized phone alone, which is unambiguous only while
-    `leads.phone_e164` is globally unique. **Phase 19 ([D41]) makes leads per-product**,
-    at which point one phone matches several leads and this join must also carry the
-    audience's product. Left as a note rather than written early, because the column it
-    would need does not exist yet.
+    The match carries the audience's product as well as the phone ([D41]). One phone can
+    now be a lead in several products, and matching on the phone alone would link this
+    audience's contacts to another product's lead — the hazard recorded in Phase 16 and
+    closed here.
     """
     statement = (
         update(AudienceContact)
@@ -231,6 +290,10 @@ async def link_contacts_to_leads(session: AsyncSession, audience_id: uuid.UUID) 
             AudienceContact.audience_id == audience_id,
             AudienceContact.validation_status == ContactValidationStatus.VALID,
             AudienceContact.phone_e164 == Lead.phone_e164,
+            # Product as well as phone ([D41]). The same number is a different lead in a
+            # different product, and matching on the phone alone would link this
+            # audience's contacts to another product's leads.
+            Lead.product_id == product_id,
         )
         .values(lead_id=Lead.id)
     )

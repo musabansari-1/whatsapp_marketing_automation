@@ -24,7 +24,9 @@ from app.core.logging import get_logger
 from app.domain.audience import MissingColumnsError, find_missing_columns, validate_rows
 from app.domain.enums import AudienceStatus, ContactValidationStatus
 from app.domain.excel import ExcelParseError, TooManyRowsError, parse_excel
+from app.domain.product import ProductContextError
 from app.persistence.repositories import audiences as audience_repo
+from app.persistence.repositories import products as product_repo
 
 router = APIRouter(prefix="/audiences", tags=["audiences"])
 logger = get_logger(__name__)
@@ -67,12 +69,25 @@ async def upload_audience(
     settings: SettingsDep,
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
+    product_id: uuid.UUID | None = Form(default=None),
+    segment_id: uuid.UUID | None = Form(default=None),
 ) -> AudienceUploadResponse:
     """Validate a spreadsheet and store it as an unconfirmed audience.
 
     The response is the §6 preview. Nothing is sent and no AI runs; the audience is
     inert until an admin confirms it.
+
+    `product_id` says which product this audience belongs to (§28). It is optional only
+    for backward compatibility: while exactly one active product exists the request is
+    unambiguous without it, which is what keeps Academicae's existing behaviour working
+    ([D54]). With none or several active products, omitting it is an error rather than
+    a guess — see `resolve_authoring_product`.
+
+    `segment_id` is optional in its own right: a product-wide audience is valid, and a
+    product may have no segments at all.
     """
+    resolved_product = await _resolve_product(session, product_id)
+    await _validate_segment(session, product_id=resolved_product, segment_id=segment_id)
     content = await _read_within_limit(file, settings.audience_max_file_bytes)
     schema = settings.audience_schema()
 
@@ -109,6 +124,8 @@ async def upload_audience(
         source_filename=file.filename,
         uploaded_by_id=user.id,
         summary=summary,
+        product_id=resolved_product,
+        segment_id=segment_id,
     )
 
     logger.info(
@@ -125,6 +142,49 @@ async def upload_audience(
         audience=AudienceSummaryResponse.model_validate(audience),
         sample=[AudienceContactResponse.model_validate(contact) for contact in sample],
     )
+
+
+async def _resolve_product(session: DbSession, explicit: uuid.UUID | None) -> uuid.UUID:
+    """The product this audience belongs to, or a 4xx explaining why it cannot be known."""
+    try:
+        product_id = await product_repo.resolve_product_for_authoring(session, explicit)
+    except ProductContextError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    product = await product_repo.get_product(session, product_id)
+    if product is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="That product does not exist"
+        )
+    if not product.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="That product is not active",
+        )
+    return product.id
+
+
+async def _validate_segment(
+    session: DbSession, *, product_id: uuid.UUID, segment_id: uuid.UUID | None
+) -> None:
+    """A segment must belong to the audience's own product (§28.8).
+
+    The database refuses the pairing too, through a composite foreign key. This exists
+    so the caller gets an explanation rather than an integrity error.
+    """
+    if segment_id is None:
+        return
+
+    segment = await product_repo.get_segment(session, segment_id)
+    if segment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="That segment does not exist"
+        )
+    if segment.product_id != product_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="That segment belongs to a different product",
+        )
 
 
 @router.get("", response_model=list[AudienceSummaryResponse])
@@ -201,7 +261,7 @@ async def confirm_audience(
             detail="This audience has no valid contacts to confirm",
         )
 
-    upserted = await audience_repo.promote_valid_contacts_to_leads(session, audience_id)
+    upserted = await audience_repo.promote_valid_contacts_to_leads(session, audience)
     await audience_repo.confirm(session, audience)
 
     logger.info(

@@ -36,6 +36,7 @@ from app.persistence.models import (
     WebhookEvent,
     WhatsAppSuppression,
 )
+from tests.integration.helpers import ensure_product_id
 
 pytestmark = pytest.mark.integration
 
@@ -318,7 +319,7 @@ class TestNotificationFanout:
 class TestAudienceStoresRejectedRows:
     async def test_duplicate_and_invalid_rows_are_storable(self, session: AsyncSession) -> None:
         """§6: the preview must show what was rejected and why."""
-        audience = Audience(name="Q3 list")
+        audience = Audience(name="Q3 list", product_id=await ensure_product_id(session))
         session.add(audience)
         await session.flush()
 
@@ -424,7 +425,7 @@ class TestVectorStorageAndSearch:
 
 class TestCascades:
     async def test_deleting_an_audience_removes_its_contacts(self, session: AsyncSession) -> None:
-        audience = Audience(name="Temp")
+        audience = Audience(name="Temp", product_id=await ensure_product_id(session))
         session.add(audience)
         await session.flush()
         session.add(
