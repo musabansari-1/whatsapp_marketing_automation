@@ -159,6 +159,13 @@ class Settings(BaseSettings):
     # from the conversation alone, which is the safe behaviour before the client's
     # documents are loaded (§11).
     ai_retrieval_enabled: bool = True
+    # **No longer read at runtime.** Phase 21 ([D56]) made knowledge ownership come from
+    # the product relationship, so selecting one platform-wide base by name is
+    # meaningless — and its "use the only base" fallback was the multi-product leak.
+    #
+    # Kept as a field only so an existing `.env` still parses. Retiring it from
+    # `.env.example` and the deployment scripts is Phase 27's configuration cleanup;
+    # nothing in `app/` reads it, and nothing may start.
     ai_knowledge_base_name: str | None = None
 
     # ---------------------------------------------------------------- embeddings [D1]

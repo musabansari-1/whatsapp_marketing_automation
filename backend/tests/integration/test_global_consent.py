@@ -372,6 +372,48 @@ class TestSendingStillChecksTheAuthoritativeTable:
 
         assert run_db(statuses) == [RecipientStatus.SKIPPED.value]
 
+    def test_consent_does_not_come_from_the_status_enum(self, admin: TestClient) -> None:
+        """A suppressed lead whose status is *not* OPTED_OUT must still be skipped.
+
+        `INVALID` is terminal and keeps its status under Phase 20's rule, so this lead is
+        suppressed while `status != OPTED_OUT`. If any send path inferred consent from
+        the enum, it would message someone who has opted out.
+
+        Audited across `campaign_send` and the conversation turn: both check the
+        suppression table. This pins that they keep doing so.
+        """
+        product = make_product("c-first")
+        audience_id = upload_and_confirm(admin, "list", product)
+
+        async def invalidate(session: AsyncSession) -> None:
+            lead = (await session.execute(select(Lead).where(Lead.phone_e164 == E164))).scalar_one()
+            lead.status = LeadStatus.INVALID
+
+        run_db(invalidate)
+        suppress()
+
+        rows = mirrors()
+        assert rows[0][1] is True
+        assert rows[0][2] is LeadStatus.INVALID, "status is deliberately not OPTED_OUT here"
+
+        response = admin.post(
+            f"{API_V1_PREFIX}/campaigns",
+            json={
+                "name": "Invalid and suppressed",
+                "audience_id": audience_id,
+                "template_id": self._template(),
+            },
+        )
+        campaign_id = uuid.UUID(response.json()["campaign"]["id"])
+
+        async def statuses(session: AsyncSession) -> list[str]:
+            result = await session.execute(
+                select(CampaignRecipient.status).where(CampaignRecipient.campaign_id == campaign_id)
+            )
+            return [status.value for status in result.scalars().all()]
+
+        assert run_db(statuses) == [RecipientStatus.SKIPPED.value]
+
     @staticmethod
     def _template() -> str:
         async def insert(session: AsyncSession) -> str:

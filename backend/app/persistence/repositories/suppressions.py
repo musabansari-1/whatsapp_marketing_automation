@@ -17,6 +17,17 @@ notice. This module is the single place that does both.
 
 **The invariant:** no lead creation, upsert or adoption path may return a lead whose
 `opted_out` mirror contradicts the authoritative suppression state for its phone.
+
+**`INVALID` is not overwritten**, deliberately. The two facts are different and both are
+worth keeping:
+
+    INVALID                      a delivery finding: Meta says this number is unreachable
+    opted_out / suppression row  a consent fact: this person asked not to be contacted
+
+A suppressed `INVALID` lead records consent on its mirror and keeps its status. Sending
+is unaffected, because **consent never comes from the status enum**: audited in Phase 20
+and asserted by test — `campaign_send` and the conversation turn both check this table,
+and no send path treats `status != OPTED_OUT` as permission to message.
 """
 
 from __future__ import annotations

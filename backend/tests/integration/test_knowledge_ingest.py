@@ -32,7 +32,7 @@ from app.persistence.models import (
 from app.persistence.repositories import knowledge as knowledge_repo
 from app.worker.handlers.campaign_send import RetryableSendError
 from app.worker.handlers.knowledge_ingest import ingest_knowledge_document
-from tests.integration.helpers import get_test_database_url, run_db
+from tests.integration.helpers import ensure_product_id, get_test_database_url, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -72,7 +72,12 @@ def seed_document(*, filename: str = "refunds.txt", content: bytes = POLICY) -> 
 
     async def seed(session: AsyncSession) -> tuple[str, str]:
         base = await knowledge_repo.create_knowledge_base(
-            session, name=f"KB {uuid.uuid4()}", description=None
+            session,
+            name=f"KB {uuid.uuid4()}",
+            description=None,
+            # Retrieval is product-scoped since Phase 21 ([D56]); an unattributed base
+            # is deliberately not retrievable, so the fixture must own one.
+            product_id=await ensure_product_id(session),
         )
         document = await knowledge_repo.create_document(
             session,
@@ -282,7 +287,7 @@ class TestVectorRetrieval:
             vector = await ingest_env.embed_query("refund policy")
             return await knowledge_repo.search(
                 session,
-                knowledge_base_id=uuid.UUID(base_id),
+                product_id=await ensure_product_id(session),
                 query_vector=vector,
                 limit=5,
                 embedding_model=ingest_env.model_id,
@@ -310,7 +315,7 @@ class TestVectorRetrieval:
             vector = await ingest_env.embed_query("refunds")
             return await knowledge_repo.search(
                 session,
-                knowledge_base_id=uuid.UUID(base_id),
+                product_id=await ensure_product_id(session),
                 query_vector=vector,
                 limit=10,
                 embedding_model=ingest_env.model_id,
@@ -339,7 +344,7 @@ class TestVectorRetrieval:
             vector = await ingest_env.embed_query("refund policy")
             return await knowledge_repo.search(
                 session,
-                knowledge_base_id=uuid.UUID(base_id),
+                product_id=await ensure_product_id(session),
                 query_vector=vector,
                 limit=5,
             )
@@ -365,7 +370,7 @@ class TestVectorRetrieval:
             vector = await ingest_env.embed_query("refund policy")
             return await knowledge_repo.search(
                 session,
-                knowledge_base_id=uuid.UUID(base_id),
+                product_id=await ensure_product_id(session),
                 query_vector=vector,
                 limit=5,
             )
@@ -387,7 +392,7 @@ class TestVectorRetrieval:
             vector = await ingest_env.embed_query("refund policy")
             return await knowledge_repo.search(
                 session,
-                knowledge_base_id=uuid.UUID(base_id),
+                product_id=await ensure_product_id(session),
                 query_vector=vector,
                 limit=5,
                 embedding_model="some-other-model",
@@ -395,7 +400,7 @@ class TestVectorRetrieval:
 
         assert run_db(search) == []
 
-    def test_another_knowledge_base_is_not_searched(
+    def test_another_products_knowledge_is_not_searched(
         self, ingest_env: FakeEmbeddingProvider
     ) -> None:
         _base_id, document_id = seed_document()
@@ -405,7 +410,7 @@ class TestVectorRetrieval:
             vector = await ingest_env.embed_query("refund policy")
             return await knowledge_repo.search(
                 session,
-                knowledge_base_id=uuid.uuid4(),
+                product_id=uuid.uuid4(),
                 query_vector=vector,
                 limit=5,
             )
@@ -424,7 +429,7 @@ class TestVectorRetrieval:
             vector = await ingest_env.embed_query("refund")
             return await knowledge_repo.search(
                 session,
-                knowledge_base_id=uuid.UUID(base_id),
+                product_id=await ensure_product_id(session),
                 query_vector=vector,
                 limit=2,
             )

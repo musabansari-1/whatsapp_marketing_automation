@@ -193,6 +193,7 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         conversation_id = conversation.id
         lead_id = lead.id
         lead_phone = lead.phone_e164
+        lead_product_id = lead.product_id
         question = message.body or ""
         await session.commit()
 
@@ -203,7 +204,10 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
     # the evidence the reply is grounded in, not something the model chooses to
     # consult. A failure here is not fatal — the agent is told there is no evidence and
     # uses the approved fallback rather than losing the turn.
-    retrieval = await _retrieve(settings, question)
+    # Product context for retrieval. Phase 22 snapshots product and segment on the
+    # conversation (§28.5); until then the lead is where it authoritatively lives, and
+    # a lead with no product yet retrieves nothing rather than borrowing.
+    retrieval = await _retrieve(settings, question, product_id=lead_product_id)
 
     try:
         async with factory() as session:
@@ -382,15 +386,33 @@ def _history_messages(history: list[Any]) -> list[LLMMessage]:
     return messages
 
 
-async def _retrieve(settings: Settings, question: str) -> RetrievalResult | None:
-    """Find knowledge relevant to what the customer asked (§11).
+async def _retrieve(
+    settings: Settings,
+    question: str,
+    *,
+    product_id: uuid.UUID | None,
+    segment_id: uuid.UUID | None = None,
+) -> RetrievalResult | None:
+    """Find knowledge relevant to what the customer asked (§11, §28.3, [D56]).
 
-    Returns None when retrieval is off or unavailable, which the agent reads the same
-    way as "nothing relevant": it tells the model to use the approved fallback rather
-    than answer unsupported. A retrieval failure must not lose the customer's turn —
-    the platform can still reply from the conversation itself.
+    Returns None when retrieval is off, unavailable, or **has no product to search**,
+    which the agent reads the same way as "nothing relevant": it tells the model to use
+    the approved fallback rather than answer unsupported. A retrieval failure must not
+    lose the customer's turn — the platform can still reply from the conversation.
+
+    **No product means no retrieval.** It never means "search whatever there is". A lead
+    whose product is not yet known — the transitional rows [D41] leaves until Phase 23
+    routes inbound messages — gets the approved fallback rather than another product's
+    documents. Logged distinctly so a missing configuration is diagnosable rather than
+    looking like a normal empty result.
     """
     if not settings.ai_retrieval_enabled or not question.strip():
+        return None
+
+    if product_id is None:
+        # Not a failure and not an empty corpus: there is nothing this turn is entitled
+        # to read. Phase 23 removes the case by giving every lead a product.
+        logger.info("conversation_retrieval_no_product")
         return None
 
     try:
@@ -399,19 +421,22 @@ async def _retrieve(settings: Settings, question: str) -> RetrievalResult | None
 
         factory = get_session_factory()
         async with factory() as session:
-            knowledge_base = await _knowledge_base_id(session, settings)
-            if knowledge_base is None:
-                return None
-
             candidates = await knowledge_repo.search(
                 session,
-                knowledge_base_id=knowledge_base,
+                product_id=product_id,
+                segment_id=segment_id,
                 query_vector=vector,
                 limit=settings.rag_top_k,
                 # [D1]: comparing vectors from different models is meaningless, so a
                 # search after a model change returns nothing rather than nonsense.
                 embedding_model=embedding.model_id,
             )
+
+            if not candidates:
+                # Distinguishable from "nothing was similar enough": this says the
+                # product has no eligible knowledge at all, which is a configuration
+                # fact worth seeing in the logs.
+                logger.info("conversation_retrieval_no_eligible_knowledge")
     except Exception as exc:  # noqa: BLE001 - retrieval is best-effort by design
         logger.warning("conversation_retrieval_failed", error=str(exc))
         return None
@@ -426,30 +451,17 @@ async def _retrieve(settings: Settings, question: str) -> RetrievalResult | None
     )
 
 
-async def _knowledge_base_id(session: AsyncSession, settings: Settings) -> uuid.UUID | None:
-    """Which knowledge base the AI answers from.
-
-    Named in configuration when there are several. With none configured it uses the
-    only one, and declines to guess when several exist — answering from an arbitrary
-    knowledge base is worse than not answering.
-    """
-    bases = await knowledge_repo.list_knowledge_bases(session)
-    if not bases:
-        return None
-
-    if settings.ai_knowledge_base_name:
-        wanted = settings.ai_knowledge_base_name.casefold()
-        for base in bases:
-            if base.name.casefold() == wanted:
-                return base.id
-        logger.warning("ai_knowledge_base_not_found", configured=settings.ai_knowledge_base_name)
-        return None
-
-    if len(bases) > 1:
-        logger.warning("ai_knowledge_base_ambiguous", count=len(bases))
-        return None
-
-    return bases[0].id
+# `_knowledge_base_id` was removed in Phase 21 ([D56]).
+#
+# It picked a knowledge base by name from `AI_KNOWLEDGE_BASE_NAME`, and fell back to
+# `bases[0]` when exactly one existed. That fallback was the multi-product leak: the day
+# a second product had a conversation before it had a knowledge base, its customers
+# would have been answered from another product's documents — confidently, with
+# citations, and with nothing in the logs to suggest anything was wrong.
+#
+# Knowledge ownership now comes from the product relationship instead, and `search`
+# cannot be called without a product. There is deliberately no replacement: a lookup
+# that chooses a base by name across products is exactly the ambiguity being removed.
 
 
 async def _is_suppressed(session: AsyncSession, phone_e164: str) -> bool:

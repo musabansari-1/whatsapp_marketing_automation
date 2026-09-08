@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.chunking import Chunk
@@ -24,9 +24,23 @@ from app.persistence.models import (
 
 
 async def create_knowledge_base(
-    session: AsyncSession, *, name: str, description: str | None
+    session: AsyncSession,
+    *,
+    name: str,
+    description: str | None,
+    product_id: uuid.UUID | None = None,
+    segment_id: uuid.UUID | None = None,
 ) -> KnowledgeBase:
-    knowledge_base = KnowledgeBase(name=name, description=description)
+    """Create a knowledge base, optionally owned by a product (§28.3).
+
+    `product_id` is optional here because `POST /knowledge-bases` cannot supply one
+    until Phase 26 — the column stays nullable until then. A base created without a
+    product is **not retrievable**: [D56] treats an unattributed base as unsafe rather
+    than shared, so an unowned base is inert until someone attributes it.
+    """
+    knowledge_base = KnowledgeBase(
+        name=name, description=description, product_id=product_id, segment_id=segment_id
+    )
     session.add(knowledge_base)
     await session.flush()
     return knowledge_base
@@ -249,23 +263,52 @@ async def replace_chunks(
 async def search(
     session: AsyncSession,
     *,
-    knowledge_base_id: uuid.UUID,
+    product_id: uuid.UUID,
+    segment_id: uuid.UUID | None = None,
     query_vector: Sequence[float],
     limit: int,
     embedding_model: str | None = None,
 ) -> list[RetrievedChunk]:
-    """Nearest-neighbour search over a knowledge base's chunks (§11).
+    """Nearest-neighbour search over one product's knowledge (§11, §28.3, [D56]).
 
-    Two filters are load-bearing:
+    **Product is required and there is no way to ask without one.** Isolation lives in
+    this query rather than in whoever calls it: a caller cannot pass a knowledge-base ID
+    at all any more, so a foreign one cannot be supplied by accident or by a future
+    refactor. That is the whole point of the signature change.
+
+    Four filters are load-bearing:
+
+    Product — the isolation boundary. A knowledge base belonging to another product is
+    unreachable, and so is one with no product yet: during the Phase 18→26 transition
+    `knowledge_bases.product_id` is nullable, and an unattributed base means *not safe
+    to retrieve*, never *shared with everyone*. `product_id = :product` excludes NULL on
+    its own, which is the correct reading rather than a happy accident.
+
+    Segment — shared product knowledge (`segment_id IS NULL`) is visible to every
+    segment of its product, which is what lets a Life Herba pharmacist ask how consumers
+    buy medicines. A segment-restricted base is visible only to that segment. **A
+    conversation with no segment sees shared knowledge only**: an unknown segment must
+    not widen access, or missing context would grant more than known context does.
 
     READY documents only — §11 says so, and a half-ingested or failed document would
     otherwise contribute partial content to answers.
 
     Matching embedding model — [D1] forbids comparing vectors from different models.
     Cosine distance between them is arithmetically valid and semantically meaningless,
-    so an unfiltered search after a model change would return confident nonsense.
+    so an unfiltered search after a model change would return confident nonsense. One
+    embedding space serves every product; isolation is relational, never a separate
+    vector space.
     """
     distance = KnowledgeChunk.embedding.cosine_distance(list(query_vector))
+
+    # Built explicitly rather than as `segment_id IS NULL OR segment_id = :segment` with
+    # a bound NULL: an unknown segment must narrow to shared knowledge, and leaving that
+    # to SQL's NULL comparison semantics is the kind of subtlety worth not relying on.
+    eligible_segment = (
+        KnowledgeBase.segment_id.is_(None)
+        if segment_id is None
+        else or_(KnowledgeBase.segment_id.is_(None), KnowledgeBase.segment_id == segment_id)
+    )
 
     query = (
         select(
@@ -276,8 +319,10 @@ async def search(
             distance.label("distance"),
         )
         .join(KnowledgeDocument, KnowledgeChunk.document_id == KnowledgeDocument.id)
+        .join(KnowledgeBase, KnowledgeDocument.knowledge_base_id == KnowledgeBase.id)
         .where(
-            KnowledgeDocument.knowledge_base_id == knowledge_base_id,
+            KnowledgeBase.product_id == product_id,
+            eligible_segment,
             KnowledgeDocument.status == DocumentStatus.READY,
             KnowledgeChunk.embedding.is_not(None),
         )
