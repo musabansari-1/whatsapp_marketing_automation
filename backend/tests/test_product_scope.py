@@ -39,10 +39,18 @@ NULLABLE_DEBT: dict[str, tuple[int, str]] = {
     # supply a product from the audience, but the **inbound** path cannot until routing
     # on `metadata.phone_number_id` arrives, and [D45] forbids guessing one. Phase 23
     # closes it, after attributing or refusing any transitional rows.
+    # These three close together in Phase 23, and the reason is one reason.
+    #
+    # A conversation snapshots its product from its lead (§28.5, Phase 22), and an AI run
+    # takes its product from the conversation. So while the inbound path can still
+    # produce a lead with no product — until routing on `metadata.phone_number_id`
+    # exists, and [D45] forbids guessing one — all three inherit that gap. Closing any of
+    # them earlier would mean inventing the very product the routing phase exists to
+    # determine.
     "leads": (23, "the inbound path cannot resolve a product until phone_number_id routing"),
-    "conversations": (22, "Phase 22 snapshots product and segment at creation (§28.5)"),
+    "conversations": (23, "snapshots from the lead, which has no product until Phase 23"),
     "messages": (23, "inherits from campaign or conversation"),
-    "ai_runs": (22, "inherits from its conversation"),
+    "ai_runs": (23, "takes its product from the conversation, which closes in Phase 23"),
     "bookings": (24, "inherits from its conversation; Phase 24 owns per-product calendars"),
     "whatsapp_templates": (23, "template sync has no product context until it is per-product"),
     "knowledge_bases": (26, "POST /knowledge-bases takes no product"),
@@ -158,6 +166,18 @@ class TestNullabilityDebt:
         that flatters itself, which is worse than no register.
         """
         assert _table(name).columns["product_id"].nullable is False
+
+    def test_the_inbound_chain_closes_together(self) -> None:
+        """Leads, conversations and AI runs share one blocker and one closing phase.
+
+        Recorded because the plan originally split them across 19, 22 and 23. A
+        conversation takes its product from its lead and a run from its conversation, so
+        none can close before inbound routing determines the lead's product ([D40],
+        [D45]).
+        """
+        for table in ("leads", "conversations", "ai_runs"):
+            phase, _reason = NULLABLE_DEBT[table]
+            assert phase == 23, f"{table} should close with inbound routing"
 
     def test_leads_closes_in_phase_23_not_19(self) -> None:
         """Recorded because the plan originally said Phase 19, and that was wrong.

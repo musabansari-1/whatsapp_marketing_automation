@@ -40,7 +40,7 @@ from app.persistence.models import (
 from app.persistence.repositories import conversations as conversation_repo
 from app.worker.handlers.campaign_send import RetryableSendError
 from app.worker.handlers.conversation import process_conversation_turn
-from tests.integration.helpers import get_test_database_url, run_db
+from tests.integration.helpers import ensure_product_id, get_test_database_url, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -98,7 +98,12 @@ def seed_turn(
     async def seed(session: AsyncSession) -> tuple[str, str, str]:
         received_at = datetime.now(UTC) - last_inbound_age
 
-        lead = Lead(phone_e164=PHONE, full_name="Asha", status=lead_status)
+        # Product context, as a real lead has since Phase 19. A conversation without
+        # one is refused by the turn handler ([D45]: no product means no product-
+        # dependent behaviour), so a fixture lacking it would be testing the refusal.
+        product_id = await ensure_product_id(session)
+
+        lead = Lead(phone_e164=PHONE, full_name="Asha", status=lead_status, product_id=product_id)
         session.add(lead)
         await session.flush()
 
@@ -106,6 +111,9 @@ def seed_turn(
             lead_id=lead.id,
             status=conversation_status,
             last_inbound_at=received_at,
+            # Snapshotted at creation in production (§28.5); set here for the same
+            # reason, and left without a segment because no campaign attributes one.
+            product_id=product_id,
         )
         session.add(conversation)
         await session.flush()

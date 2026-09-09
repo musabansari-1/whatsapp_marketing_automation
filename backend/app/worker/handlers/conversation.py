@@ -44,6 +44,7 @@ from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.errors import ProviderError
 from app.core.logging import get_logger
+from app.domain.ai_config import AIConfigurationError, ResolvedAIConfig
 from app.domain.conversation import LeadStateError, can_transition_conversation
 from app.domain.enums import ConversationStatus, LeadStatus, MessageStatus
 from app.domain.qualification import rules_from_settings
@@ -64,6 +65,7 @@ from app.integrations.registry import (
 from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
 from app.persistence.models import AIRun, Conversation, Lead, WhatsAppSuppression
+from app.persistence.repositories import ai_configurations as ai_config_repo
 from app.persistence.repositories import conversations as conversation_repo
 from app.persistence.repositories import knowledge as knowledge_repo
 from app.worker.handlers.campaign_send import RetryableSendError
@@ -193,21 +195,44 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         conversation_id = conversation.id
         lead_id = lead.id
         lead_phone = lead.phone_e164
-        lead_product_id = lead.product_id
+        # The conversation is the authority for interaction context (§28.5), not the
+        # lead: a lead may belong to several segments, and only the conversation records
+        # which one this exchange is running under.
+        product_id = conversation.product_id
+        segment_id = conversation.segment_id
         question = message.body or ""
         await session.commit()
 
     started = datetime.now(UTC)
     provider = build_llm_provider(settings)
 
+    # A conversation with no product yet cannot run product-dependent behaviour at all.
+    # [D45] forbids inventing one, so the turn stops here rather than answering from
+    # configuration and knowledge that belong to someone else. Phase 23 removes the case.
+    if product_id is None:
+        logger.warning("conversation_no_product_context", conversation_id=str(conversation_id))
+        return TurnOutcome("no_product_context", str(conversation_id)).as_dict()
+
+    try:
+        ai_config = await _resolve_ai_config(settings, product_id, segment_id)
+    except AIConfigurationError as exc:
+        # A product without policy of its own, and no legacy baseline available to it.
+        # Failing the turn is the honest outcome: replying would mean speaking in
+        # another product's voice.
+        logger.warning(
+            "conversation_ai_not_configured",
+            conversation_id=str(conversation_id),
+            error=str(exc),
+        )
+        return TurnOutcome("ai_not_configured", str(conversation_id)).as_dict()
+
     # Retrieval happens before the model runs and outside the tool loop: §11 makes it
     # the evidence the reply is grounded in, not something the model chooses to
     # consult. A failure here is not fatal — the agent is told there is no evidence and
     # uses the approved fallback rather than losing the turn.
-    # Product context for retrieval. Phase 22 snapshots product and segment on the
-    # conversation (§28.5); until then the lead is where it authoritatively lives, and
-    # a lead with no product yet retrieves nothing rather than borrowing.
-    retrieval = await _retrieve(settings, question, product_id=lead_product_id)
+    retrieval = await _retrieve(
+        settings, question, product_id=product_id, segment_id=segment_id, config=ai_config
+    )
 
     try:
         async with factory() as session:
@@ -222,17 +247,22 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
                 conversation=conversation,
                 slot_policy=policy_from_settings(settings),
                 calendar=build_calendar_provider(settings),
-                qualification_rules=rules_from_settings(settings.qualification_required_fields),
+                # Qualification criteria come from the resolved configuration, so a
+                # Life Herba pharmacist can be qualified on different facts from a
+                # consumer while SustainX's segments all share one rule (§28.4).
+                qualification_rules=rules_from_settings(
+                    list(ai_config.qualification_required_fields)
+                ),
             )
 
             outcome = await respond_to_customer(
                 provider=provider,
-                system_prompt=settings.ai_system_prompt,
+                system_prompt=ai_config.system_prompt,
                 history=prompt,
                 retrieval=retrieval,
                 context=tool_context,
-                fallback_message=settings.msg_rag_fallback,
-                max_rounds=settings.ai_max_tool_rounds,
+                fallback_message=ai_config.fallback_message,
+                max_rounds=ai_config.max_tool_rounds,
             )
             # Tools write through this session, so their effects are committed with
             # the turn rather than left dangling if the send fails.
@@ -321,6 +351,7 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
                 lead_id=lead.id,
                 outcome=outcome,
                 latency_ms=latency_ms,
+                product_id=conversation.product_id,
             )
         )
         await session.commit()
@@ -386,12 +417,31 @@ def _history_messages(history: list[Any]) -> list[LLMMessage]:
     return messages
 
 
+async def _resolve_ai_config(
+    settings: Settings, product_id: uuid.UUID, segment_id: uuid.UUID | None
+) -> ResolvedAIConfig:
+    """The configuration this turn runs with (§28.4).
+
+    Its own session because it is read before the turn's write session opens, in the
+    same shape as retrieval.
+    """
+    factory = get_session_factory()
+    async with factory() as session:
+        return await ai_config_repo.resolve_for(
+            session,
+            product_id=product_id,
+            segment_id=segment_id,
+            defaults=ai_config_repo.platform_defaults_from_settings(settings),
+        )
+
+
 async def _retrieve(
     settings: Settings,
     question: str,
     *,
     product_id: uuid.UUID | None,
     segment_id: uuid.UUID | None = None,
+    config: ResolvedAIConfig | None = None,
 ) -> RetrievalResult | None:
     """Find knowledge relevant to what the customer asked (§11, §28.3, [D56]).
 
@@ -426,7 +476,7 @@ async def _retrieve(
                 product_id=product_id,
                 segment_id=segment_id,
                 query_vector=vector,
-                limit=settings.rag_top_k,
+                limit=config.rag_top_k if config else settings.rag_top_k,
                 # [D1]: comparing vectors from different models is meaningless, so a
                 # search after a model change returns nothing rather than nonsense.
                 embedding_model=embedding.model_id,
@@ -444,9 +494,11 @@ async def _retrieve(
     return retrieve(
         candidates,
         policy=RetrievalPolicy(
-            top_k=settings.rag_top_k,
-            min_similarity=settings.rag_min_similarity,
-            max_context_chars=settings.rag_max_context_chars,
+            top_k=config.rag_top_k if config else settings.rag_top_k,
+            min_similarity=(config.rag_min_similarity if config else settings.rag_min_similarity),
+            max_context_chars=(
+                config.rag_max_context_chars if config else settings.rag_max_context_chars
+            ),
         ),
     )
 
@@ -526,12 +578,17 @@ def _build_run(
     lead_id: uuid.UUID,
     outcome: AgentOutcome,
     latency_ms: int,
+    product_id: uuid.UUID | None = None,
 ) -> AIRun:
     from app.domain.enums import AIRunStatus
 
     return AIRun(
         conversation_id=conversation_id,
         lead_id=lead_id,
+        # Taken from the conversation, never chosen here: a run belongs to whatever
+        # product the interaction belongs to (§28.5). NULL only while the conversation
+        # itself has none, which Phase 23 closes.
+        product_id=product_id,
         # Recorded per run rather than assumed: [D17] leaves the model unchosen until
         # benchmarking, OpenRouter can fall back to another provider, and it may
         # therefore differ between runs.
@@ -566,6 +623,7 @@ async def _record_outcome_run(
                 lead_id=conversation.lead_id,
                 outcome=outcome,
                 latency_ms=latency_ms,
+                product_id=conversation.product_id,
             )
         )
         await session.commit()

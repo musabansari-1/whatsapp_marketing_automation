@@ -23,6 +23,7 @@ from app.domain.enums import (
     WebhookEventStatus,
 )
 from app.persistence.models import (
+    Campaign,
     CampaignRecipient,
     Conversation,
     ConversationMessage,
@@ -210,6 +211,11 @@ async def get_or_create_conversation(session: AsyncSession, lead: Lead) -> Conve
     A CLOSED conversation is not reopened: a customer messaging again after a closed
     thread starts a new one, which keeps each conversation's history coherent for the
     AI in Phase 10.
+
+    A new conversation **snapshots its product and segment** (§28.5, [D48]). An existing
+    one is returned untouched: context is frozen at creation and never re-derived, so a
+    lead later joining another segment's audience cannot retarget a conversation already
+    under way.
     """
     existing = (
         await session.execute(
@@ -224,12 +230,70 @@ async def get_or_create_conversation(session: AsyncSession, lead: Lead) -> Conve
     ).scalar_one_or_none()
 
     if existing is not None:
+        # Deliberately not refreshed. §28.5 makes the snapshot immutable.
         return existing
 
-    conversation = Conversation(lead_id=lead.id, status=ConversationStatus.ACTIVE)
+    conversation = Conversation(
+        lead_id=lead.id,
+        status=ConversationStatus.ACTIVE,
+        # The lead is authoritative for product: a conversation belongs to the same
+        # product as the lead it is with, and nothing else may disagree. NULL while the
+        # transitional inbound path has not attributed the lead — Phase 23 closes that.
+        product_id=lead.product_id,
+        segment_id=await attributable_segment(session, lead),
+    )
     session.add(conversation)
     await session.flush()
     return conversation
+
+
+async def attributable_segment(session: AsyncSession, lead: Lead) -> uuid.UUID | None:
+    """The segment this conversation operates under, or None when nothing proves one.
+
+    A lead may belong to several segments within a product ([D48]), so the segment
+    cannot come from the lead. It has to come from the interaction that caused the
+    conversation — and an inbound message carries no campaign: `Message.campaign_id` is
+    left unset on the inbound path, so the only evidence available is which campaigns
+    actually messaged this lead.
+
+    **Exactly one campaign reached them, so exactly one campaign can have prompted the
+    reply.** That campaign's segment is the operative one. Recipients that were never
+    sent — PENDING, QUEUED, SKIPPED, FAILED — are excluded, because a message that never
+    arrived cannot have caused an answer.
+
+    With none, or with several, there is no unambiguous attribution and the segment stays
+    NULL. No "most recent wins": nothing in §7 or §8 makes recency evidence, and a
+    conversation run under the wrong segment's instructions is worse than one run under
+    the product's shared defaults.
+
+    Returns NULL for a product-wide campaign too, which is the same answer arrived at
+    honestly: that campaign targeted no segment.
+    """
+    reached = (
+        (
+            await session.execute(
+                select(Campaign.segment_id)
+                .join(CampaignRecipient, CampaignRecipient.campaign_id == Campaign.id)
+                .where(
+                    CampaignRecipient.lead_id == lead.id,
+                    CampaignRecipient.status.in_(
+                        (
+                            RecipientStatus.SENT,
+                            RecipientStatus.DELIVERED,
+                            RecipientStatus.READ,
+                        )
+                    ),
+                )
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    if len(reached) != 1:
+        return None
+    return reached[0]
 
 
 async def record_inbound_message(
