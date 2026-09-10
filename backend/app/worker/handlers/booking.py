@@ -29,7 +29,7 @@ from app.integrations.queue import TaskRequest
 from app.integrations.registry import build_whatsapp_provider
 from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
-from app.persistence.models import Booking, Lead
+from app.persistence.models import Booking, Conversation, Lead, Product
 from app.persistence.repositories import bookings as booking_repo
 from app.persistence.repositories import conversations as conversation_repo
 from app.worker.handlers.campaign_send import RetryableSendError
@@ -134,8 +134,23 @@ async def _send_confirmation(
             logger.info("booking_confirmation_already_sent")
             return False
 
+        # The confirmation leaves from the product's own number ([D40]) — the same one
+        # the whole conversation has been running on, so it lands in that thread rather
+        # than opening a second one from a number the customer does not recognise.
+        conversation = (
+            await session.get(Conversation, conversation_id)
+            if conversation_id is not None
+            else None
+        )
+        product = (
+            await session.get(Product, conversation.product_id)
+            if conversation is not None
+            else None
+        )
+        whatsapp = build_whatsapp_provider(settings, product=product)
+
     try:
-        result = await build_whatsapp_provider(settings).send_text_message(
+        result = await whatsapp.send_text_message(
             OutboundTextMessage(to_e164=phone, body=body, idempotency_key=idempotency_key)
         )
     except ProviderError as exc:

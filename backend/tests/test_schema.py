@@ -87,13 +87,29 @@ class TestTables:
 
 
 class TestIdentityAndDeduplication:
-    def test_lead_phone_is_unique(self) -> None:
-        """[D11]: normalized phone is the primary deduplication identity."""
-        assert frozenset({"phone_e164"}) in _unique_column_sets(_table("leads"))
+    def test_lead_identity_is_phone_within_a_product(self) -> None:
+        """[D11] as [D41] refined it.
 
-    def test_suppression_phone_is_unique(self) -> None:
-        """[D16] names this constraint explicitly."""
+        Normalized phone is still the deduplication identity, but it identifies a lead
+        *within a product*, not across the platform: one person who enquires about two
+        products is two leads, because their SustainX enquiry has no business appearing
+        in Academicae's pipeline.
+
+        Phase 19 added this pair alongside a transitional index on the phone alone.
+        Phase 23 dropped that index, having closed `product_id` to NOT NULL, so the
+        composite is now the only identity — which is what this asserts.
+        """
+        assert _unique_column_sets(_table("leads")) == {frozenset({"product_id", "phone_e164"})}
+
+    def test_suppression_phone_is_unique_platform_wide(self) -> None:
+        """[D16] names this constraint explicitly, and [D42] keeps it un-scoped.
+
+        Deliberately *not* the composite above. Consent belongs to a person, not to a
+        product: someone who says STOP has told the organisation to leave them alone,
+        and one row per person is how that stays true when a second product is added.
+        """
         assert frozenset({"phone_e164"}) in _unique_column_sets(_table("whatsapp_suppressions"))
+        assert "product_id" not in _table("whatsapp_suppressions").c
 
     def test_suppression_is_a_separate_table_from_leads(self) -> None:
         """[D16]: opt-out must survive independently of any lead row."""

@@ -21,6 +21,7 @@ from app.domain.whatsapp_webhook import (
 APP_SECRET = "test-app-secret"  # noqa: S105 - test fixture
 OTHER_SECRET = "different-secret"  # noqa: S105 - test fixture
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+PHONE_NUMBER_ID = "108000000000001"
 
 
 def signed(payload: dict[str, object]) -> tuple[bytes, str]:
@@ -29,7 +30,16 @@ def signed(payload: dict[str, object]) -> tuple[bytes, str]:
     return body, f"sha256={digest}"
 
 
-def inbound_payload(text: str = "Hello", message_id: str = "wamid.1") -> dict[str, object]:
+def inbound_payload(
+    text: str = "Hello",
+    message_id: str = "wamid.1",
+    *,
+    phone_number_id: str | None = PHONE_NUMBER_ID,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {"display_phone_number": "911140001234"}
+    if phone_number_id is not None:
+        metadata["phone_number_id"] = phone_number_id
+
     return {
         "object": "whatsapp_business_account",
         "entry": [
@@ -40,6 +50,7 @@ def inbound_payload(text: str = "Hello", message_id: str = "wamid.1") -> dict[st
                         "field": "messages",
                         "value": {
                             "messaging_product": "whatsapp",
+                            "metadata": metadata,
                             "contacts": [{"wa_id": "919876543210", "profile": {"name": "Rahul"}}],
                             "messages": [
                                 {
@@ -71,7 +82,18 @@ def status_payload(status: str = "delivered", message_id: str = "wamid.1") -> di
     return {
         "object": "whatsapp_business_account",
         "entry": [
-            {"id": "waba-1", "changes": [{"field": "messages", "value": {"statuses": [entry]}}]}
+            {
+                "id": "waba-1",
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": PHONE_NUMBER_ID},
+                            "statuses": [entry],
+                        },
+                    }
+                ],
+            }
         ],
     }
 
@@ -186,6 +208,67 @@ class TestInboundParsing:
             }
         )
         assert len(parse_webhook(payload).inbound) == 2
+
+
+class TestReceivingNumber:
+    """The routing key (Phase 23, [D40]).
+
+    With one Meta App and one shared WABA, every product's messages arrive through the
+    same webhook and the same app secret. `metadata.phone_number_id` — the number the
+    customer wrote *to* — is the only field that differs between them, so the parser has
+    to carry it through; the entry `id` is the WABA, which is shared and identifies
+    nothing.
+    """
+
+    def test_the_receiving_number_is_carried_through(self) -> None:
+        assert parse_webhook(inbound_payload()).inbound[0].phone_number_id == PHONE_NUMBER_ID
+
+    def test_every_message_in_a_batch_gets_it(self) -> None:
+        """One delivery, one receiving number — but the field is per message, so a
+        batch must not leave later ones unrouted."""
+        payload = inbound_payload()
+        messages = payload["entry"][0]["changes"][0]["value"]["messages"]  # type: ignore[index]
+        messages.append(
+            {
+                "id": "wamid.2",
+                "from": "919876543211",
+                "timestamp": "1788000001",
+                "type": "text",
+                "text": {"body": "Second"},
+            }
+        )
+        assert [m.phone_number_id for m in parse_webhook(payload).inbound] == [
+            PHONE_NUMBER_ID,
+            PHONE_NUMBER_ID,
+        ]
+
+    def test_a_status_update_carries_it_too(self) -> None:
+        assert parse_webhook(status_payload()).statuses[0].phone_number_id == PHONE_NUMBER_ID
+
+    def test_a_missing_number_parses_to_none_rather_than_raising(self) -> None:
+        """§8 still applies: an odd delivery must not become a non-2xx and a redelivery
+        loop. The parser reports the absence and the worker refuses to act on it."""
+        parsed = parse_webhook(inbound_payload(phone_number_id=None))
+
+        assert len(parsed.inbound) == 1
+        assert parsed.inbound[0].phone_number_id is None
+
+    @pytest.mark.parametrize("metadata", ["not-a-dict", None, {}, {"phone_number_id": ""}])
+    def test_unusable_metadata_gives_none(self, metadata: object) -> None:
+        payload = inbound_payload()
+        payload["entry"][0]["changes"][0]["value"]["metadata"] = metadata  # type: ignore[index]
+
+        assert parse_webhook(payload).inbound[0].phone_number_id is None
+
+    def test_a_numeric_number_is_normalized_to_a_string(self) -> None:
+        """Meta sends it as a string, but JSON is JSON and the comparison against the
+        stored configuration is textual — a stray int must not silently fail to match."""
+        payload = inbound_payload()
+        payload["entry"][0]["changes"][0]["value"]["metadata"] = {  # type: ignore[index]
+            "phone_number_id": 108000000000001
+        }
+
+        assert parse_webhook(payload).inbound[0].phone_number_id == PHONE_NUMBER_ID
 
 
 class TestStatusParsing:

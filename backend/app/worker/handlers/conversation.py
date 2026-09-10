@@ -64,7 +64,7 @@ from app.integrations.registry import (
 )
 from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
-from app.persistence.models import AIRun, Conversation, Lead, WhatsAppSuppression
+from app.persistence.models import AIRun, Conversation, Lead, Product, WhatsAppSuppression
 from app.persistence.repositories import ai_configurations as ai_config_repo
 from app.persistence.repositories import conversations as conversation_repo
 from app.persistence.repositories import knowledge as knowledge_repo
@@ -206,13 +206,11 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
     started = datetime.now(UTC)
     provider = build_llm_provider(settings)
 
-    # A conversation with no product yet cannot run product-dependent behaviour at all.
-    # [D45] forbids inventing one, so the turn stops here rather than answering from
-    # configuration and knowledge that belong to someone else. Phase 23 removes the case.
-    if product_id is None:
-        logger.warning("conversation_no_product_context", conversation_id=str(conversation_id))
-        return TurnOutcome("no_product_context", str(conversation_id)).as_dict()
-
+    # Phase 22 stopped the turn here when a conversation had no product, because
+    # answering would have meant using configuration and knowledge belonging to someone
+    # else. Phase 23 removed the case at the source: inbound routing resolves a product
+    # or discards the message, so `conversations.product_id` is NOT NULL and the guard
+    # became unreachable. The type checker is what noticed.
     try:
         ai_config = await _resolve_ai_config(settings, product_id, segment_id)
     except AIConfigurationError as exc:
@@ -285,8 +283,15 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
 
     idempotency_key = reply_idempotency_key(str(message_id))
 
+    # The reply leaves from the number that product owns ([D40]). Built inside a session
+    # because the provider reads the configuration off the row: answering a SustainX
+    # customer from Academicae's number would look, to them, like a stranger replying to
+    # a conversation they never started.
+    async with factory() as session:
+        whatsapp = build_whatsapp_provider(settings, product=await session.get(Product, product_id))
+
     try:
-        result = await build_whatsapp_provider(settings).send_text_message(
+        result = await whatsapp.send_text_message(
             OutboundTextMessage(
                 to_e164=lead_phone,
                 body=reply_text,
@@ -636,10 +641,22 @@ async def _record_failed_run(conversation_id: uuid.UUID, model: str, reason: str
     factory = get_session_factory()
     async with factory() as session:
         conversation = await session.get(Conversation, conversation_id)
+        if conversation is None:
+            # Nothing to attribute the run to. Previously this wrote a row with NULLs
+            # in place of the lead and product; since Phase 23 the product is NOT NULL,
+            # and inventing one to keep the trail would be the trade the wrong way
+            # round — an unattributed run is worse than a missing one.
+            logger.warning("ai_run_not_recorded", conversation_id=str(conversation_id))
+            return
+
         session.add(
             AIRun(
                 conversation_id=conversation_id,
-                lead_id=conversation.lead_id if conversation else None,
+                lead_id=conversation.lead_id,
+                # Taken from the conversation, never chosen here (§28.5). The failure
+                # path needs it as much as the success path: a run that failed still
+                # belongs to the product whose customer was waiting on it.
+                product_id=conversation.product_id,
                 model=model,
                 status=AIRunStatus.FAILED,
                 error_message=reason[:1000],

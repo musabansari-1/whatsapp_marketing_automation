@@ -48,7 +48,11 @@ from app.persistence.models import (
 from app.persistence.repositories import conversations as conversation_repo
 from app.worker.handlers.booking import confirmation_idempotency_key, notify_booking
 from app.worker.handlers.campaign_send import RetryableSendError
-from tests.integration.helpers import get_test_database_url, run_db
+from tests.integration.helpers import (
+    ensure_product_id,
+    get_test_database_url,
+    run_db,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -81,7 +85,11 @@ def booking_env(engine: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeWh
 
     whatsapp = FakeWhatsAppProvider()
     monkeypatch.setattr(
-        "app.worker.handlers.booking.build_whatsapp_provider", lambda _settings: whatsapp
+        "app.worker.handlers.booking.build_whatsapp_provider",
+        # `**_` swallows the `product=` the caller now passes ([D40]). Which number a
+        # product sends from is tested against the real builder in
+        # `test_product_routing.py`; here the fake stands in for any of them.
+        lambda _settings, **_: whatsapp,
     )
 
     async def clear(session: AsyncSession) -> None:
@@ -113,11 +121,20 @@ def seed(*, users: int = 2, lead_status: LeadStatus = LeadStatus.QUALIFIED) -> t
                 )
             )
 
-        lead = Lead(phone_e164=PHONE, full_name="Asha Rao", company="Northwind", status=lead_status)
+        product_id = await ensure_product_id(session)
+        lead = Lead(
+            phone_e164=PHONE,
+            full_name="Asha Rao",
+            company="Northwind",
+            status=lead_status,
+            product_id=product_id,
+        )
         session.add(lead)
         await session.flush()
 
-        conversation = Conversation(lead_id=lead.id, status=ConversationStatus.ACTIVE)
+        conversation = Conversation(
+            lead_id=lead.id, status=ConversationStatus.ACTIVE, product_id=product_id
+        )
         session.add(conversation)
         await session.flush()
         return str(lead.id), str(conversation.id)

@@ -30,7 +30,11 @@ from app.worker.handlers.sweeps import (
     reply_key_for,
     sweep_unanswered_messages,
 )
-from tests.integration.helpers import get_test_database_url, run_db
+from tests.integration.helpers import (
+    ensure_product_id,
+    get_test_database_url,
+    run_db,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -79,17 +83,21 @@ def seed_inbound(
     """One inbound message, optionally with the reply that would make it answered."""
 
     async def seed(session: AsyncSession) -> str:
-        lead = Lead(phone_e164=phone, full_name="Asha")
+        product_id = await ensure_product_id(session)
+        lead = Lead(phone_e164=phone, full_name="Asha", product_id=product_id)
         session.add(lead)
         await session.flush()
 
-        conversation = Conversation(lead_id=lead.id, status=conversation_status)
+        conversation = Conversation(
+            lead_id=lead.id, status=conversation_status, product_id=product_id
+        )
         session.add(conversation)
         await session.flush()
 
         inbound = Message(
             lead_id=lead.id,
             conversation_id=conversation.id,
+            product_id=product_id,
             direction=MessageDirection.INBOUND,
             status=MessageStatus.DELIVERED,
             provider_message_id=f"wamid-{uuid.uuid4()}",
@@ -104,6 +112,7 @@ def seed_inbound(
                 Message(
                     lead_id=lead.id,
                     conversation_id=conversation.id,
+                    product_id=product_id,
                     direction=MessageDirection.OUTBOUND,
                     status=MessageStatus.SENT,
                     provider_message_id=f"wamid-out-{uuid.uuid4()}",

@@ -54,6 +54,7 @@ from app.persistence.models import (
     CampaignRecipient,
     Lead,
     Message,
+    Product,
     WhatsAppSuppression,
     WhatsAppTemplate,
 )
@@ -213,7 +214,14 @@ async def _process(
     attempts_made = recipient.attempts
     await session.flush()
 
-    provider = build_whatsapp_provider(settings)
+    # The campaign's product selects the provider, and therefore the number this goes
+    # out from ([D40]). A SustainX campaign cannot be sent through Academicae's number,
+    # because no caller supplies a number — the domain object does.
+    product = await session.get(Product, campaign.product_id)
+    if product is None:
+        raise ValueError(f"Campaign {campaign.id} has no product")
+
+    provider = build_whatsapp_provider(settings, product=product)
     try:
         sent = await provider.send_template_message(
             OutboundTemplateMessage(
@@ -238,6 +246,8 @@ async def _process(
         Message(
             lead_id=recipient.lead_id,
             campaign_id=recipient.campaign_id,
+            # From the campaign, its authoritative parent (§28.6).
+            product_id=campaign.product_id,
             direction=MessageDirection.OUTBOUND,
             status=MessageStatus.SENT,
             provider_message_id=sent.provider_message_id,

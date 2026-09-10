@@ -60,11 +60,43 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # never means deleting.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # ---------------------------------------------------------------- WhatsApp (§28)
+    #
+    # One Meta App and **one shared WABA**, with a phone number per product. So the
+    # number — not the WABA — is what identifies a product, and it is the inbound
+    # routing key ([D40]).
+    #
+    # Nullable because a product need not use WhatsApp, and because the real Meta IDs
+    # do not exist yet. Production validation belongs to Phase 27.
+    whatsapp_phone_number_id: Mapped[str | None] = mapped_column(String(64))
+
+    # Shared today, so deliberately **not** unique. Kept per product anyway: a later
+    # product on its own WABA is then configuration rather than a redesign.
+    whatsapp_business_account_id: Mapped[str | None] = mapped_column(String(64))
+
+    # Credentials stay in Secret Manager ([D19]). This names an override for a product
+    # that needs its own token; NULL means the shared platform credential, which is the
+    # right answer while one Meta App serves every product. Never a token value.
+    whatsapp_access_token_secret_name: Mapped[str | None] = mapped_column(String(255))
+
     segments: Mapped[list[Segment]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
     )
     ai_configurations: Mapped[list[AIConfiguration]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        # One number routes to one product, so two **active** products claiming the
+        # same number would make inbound routing ambiguous — the exact thing [D40]
+        # exists to prevent. Partial, because an inactive product may keep its old
+        # number recorded and a product without WhatsApp has none at all.
+        Index(
+            "uq_products_active_whatsapp_number",
+            "whatsapp_phone_number_id",
+            unique=True,
+            postgresql_where=text("is_active AND whatsapp_phone_number_id IS NOT NULL"),
+        ),
     )
 
 

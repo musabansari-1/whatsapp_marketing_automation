@@ -66,7 +66,8 @@ def turn_env(
         "app.worker.handlers.conversation.build_llm_provider", lambda _settings: llm
     )
     monkeypatch.setattr(
-        "app.worker.handlers.conversation.build_whatsapp_provider", lambda _settings: whatsapp
+        "app.worker.handlers.conversation.build_whatsapp_provider",
+        lambda _settings, **_: whatsapp,
     )
 
     async def clear(session: AsyncSession) -> None:
@@ -121,6 +122,7 @@ def seed_turn(
         message = Message(
             lead_id=lead.id,
             conversation_id=conversation.id,
+            product_id=product_id,
             direction=MessageDirection.INBOUND,
             status=MessageStatus.DELIVERED,
             provider_message_id=f"wamid-{uuid.uuid4()}",

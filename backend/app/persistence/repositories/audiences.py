@@ -9,7 +9,6 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from app.domain.audience import ValidatedRow, ValidationSummary
 from app.domain.enums import AudienceStatus, ContactValidationStatus
@@ -180,10 +179,6 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience: Audie
     if not rows:
         return 0
 
-    await _adopt_transitional_leads(
-        session, product_id=product_id, phones=[row["phone_e164"] for row in rows]
-    )
-
     statement = pg_insert(Lead).values(
         [
             {
@@ -220,54 +215,17 @@ async def promote_valid_contacts_to_leads(session: AsyncSession, audience: Audie
     await session.flush()
 
     # A number that opted out before this audience was uploaded must arrive already
-    # suppressed ([D42]). Covers the rows just created *and* any transitional row this
-    # promotion adopted, so neither can appear contactable in the dashboard or reach
-    # the CRM saying otherwise.
+    # suppressed ([D42]), so a new lead can never appear contactable in the dashboard or
+    # reach the CRM saying otherwise.
+    #
+    # Phase 19 also adopted "transitional" leads here — rows the inbound path had created
+    # with no product, because it could not yet determine one. Phase 23 removed that lane
+    # at its source: inbound routes on the receiving number or discards the message, so
+    # `leads.product_id` is NOT NULL and no productless row exists to adopt.
     await suppression_repo.enforce_mirror(session, [row["phone_e164"] for row in rows])
 
     await link_contacts_to_leads(session, audience_id, product_id=product_id)
     return len(rows)
-
-
-async def _adopt_transitional_leads(
-    session: AsyncSession, *, product_id: uuid.UUID | None, phones: Sequence[str]
-) -> int:
-    """Claim leads the legacy inbound path created with no product yet.
-
-    Until Phase 23 routes inbound messages by `phone_number_id`, a customer who messages
-    first produces a lead with `product_id IS NULL` ([D45] forbids guessing one). If that
-    number is later uploaded in an audience, the audience *is* the product context for
-    it — an admin said so — and claiming the existing row is right.
-
-    Without this, promotion would create a second lead for the same human and the inbound
-    path would then find two rows for one phone and refuse, which is a live failure in
-    ordinary single-product use: message first, get uploaded second.
-
-    Skipped where the product already has a lead for that number, since adopting would
-    then collide with the product-known uniqueness rule and the existing row is the one
-    that should survive.
-    """
-    if product_id is None or not phones:
-        return 0
-
-    owned = aliased(Lead)
-    already_owned = (
-        select(owned.id)
-        .where(owned.product_id == product_id, owned.phone_e164 == Lead.phone_e164)
-        .exists()
-    )
-
-    result = await session.execute(
-        update(Lead)
-        .where(
-            Lead.product_id.is_(None),
-            Lead.phone_e164.in_(list(phones)),
-            ~already_owned,
-        )
-        .values(product_id=product_id)
-    )
-    await session.flush()
-    return int(cast("CursorResult[Any]", result).rowcount or 0)
 
 
 async def link_contacts_to_leads(

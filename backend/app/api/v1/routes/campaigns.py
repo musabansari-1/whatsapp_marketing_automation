@@ -100,15 +100,16 @@ async def create_campaign(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
 
-    # A campaign may not reach across products (§28.8). The template's product is still
-    # nullable until Phase 23 makes the sync product-aware, so this checks only what it
-    # can know: a template that *has* a product must be this campaign's product. The
-    # check becomes total when the column does, without changing shape.
-    if (
-        template.product_id is not None
-        and audience.product_id is not None
-        and template.product_id != audience.product_id
-    ):
+    # A campaign may not reach across products (§28.8). The audience always has one, so
+    # its side is total; the template's is still nullable, because a shared WABA returns
+    # every product's templates in one list and Meta records no owner, so Phase 23 could
+    # not close it without inventing a mapping.
+    #
+    # So this enforces what is knowable: a template that *has* a product must be this
+    # campaign's. An unattributed one is allowed through rather than blocked, which keeps
+    # today's single-product behaviour working — and the check becomes total the moment
+    # ownership is decided, without changing shape.
+    if template.product_id is not None and template.product_id != audience.product_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="That template belongs to a different product",

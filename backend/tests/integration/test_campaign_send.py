@@ -63,7 +63,8 @@ def send_env(engine: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeWhats
 
     provider = FakeWhatsAppProvider()
     monkeypatch.setattr(
-        "app.worker.handlers.campaign_send.build_whatsapp_provider", lambda _settings: provider
+        "app.worker.handlers.campaign_send.build_whatsapp_provider",
+        lambda _settings, **_: provider,
     )
 
     async def clear(session: AsyncSession) -> None:
@@ -102,7 +103,7 @@ def seed_campaign(
             category=TemplateCategory.MARKETING,
             variable_count=variable_count,
         )
-        lead = Lead(phone_e164=phone, full_name="Rahul")
+        lead = Lead(phone_e164=phone, full_name="Rahul", product_id=audience.product_id)
         session.add_all([audience, template, lead])
         await session.flush()
 
@@ -414,6 +415,7 @@ class TestIdempotency:
                 Message(
                     lead_id=recipient.lead_id,
                     campaign_id=recipient.campaign_id,
+                    product_id=await ensure_product_id(session),
                     direction="OUTBOUND",
                     status=MessageStatus.SENT,
                     provider_message_id="wamid.prior",

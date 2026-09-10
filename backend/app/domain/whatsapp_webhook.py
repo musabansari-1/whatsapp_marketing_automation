@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
@@ -26,7 +26,13 @@ class WebhookEventKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class InboundMessageEvent:
-    """A customer message."""
+    """A customer message.
+
+    `phone_number_id` is the business number that received it, and since Phase 23 it is
+    the authoritative product routing key ([D40]). Optional on the dataclass because a
+    malformed payload may omit it; the routing layer refuses such an event rather than
+    defaulting.
+    """
 
     provider_message_id: str
     from_e164: str
@@ -34,6 +40,7 @@ class InboundMessageEvent:
     text: str | None
     message_type: str
     profile_name: str | None = None
+    phone_number_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +53,9 @@ class StatusUpdateEvent:
     recipient_e164: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    # Retained for diagnostics. Status events are matched by `provider_message_id`,
+    # which is globally unique, so this is never the routing key for them.
+    phone_number_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -53,7 +63,9 @@ class ParsedWebhook:
     """Everything actionable in one delivery.
 
     Meta batches multiple messages and statuses into a single POST, so one webhook can
-    produce several of each.
+    produce several of each — and, since each `change` carries its own metadata,
+    potentially for **different receiving numbers**. Each event therefore carries its
+    own `phone_number_id` rather than the delivery carrying one for all of them.
     """
 
     inbound: list[InboundMessageEvent] = field(default_factory=list)
@@ -122,15 +134,25 @@ def parse_webhook(payload: dict[str, Any]) -> ParsedWebhook:
 
             contacts = _profile_names(_as_list(value.get("contacts")))
 
+            # The business number that received this change. Meta puts it in
+            # `value.metadata.phone_number_id`, and Phase 23 makes it the product
+            # routing key ([D40]) — before that it was parsed away and lost.
+            metadata = value.get("metadata")
+            phone_number_id = (
+                str(metadata["phone_number_id"])
+                if isinstance(metadata, dict) and metadata.get("phone_number_id")
+                else None
+            )
+
             for raw in _as_list(value.get("messages")):
                 message = _parse_message(raw, contacts)
                 if message is not None:
-                    parsed.inbound.append(message)
+                    parsed.inbound.append(replace(message, phone_number_id=phone_number_id))
 
             for raw in _as_list(value.get("statuses")):
                 status = _parse_status(raw)
                 if status is not None:
-                    parsed.statuses.append(status)
+                    parsed.statuses.append(replace(status, phone_number_id=phone_number_id))
 
     return parsed
 

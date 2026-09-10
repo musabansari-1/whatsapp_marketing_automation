@@ -169,14 +169,17 @@ class TestProductSnapshot:
         product_id, _segment = create_conversation(lead)
         assert product_id == alpha
 
-    def test_a_lead_with_no_product_yet_gives_a_conversation_with_none(self) -> None:
-        """The transitional inbound row [D41] leaves until Phase 23.
+    def test_a_lead_without_a_product_can_no_longer_exist(self) -> None:
+        """Phase 22 allowed this and answered NULL, because inbound had no way to
+        resolve a product and [D45] forbids inventing one.
 
-        NULL rather than a guess: [D45] forbids inventing a product, and the turn
-        handler refuses to run product-dependent behaviour without one.
+        Phase 23 removed the case rather than the guess: routing on the receiving number
+        resolves a product or discards the message, so `leads.product_id` is NOT NULL and
+        the database refuses the row outright. Kept as a test because "conversations may
+        have no product" was a real state, and this is what says it has ended.
         """
-        lead = make_lead(None)
-        assert create_conversation(lead) == (None, None)
+        with pytest.raises(Exception, match="product_id"):
+            make_lead(None)
 
 
 class TestSegmentAttribution:

@@ -43,6 +43,7 @@ from app.integrations.secrets import (
 )
 from app.integrations.whatsapp import FakeWhatsAppProvider, WhatsAppProvider
 from app.integrations.whatsapp.meta import MetaWhatsAppProvider
+from app.persistence.models import Product
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,26 +58,55 @@ class Providers:
     queue: QueueProvider
 
 
-def build_whatsapp_provider(settings: Settings) -> WhatsAppProvider:
+def build_whatsapp_provider(
+    settings: Settings, *, product: Product | None = None
+) -> WhatsAppProvider:
+    """The WhatsApp provider for one product (§28, [D40]).
+
+    `product` supplies the **phone number** a message goes out from, which is what
+    identifies a product: one Meta App and one shared WABA serve all of them, so the
+    WABA identifies nothing and the credential is shared unless a product overrides it.
+
+    Keeping the number here rather than in the caller is deliberate. Nothing accepts a
+    `phone_number_id` argument, so no code path can send a SustainX campaign through
+    Academicae's number — the domain object picks the product, and the product picks the
+    number.
+
+    `product=None` uses the platform-wide configuration, which is what the fake provider
+    and the not-yet-product-aware paths need. It cannot be used to reach a real number
+    for a product that has not configured one: the values simply come from settings, as
+    they always did.
+    """
     match settings.whatsapp_provider:
         case WhatsAppProviderName.FAKE:
             return FakeWhatsAppProvider()
         case WhatsAppProviderName.META:
+            phone_number_id = (
+                product.whatsapp_phone_number_id
+                if product is not None and product.whatsapp_phone_number_id
+                else settings.whatsapp_phone_number_id
+            )
+            business_account_id = (
+                product.whatsapp_business_account_id
+                if product is not None and product.whatsapp_business_account_id
+                else settings.whatsapp_business_account_id
+            )
+
             # Configuration validation already guarantees these are present when META
             # is selected. Re-checked rather than asserted because `python -O` strips
             # asserts, which would turn a misconfiguration into a confusing None.
             if (
                 settings.whatsapp_access_token is None
-                or settings.whatsapp_phone_number_id is None
-                or settings.whatsapp_business_account_id is None
+                or phone_number_id is None
+                or business_account_id is None
             ):
                 raise ConfigurationError(
                     "The Meta WhatsApp provider is selected but its credentials are missing"
                 )
             return MetaWhatsAppProvider(
                 access_token=settings.whatsapp_access_token.get_secret_value(),
-                phone_number_id=settings.whatsapp_phone_number_id,
-                business_account_id=settings.whatsapp_business_account_id,
+                phone_number_id=phone_number_id,
+                business_account_id=business_account_id,
                 api_version=settings.whatsapp_api_version,
                 base_url=settings.whatsapp_api_base_url,
                 timeout_seconds=settings.whatsapp_timeout_seconds,

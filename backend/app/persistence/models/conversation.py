@@ -41,11 +41,10 @@ class Conversation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "conversations"
 
-    # §28 product scope. Nullable during the transition: conversations are created
-    # from inbound webhooks, which cannot resolve a product until Phase 23 routes
-    # on phone_number_id. Phase 22 snapshots both columns (§28.5).
-    product_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    # §28 product scope, NOT NULL since Phase 23. Snapshotted at creation from the
+    # lead, which inbound routing now always resolves (§28.5, [D40]).
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
     # Nullable by design, permanently: §28 allows a product-wide entity, and a
     # product may have no segments at all. Never filled with a placeholder.
@@ -104,11 +103,10 @@ class Message(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "messages"
 
-    # §28 product scope. Nullable during the transition: a message inherits its
-    # product from its campaign or conversation, neither of which has one until
-    # Phases 19 and 23.
-    product_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    # §28 product scope, NOT NULL since Phase 23. Inherited from the campaign or the
+    # conversation — never inferred from the message or the sender's number.
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
 
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -236,10 +234,10 @@ class AIRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "ai_runs"
 
-    # §28 product scope. Nullable during the transition: a run inherits its product
-    # from its conversation, which has none until Phase 22.
-    product_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    # §28 product scope, NOT NULL since Phase 23. Taken from the conversation, never
+    # resolved independently during execution.
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
 
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(

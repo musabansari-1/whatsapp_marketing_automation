@@ -20,7 +20,7 @@ from app.domain.enums import BookingStatus, NotificationType
 from app.persistence.models import Booking, Conversation, Lead, Notification, User
 from app.persistence.repositories import bookings as booking_repo
 from tests.integration.conftest import ADMIN_EMAIL, SALES_EMAIL, login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import ensure_product_id, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -42,7 +42,9 @@ def clean_bookings(engine: Any) -> Iterator[None]:
 
 def seed_lead(phone: str = "+919876500300") -> str:
     async def create(session: AsyncSession) -> str:
-        lead = Lead(phone_e164=phone, full_name="Asha Rao")
+        lead = Lead(
+            phone_e164=phone, full_name="Asha Rao", product_id=await ensure_product_id(session)
+        )
         session.add(lead)
         await session.flush()
         return str(lead.id)

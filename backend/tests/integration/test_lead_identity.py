@@ -5,11 +5,14 @@ product, so their qualification in one cannot overwrite their qualification in a
 Within one product that number is exactly one lead, however many audiences and segments
 it belongs to.
 
-`product_id` is still nullable — the inbound path cannot resolve a product until Phase
-23 — so the database carries two rules rather than one, and both are tested here:
+Phase 19 introduced this alongside a second, transitional rule, because the inbound path
+could not resolve a product yet and [D45] forbids guessing one:
 
     product-known    UNIQUE (product_id, phone_e164) WHERE product_id IS NOT NULL
     transitional     UNIQUE (phone_e164)             WHERE product_id IS NULL
+
+Phase 23 ended that. Inbound routes on the receiving number or discards the message, so
+`leads.product_id` is NOT NULL, the transitional index is dropped, and one rule is left.
 
 Products are created dynamically. Nothing here depends on Academicae's slug, name or
 UUID, and SustainX and Life Herba are deliberately not seeded.
@@ -253,65 +256,49 @@ class TestMembershipAcrossAudiencesAndSegments:
         assert run_db(segments_reached) == {pharmacies, wellness}
 
 
-class TestTransitionalLane:
-    """Leads the inbound path creates before Phase 23 can route them."""
+class TestTheTransitionalLaneIsClosed:
+    """Phase 19 allowed a lead with no product; Phase 23 does not.
 
-    def test_two_product_unknown_leads_for_one_phone_are_refused(self) -> None:
-        make_lead(None, f"+91{OTHER_PHONE}")
+    Kept as tests rather than deleted, because "a lead may have no product" was a real
+    state that other code was written against — the adoption path in audience promotion,
+    the turn handler's refusal to answer without context — and these are what say it has
+    ended, so none of that is quietly resurrected.
+    """
 
+    def test_a_lead_cannot_be_created_without_a_product(self) -> None:
         with pytest.raises(IntegrityError):
             make_lead(None, f"+91{OTHER_PHONE}")
 
-    def test_a_product_known_and_a_transitional_lead_can_coexist(self) -> None:
-        """Permitted by the two indexes, and reachable: someone messages first, then
-        appears in an audience.
+    def test_the_same_phone_is_still_one_lead_per_product(self) -> None:
+        """The rule that survived, unchanged."""
+        product = make_product("t-alpha")
+        make_lead(product, f"+91{SHARED_PHONE}")
 
-        Left possible rather than blocked by a cross-row trigger, because promotion
-        resolves it — see the adoption test below — and a trigger for a short,
-        undeployed transition would be the more expensive mistake.
+        with pytest.raises(IntegrityError):
+            make_lead(product, f"+91{SHARED_PHONE}")
+
+    def test_promotion_no_longer_needs_to_adopt_anything(self, admin: TestClient) -> None:
+        """The case adoption existed for — message first, get uploaded second — now
+        resolves on its own.
+
+        The inbound lead already carries the product it was routed to, so an upload for
+        that product finds it by `(product_id, phone_e164)` and updates it. There is no
+        productless row to claim, which is why `_adopt_transitional_leads` is gone.
         """
         product = make_product("t-alpha")
-        make_lead(None, f"+91{SHARED_PHONE}")
-        make_lead(product, f"+91{OTHER_PHONE}")
-
-        assert len(leads_for(f"+91{SHARED_PHONE}")) == 1
-
-    def test_promotion_adopts_a_transitional_lead(self, admin: TestClient) -> None:
-        """The case that would otherwise duplicate a human and break inbound.
-
-        A customer messages first, so a lead exists with no product. They are then
-        uploaded in an audience — which *is* product context, supplied by an admin — so
-        the existing row is claimed rather than a second one created.
-        """
-        product = make_product("t-alpha")
-        transitional = make_lead(None, f"+91{SHARED_PHONE}")
+        existing = make_lead(product, f"+91{SHARED_PHONE}")
 
         upload(admin, "later-list", [SHARED_PHONE], product_id=product)
 
         rows = leads_for(f"+91{SHARED_PHONE}")
-        assert len(rows) == 1, "the transitional lead must be claimed, not duplicated"
+        assert len(rows) == 1, "the existing lead must be updated, not duplicated"
         assert rows[0][0] == product
 
         async def same_row(session: AsyncSession) -> bool:
-            lead = await session.get(Lead, transitional)
-            return lead is not None and lead.product_id == product
+            lead = await session.get(Lead, existing)
+            return lead is not None
 
         assert run_db(same_row), "the original row must survive, keeping its conversations"
-
-    def test_adoption_is_skipped_when_the_product_already_has_that_lead(
-        self, admin: TestClient
-    ) -> None:
-        """Both rows exist already; adopting would collide, and the product's own lead
-        is the one that should survive."""
-        product = make_product("t-alpha")
-        upload(admin, "first", [SHARED_PHONE], product_id=product)
-        make_lead(None, f"+91{SHARED_PHONE}")
-
-        upload(admin, "again", [SHARED_PHONE], product_id=product)
-
-        rows = leads_for(f"+91{SHARED_PHONE}")
-        assert len(rows) == 2
-        assert {row[0] for row in rows} == {product, None}
 
 
 class TestGlobalSuppressionSurvives:

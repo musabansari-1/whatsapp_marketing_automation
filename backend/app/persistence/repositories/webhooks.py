@@ -117,78 +117,44 @@ async def mark_failed(session: AsyncSession, event: WebhookEvent, reason: str) -
 # ---------------------------------------------------------------- inbound
 
 
-class AmbiguousLeadIdentityError(Exception):
-    """One phone number is already a lead in more than one product.
-
-    Raised only by the transitional inbound path, which has no way to choose between
-    them ([D45] forbids guessing). Phase 23 removes the situation by routing on
-    `metadata.phone_number_id`.
-    """
-
-    def __init__(self, phone_e164: str) -> None:
-        super().__init__(
-            f"{phone_e164} is a lead in several products and inbound routing "
-            "cannot yet say which. Product routing arrives in Phase 23."
-        )
-        self.phone_e164 = phone_e164
-
-
 async def get_or_create_lead(
-    session: AsyncSession, *, phone_e164: str, full_name: str | None = None
+    session: AsyncSession,
+    *,
+    product_id: uuid.UUID,
+    phone_e164: str,
+    full_name: str | None = None,
 ) -> Lead:
-    """Find or create the lead for an inbound number.
+    """Find or create the lead for an inbound number, within its product ([D41]).
 
     A customer can message the business without ever having been in an audience, so
-    inbound traffic must be able to create a lead.
+    inbound traffic must be able to create a lead. The product comes from the number
+    they messaged, resolved by the caller before this is reached — there is no longer
+    any path that creates a lead without one.
 
-    **Transitional until Phase 23.** Lead identity is now `(product, phone)` ([D41]), but
-    an inbound message cannot say which product it is for until routing by
-    `metadata.phone_number_id` exists, and [D45] forbids guessing. So a number nobody has
-    seen before becomes a lead with **no product yet**, in a lane of its own that the
-    partial unique index over `product_id IS NULL` keeps free of duplicates.
-
-    An existing lead is reused whatever its product: finding the row that already exists
-    is not routing, and reusing it is what keeps behaviour identical for the single
-    configured product ([D54]).
-
-    If several products already hold this number, there is no honest answer and this
-    **refuses** rather than picking one. Unreachable while one product is configured, and
-    the correct failure the moment that stops being true — Phase 23 removes the
-    possibility by routing properly.
+    Identity is `(product, phone)`. The same human messaging two products' numbers is
+    two leads, each with its own status, qualification and conversation; within one
+    product they remain exactly one lead.
     """
-    existing = (
-        (
-            await session.execute(
-                select(Lead).where(Lead.phone_e164 == phone_e164).order_by(Lead.created_at)
-            )
+    statement = (
+        pg_insert(Lead)
+        .values(product_id=product_id, phone_e164=phone_e164, full_name=full_name)
+        # The final identity index, so concurrent deliveries for one new number
+        # collapse to a single row.
+        .on_conflict_do_nothing(
+            index_elements=[Lead.product_id, Lead.phone_e164],
+            index_where=Lead.product_id.is_not(None),
         )
-        .scalars()
-        .all()
     )
+    await session.execute(statement)
+    await session.flush()
 
-    if len(existing) > 1:
-        raise AmbiguousLeadIdentityError(phone_e164)
-
-    if existing:
-        lead = existing[0]
-    else:
-        statement = (
-            pg_insert(Lead)
-            .values(phone_e164=phone_e164, full_name=full_name)
-            # The transitional lane's own index, so concurrent deliveries for one new
-            # number still collapse to a single row.
-            .on_conflict_do_nothing(
-                index_elements=[Lead.phone_e164], index_where=Lead.product_id.is_(None)
+    lead = (
+        await session.execute(
+            select(Lead).where(
+                Lead.product_id == product_id, Lead.phone_e164 == phone_e164
             )
         )
-        await session.execute(statement)
-        await session.flush()
-
-        lead = (
-            await session.execute(
-                select(Lead).where(Lead.phone_e164 == phone_e164, Lead.product_id.is_(None))
-            )
-        ).scalar_one()
+    ).scalar_one()
 
     # Only fill a blank: a WhatsApp profile name must not overwrite the name the
     # client supplied in their audience file.
@@ -324,6 +290,8 @@ async def record_inbound_message(
     message = Message(
         lead_id=lead.id,
         conversation_id=conversation.id,
+        # From the conversation the routing already established (§28.5).
+        product_id=conversation.product_id,
         direction=MessageDirection.INBOUND,
         status=MessageStatus.DELIVERED,
         provider_message_id=provider_message_id,

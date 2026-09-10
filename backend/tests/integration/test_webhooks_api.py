@@ -38,7 +38,12 @@ from app.persistence.models import (
     WhatsAppSuppression,
 )
 from app.worker.handlers.whatsapp import process_inbound_webhook
-from tests.integration.helpers import ensure_product_id, get_test_database_url, run_db
+from tests.integration.helpers import (
+    ensure_product_id,
+    ensure_receiving_number,
+    get_test_database_url,
+    run_db,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -46,6 +51,10 @@ APP_SECRET = "webhook-app-secret"  # noqa: S105 - test fixture
 VERIFY_TOKEN = "verify-me"  # noqa: S105 - test fixture
 WRONG_SECRET = "not-the-secret"  # noqa: S105 - test fixture
 CUSTOMER = "+919876543210"
+
+#: The receiving number the fixture product owns. Opaque: Meta's IDs carry no meaning,
+#: and nothing here may depend on its value.
+PHONE_NUMBER_ID = "108000000000001"
 
 
 @pytest.fixture
@@ -77,6 +86,7 @@ def webhook_client(engine: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[Tes
         await session.execute(delete(WebhookEvent))
 
     run_db(clear)
+    run_db(lambda session: ensure_receiving_number(session, PHONE_NUMBER_ID))
     with TestClient(create_app(Settings())) as client:
         yield client
 
@@ -103,7 +113,19 @@ def post_webhook(
     return response
 
 
-def inbound(text: str, message_id: str = "wamid.1", sender: str = "919876543210") -> dict[str, Any]:
+def inbound(
+    text: str,
+    message_id: str = "wamid.1",
+    sender: str = "919876543210",
+    *,
+    phone_number_id: str | None = PHONE_NUMBER_ID,
+) -> dict[str, Any]:
+    """A delivery as Meta sends it, including the metadata that routes it.
+
+    `phone_number_id` is the number the customer wrote *to*, which since Phase 23 is
+    what says which product this belongs to ([D40]). It is a parameter because the
+    interesting failures are an unknown number and a missing one.
+    """
     return {
         "object": "whatsapp_business_account",
         "entry": [
@@ -113,6 +135,14 @@ def inbound(text: str, message_id: str = "wamid.1", sender: str = "919876543210"
                     {
                         "field": "messages",
                         "value": {
+                            "metadata": (
+                                {"display_phone_number": "911140001234"}
+                                if phone_number_id is None
+                                else {
+                                    "display_phone_number": "911140001234",
+                                    "phone_number_id": phone_number_id,
+                                }
+                            ),
                             "contacts": [{"wa_id": sender, "profile": {"name": "Rahul"}}],
                             "messages": [
                                 {
@@ -141,6 +171,10 @@ def status_update(message_id: str, status: str) -> dict[str, Any]:
                     {
                         "field": "messages",
                         "value": {
+                            "metadata": {
+                                "display_phone_number": "911140001234",
+                                "phone_number_id": PHONE_NUMBER_ID,
+                            },
                             "statuses": [
                                 {
                                     "id": message_id,
@@ -148,7 +182,7 @@ def status_update(message_id: str, status: str) -> dict[str, Any]:
                                     "timestamp": "1788000100",
                                     "recipient_id": "919876543210",
                                 }
-                            ]
+                            ],
                         },
                     }
                 ],
@@ -445,7 +479,7 @@ class TestOptOut:
                 provider_status="APPROVED",
                 category="MARKETING",
             )
-            lead = Lead(phone_e164=CUSTOMER)
+            lead = Lead(phone_e164=CUSTOMER, product_id=audience.product_id)
             session.add_all([audience, template, lead])
             await session.flush()
 
@@ -482,12 +516,13 @@ class TestStatusUpdates:
         async def seed(session: AsyncSession) -> None:
             from app.domain.enums import MessageDirection
 
-            lead = Lead(phone_e164=CUSTOMER)
+            lead = Lead(phone_e164=CUSTOMER, product_id=await ensure_product_id(session))
             session.add(lead)
             await session.flush()
             session.add(
                 Message(
                     lead_id=lead.id,
+                    product_id=lead.product_id,
                     direction=MessageDirection.OUTBOUND,
                     status=MessageStatus.SENT,
                     provider_message_id=provider_message_id,

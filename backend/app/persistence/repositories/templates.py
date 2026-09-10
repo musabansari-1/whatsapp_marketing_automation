@@ -21,6 +21,15 @@ async def upsert_many(session: AsyncSession, templates: Sequence[ApprovedTemplat
     APPROVED would let a revoked template be broadcast.
 
     Nothing in this function decides approval ([D6]); it records what arrived.
+
+    **`product_id` is absent from both the insert and the update clause, deliberately.**
+
+    One Meta App and one shared WABA means this returns every product's templates in a
+    single undifferentiated list, and Meta's records carry no product field — so the sync
+    cannot attribute one without inventing a mapping, which is what [D40] rules out.
+    Leaving the column out of the update means a re-sync never reassigns or clears an
+    ownership someone did establish; adding it to `set_` would silently overwrite them
+    all on the next scheduled run. Ownership is assigned outside this path, or not at all.
     """
     if not templates:
         return 0

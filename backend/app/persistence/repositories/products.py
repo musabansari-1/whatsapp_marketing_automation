@@ -50,6 +50,59 @@ async def resolve_product_for_authoring(
     )
 
 
+class UnknownReceivingNumberError(Exception):
+    """No active product owns the number that received this message ([D40], [D45]).
+
+    Raised rather than defaulted. Routing a customer to a product that does not own the
+    number they messaged would put them in the wrong product's conversation, with the
+    wrong knowledge and the wrong voice — and nothing in the payload could later reveal
+    the mistake.
+    """
+
+    def __init__(self, phone_number_id: str | None) -> None:
+        super().__init__(
+            f"No active product is configured for receiving number {phone_number_id!r}."
+            if phone_number_id
+            else "The webhook delivery carried no receiving phone number ID."
+        )
+        self.phone_number_id = phone_number_id
+
+
+async def product_for_receiving_number(
+    session: AsyncSession, phone_number_id: str | None
+) -> Product:
+    """The product that owns the WhatsApp number a message arrived on ([D40]).
+
+    **The only inbound routing rule.** Not the sender's number, not the WABA — which is
+    shared across products, so it identifies nothing — not campaign history, not the
+    template, not the sole active product, and not whichever product happens to be
+    first.
+
+    Fails closed. A missing or unrecognised number raises, and the caller records the
+    delivery without acting on it: an unroutable message is a configuration problem to
+    fix, never a customer to guess about.
+    """
+    if not phone_number_id:
+        raise UnknownReceivingNumberError(None)
+
+    product = (
+        (
+            await session.execute(
+                select(Product).where(
+                    Product.whatsapp_phone_number_id == phone_number_id,
+                    Product.is_active.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+    if product is None:
+        raise UnknownReceivingNumberError(phone_number_id)
+    return product
+
+
 async def get_segment(session: AsyncSession, segment_id: uuid.UUID) -> Segment | None:
     return await session.get(Segment, segment_id)
 

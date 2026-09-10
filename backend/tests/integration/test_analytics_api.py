@@ -64,7 +64,12 @@ def clean(engine: Any) -> Iterator[None]:
 
 def seed_lead(phone: str, status: LeadStatus = LeadStatus.NEW) -> str:
     async def create(session: AsyncSession) -> str:
-        lead = Lead(phone_e164=phone, full_name="Asha", status=status)
+        lead = Lead(
+            phone_e164=phone,
+            full_name="Asha",
+            status=status,
+            product_id=await ensure_product_id(session),
+        )
         session.add(lead)
         await session.flush()
         return str(lead.id)
@@ -82,6 +87,7 @@ def seed_message(
         session.add(
             Message(
                 lead_id=uuid.UUID(lead_id),
+                product_id=await ensure_product_id(session),
                 direction=direction,
                 status=status,
                 phone_e164="+919876500400",

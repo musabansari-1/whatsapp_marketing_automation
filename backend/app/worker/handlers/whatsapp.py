@@ -20,6 +20,8 @@ from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import build_queue_provider, build_whatsapp_provider
 from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
+from app.persistence.models import Product
+from app.persistence.repositories import products as product_repo
 from app.persistence.repositories import templates as template_repo
 from app.persistence.repositories import webhooks as webhook_repo
 from app.worker.handlers.crm_sync import queue_crm_sync
@@ -139,11 +141,34 @@ async def _apply_inbound(
     """
     stored = 0
     opt_outs = 0
+    unroutable = 0
     needs_reply: list[str] = []
 
     for event in messages:
+        # The receiving number decides the product, and nothing else does ([D40]). An
+        # unroutable delivery is recorded and dropped rather than guessed at: the
+        # webhook still returns 200, because Meta would otherwise redeliver forever a
+        # message no configuration can place.
+        try:
+            product = await product_repo.product_for_receiving_number(
+                session, event.phone_number_id
+            )
+        except product_repo.UnknownReceivingNumberError as exc:
+            logger.warning(
+                "inbound_unroutable",
+                reason="unknown_receiving_number",
+                phone_number_id=event.phone_number_id,
+                provider_message_id=event.provider_message_id,
+                error=str(exc),
+            )
+            unroutable += 1
+            continue
+
         lead = await webhook_repo.get_or_create_lead(
-            session, phone_e164=event.from_e164, full_name=event.profile_name
+            session,
+            product_id=product.id,
+            phone_e164=event.from_e164,
+            full_name=event.profile_name,
         )
         conversation = await webhook_repo.get_or_create_conversation(session, lead)
 
@@ -162,7 +187,9 @@ async def _apply_inbound(
         stored += 1
 
         if matches_opt_out(event.text, settings.opt_out_keywords):
-            if await _handle_opt_out(session, settings, lead, event.provider_message_id):
+            if await _handle_opt_out(
+                session, settings, lead, event.provider_message_id, product=product
+            ):
                 opt_outs += 1
             # An opt-out gets the acknowledgement above and nothing else. Handing it
             # to the AI would reply to someone who just asked us to stop.
@@ -170,13 +197,32 @@ async def _apply_inbound(
 
         needs_reply.append(str(message.id))
 
+    if unroutable:
+        # Surfaced as a count as well as per-event warnings: a misconfigured number
+        # shows up here as a steady trickle rather than a single line lost in a log.
+        logger.warning("inbound_unroutable_batch", count=unroutable)
+
     return stored, opt_outs, needs_reply
 
 
 async def _handle_opt_out(
-    session: Any, settings: Settings, lead: Any, source_message_id: str
+    session: Any,
+    settings: Settings,
+    lead: Any,
+    source_message_id: str,
+    *,
+    product: Product,
 ) -> bool:
-    """Suppress a number and stop anything already queued for it ([D5], [D16])."""
+    """Suppress a number and stop anything already queued for it ([D5], [D16]).
+
+    `product` is the one the receiving number resolved to, and it decides which number
+    the acknowledgement goes out from. Replying from a different product's number would
+    tell someone who just said STOP that a business they have never heard of has their
+    number.
+
+    The *suppression* it causes is still global ([D42]): one person, one consent
+    decision, whichever product they happened to write to.
+    """
     newly_suppressed = await webhook_repo.suppress(
         session, lead=lead, source_message_id=source_message_id
     )
@@ -198,7 +244,7 @@ async def _handle_opt_out(
     # The acknowledgement is a reply to a message the customer just sent, so it is
     # inside the 24-hour window by definition and needs no template.
     try:
-        provider = build_whatsapp_provider(settings)
+        provider = build_whatsapp_provider(settings, product=product)
         await provider.send_text_message(
             OutboundTextMessage(
                 to_e164=lead.phone_e164,

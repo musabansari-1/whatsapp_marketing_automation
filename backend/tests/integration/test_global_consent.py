@@ -174,16 +174,24 @@ class TestExistingLeadsAcrossProducts:
         assert all(opted_out for _, opted_out, _ in rows)
         assert all(status is LeadStatus.OPTED_OUT for _, _, status in rows)
 
-    def test_a_transitional_lead_is_suppressed_too(self) -> None:
-        """The Phase 19→23 window: a lead with no product yet is still a person."""
-        product = make_product("c-first")
-        make_lead(product)
-        make_lead(None)
+    def test_a_third_product_added_later_is_mirrored_as_well(self) -> None:
+        """The mirror is by phone, so it does not depend on how many products exist.
+
+        This replaced a test covering the Phase 19→23 window, when a lead could have no
+        product yet and still needed suppressing. That row can no longer exist; what the
+        test was really protecting — that the mirror follows the *person* — is what is
+        asserted here instead.
+        """
+        first = make_product("c-first")
+        second = make_product("c-second")
+        third = make_product("c-third")
+        for product in (first, second, third):
+            make_lead(product)
 
         suppress()
 
         rows = mirrors()
-        assert len(rows) == 2
+        assert len(rows) == 3
         assert all(opted_out for _, opted_out, _ in rows)
 
     def test_an_invalid_lead_keeps_its_status_but_records_consent(self) -> None:
@@ -262,28 +270,27 @@ class TestLeadsCreatedAfterSuppression:
         assert rows[0][1] is True, "a lead created after opt-out must arrive suppressed"
         assert rows[0][2] is LeadStatus.OPTED_OUT
 
-    def test_adoption_preserves_suppression(self, admin: TestClient) -> None:
-        """A suppressed transitional lead, later claimed by an audience.
+    def test_a_second_upload_of_a_suppressed_lead_keeps_it_suppressed(
+        self, admin: TestClient
+    ) -> None:
+        """Re-uploading someone must not make them contactable again.
 
-        Assigning a product must not make the person contactable again.
+        This replaced a test about adopting a suppressed *transitional* lead — a row with
+        no product, which Phase 23 made impossible. The risk it guarded against is the
+        same one here: promotion writes to an existing lead row, and the write must not
+        undo consent.
         """
-        transitional = make_lead(None)
+        product = make_product("c-later")
+        upload_and_confirm(admin, "first", product)
         suppress()
 
-        product = make_product("c-later")
-        upload_and_confirm(admin, "adopting", product)
+        upload_and_confirm(admin, "again", product)
 
         rows = mirrors()
-        assert len(rows) == 1, "the transitional lead should be adopted, not duplicated"
+        assert len(rows) == 1, "the existing lead should be updated, not duplicated"
         assert rows[0][0] == product
         assert rows[0][1] is True
         assert rows[0][2] is LeadStatus.OPTED_OUT
-
-        async def same_row(session: AsyncSession) -> bool:
-            lead = await session.get(Lead, transitional)
-            return lead is not None and lead.product_id == product and lead.opted_out
-
-        assert run_db(same_row)
 
     def test_several_products_added_after_suppression_are_all_suppressed(
         self, admin: TestClient

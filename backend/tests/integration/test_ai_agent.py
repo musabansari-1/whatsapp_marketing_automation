@@ -28,7 +28,7 @@ from app.integrations.llm import FakeLLMProvider, Role
 from app.integrations.llm import Message as LLMMessage
 from app.persistence.models import Conversation, ConversationMessage, Lead, Message
 from app.persistence.repositories import conversations as conversation_repo
-from tests.integration.helpers import run_db
+from tests.integration.helpers import ensure_product_id, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -66,11 +66,20 @@ def clean(engine: Any) -> Iterator[None]:
 
 def seed(lead_status: LeadStatus = LeadStatus.RESPONDED) -> tuple[str, str]:
     async def create(session: AsyncSession) -> tuple[str, str]:
-        lead = Lead(phone_e164=PHONE, full_name="Asha Rao", company="Northwind", status=lead_status)
+        product_id = await ensure_product_id(session)
+        lead = Lead(
+            phone_e164=PHONE,
+            full_name="Asha Rao",
+            company="Northwind",
+            status=lead_status,
+            product_id=product_id,
+        )
         session.add(lead)
         await session.flush()
 
-        conversation = Conversation(lead_id=lead.id, status=ConversationStatus.ACTIVE)
+        conversation = Conversation(
+            lead_id=lead.id, status=ConversationStatus.ACTIVE, product_id=product_id
+        )
         session.add(conversation)
         await session.flush()
         return str(lead.id), str(conversation.id)

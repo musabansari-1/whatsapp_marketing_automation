@@ -74,7 +74,19 @@ def make_xlsx(rows: Sequence[Sequence[object]]) -> bytes:
 
 
 @pytest.fixture(autouse=True)
-def _clean(seeded_users: dict[str, str]) -> Iterator[None]:
+def _clean(seeded_users: dict[str, str], seeded_product: uuid.UUID) -> Iterator[None]:
+    """`seeded_product` is a precondition, not decoration.
+
+    [D54] is "while this is the only product, nothing changes", and the compatibility
+    rule that makes it true reads the *count* of active products: exactly one, and a
+    silent request is unambiguous in fact. A real database always has the product the
+    migration seeds; the suite builds its schema with `create_all`, which seeds nothing,
+    so the fixture supplies it.
+
+    Named here rather than relied on from whichever test file happened to run first —
+    that made this file pass or fail depending on collection order.
+    """
+
     async def clear(session: AsyncSession) -> None:
         await session.execute(delete(CampaignRecipient))
         await session.execute(delete(Campaign))

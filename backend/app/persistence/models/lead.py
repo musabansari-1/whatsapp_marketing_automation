@@ -33,9 +33,9 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "leads"
 
-    # §28 product scope. Nullable during the transition: leads are created by
-    # audience promotion and by inbound webhooks, and neither can supply a
-    # product until Phase 19.
+    # §28 product scope, NOT NULL since Phase 23. Every creation path supplies one:
+    # audience promotion from the audience, inbound from the number that received the
+    # message ([D40]).
     #
     # There is deliberately **no** `segment_id` here ([D48]). A lead may belong
     # to several segments within a product, so a single column would be
@@ -43,8 +43,8 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # authority. Segment membership is `audience_contacts` -> `audiences
     # .segment_id`; the operative segment for AI behaviour lives on the
     # conversation snapshot.
-    product_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
 
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -106,14 +106,6 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "phone_e164",
             unique=True,
             postgresql_where=text("product_id IS NOT NULL"),
-        ),
-        # Transitional: one lead per phone in the not-yet-routed lane. Removed in
-        # Phase 23 together with the nullability it covers.
-        Index(
-            "uq_leads_transitional_phone",
-            "phone_e164",
-            unique=True,
-            postgresql_where=text("product_id IS NULL"),
         ),
         Index("ix_leads_source_audience_id", "source_audience_id"),
         # The [D18] qualification rules read inside this document.

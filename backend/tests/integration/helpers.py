@@ -71,3 +71,23 @@ async def ensure_product_id(session: AsyncSession) -> uuid.UUID:
     session.add(product)
     await session.flush()
     return product.id
+
+
+async def ensure_receiving_number(session: AsyncSession, phone_number_id: str) -> uuid.UUID:
+    """A product that owns `phone_number_id`, so inbound routing can resolve it.
+
+    Since Phase 23 the receiving number is the *only* inbound routing key ([D40]), and an
+    unrecognised one is refused rather than guessed — so a fixture that posts a webhook
+    has to configure one or every message it sends is correctly discarded.
+
+    Attaches the number to the test's existing product instead of adding a second, which
+    also keeps it within `uq_products_active_whatsapp_number`.
+    """
+    from app.persistence.models import Product
+
+    product_id = await ensure_product_id(session)
+    product = await session.get(Product, product_id)
+    assert product is not None
+    product.whatsapp_phone_number_id = phone_number_id
+    await session.flush()
+    return product_id

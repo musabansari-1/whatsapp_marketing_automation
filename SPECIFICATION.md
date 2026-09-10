@@ -2386,7 +2386,7 @@ assigned to a default product. Retrieval without a product is not expressible.
 
 | ID | Decision |
 |---|---|
-| D40 | One WhatsApp number per product. Inbound routing uses Meta's `metadata.phone_number_id`, which the webhook parser must retain. Unknown numbers fail closed. |
+| D40 | One WhatsApp number per product. Inbound routing uses Meta's `metadata.phone_number_id`, which the webhook parser must retain. Unknown numbers fail closed. **Topology confirmed 2026-09-10:** one Meta Developer App, one *shared* WhatsApp Business Account, several numbers under it, one per product. Routing is therefore never by WABA — it is shared, so it identifies nothing — and the access token is a single shared credential. A consequence: template sync cannot determine which product a template belongs to, so `whatsapp_templates.product_id` stays unresolved pending an explicit ownership mechanism. |
 | D41 | One lead per product. The same phone may exist as a lead in several products; per-product status, qualification and conversation state never overwrite each other. Within a product a lead is never duplicated for belonging to several segments. |
 | D42 | Opt-out stays global at the normalized phone level across all products. **[D5]**/**[D16]**/**[D26]** unchanged. Product-scoped STOP is explicitly not implemented. The `opted_out` mirror propagates to every lead sharing the phone. |
 | D43 | Each product has its own `google_calendar_id`. One shared Google operations account holds access to every product calendar, so one OAuth client and one refresh token serve all products. **[D19]** credential handling is unchanged. Per-product credentials are supported by the schema but unused. |

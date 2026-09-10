@@ -39,20 +39,17 @@ NULLABLE_DEBT: dict[str, tuple[int, str]] = {
     # supply a product from the audience, but the **inbound** path cannot until routing
     # on `metadata.phone_number_id` arrives, and [D45] forbids guessing one. Phase 23
     # closes it, after attributing or refusing any transitional rows.
-    # These three close together in Phase 23, and the reason is one reason.
-    #
-    # A conversation snapshots its product from its lead (§28.5, Phase 22), and an AI run
-    # takes its product from the conversation. So while the inbound path can still
-    # produce a lead with no product — until routing on `metadata.phone_number_id`
-    # exists, and [D45] forbids guessing one — all three inherit that gap. Closing any of
-    # them earlier would mean inventing the very product the routing phase exists to
-    # determine.
-    "leads": (23, "the inbound path cannot resolve a product until phone_number_id routing"),
-    "conversations": (23, "snapshots from the lead, which has no product until Phase 23"),
-    "messages": (23, "inherits from campaign or conversation"),
-    "ai_runs": (23, "takes its product from the conversation, which closes in Phase 23"),
     "bookings": (24, "inherits from its conversation; Phase 24 owns per-product calendars"),
-    "whatsapp_templates": (23, "template sync has no product context until it is per-product"),
+    # The one WhatsApp debt Phase 23 could **not** close, and the reason is a decision
+    # rather than a sequencing gap.
+    #
+    # One Meta App and one shared WABA means `fetch_approved_templates` returns every
+    # product's templates in a single undifferentiated list, and Meta's records carry no
+    # product field — name, language, category, id, components, status and nothing else.
+    # Ownership therefore cannot be derived from the provider at all, and inventing a
+    # mapping is exactly what [D40]'s reasoning forbids. It closes once an explicit
+    # ownership mechanism is agreed.
+    "whatsapp_templates": (26, "a shared WABA cannot tell which product a template belongs to"),
     "knowledge_bases": (26, "POST /knowledge-bases takes no product"),
 }
 
@@ -89,6 +86,10 @@ DERIVED: dict[str, str] = {
 CLOSED: dict[str, str] = {
     "audiences": "closed in Phase 19; upload resolves a product explicitly or by sole-active",
     "campaigns": "closed in Phase 19; taken from the campaign's audience (§28.6)",
+    "leads": "closed in Phase 23; inbound routing resolves the product ([D40])",
+    "conversations": "closed in Phase 23; snapshotted from the lead (§28.5)",
+    "messages": "closed in Phase 23; from the campaign or the conversation",
+    "ai_runs": "closed in Phase 23; from the conversation",
 }
 
 SCOPED = set(NULLABLE_DEBT) | set(NULLABLE_BY_DESIGN) | set(CLOSED)
@@ -167,27 +168,28 @@ class TestNullabilityDebt:
         """
         assert _table(name).columns["product_id"].nullable is False
 
-    def test_the_inbound_chain_closes_together(self) -> None:
-        """Leads, conversations and AI runs share one blocker and one closing phase.
+    def test_the_inbound_chain_closed_together(self) -> None:
+        """Leads, conversations, messages and AI runs shared one blocker, and Phase 23
+        removed it for all of them at once.
 
-        Recorded because the plan originally split them across 19, 22 and 23. A
-        conversation takes its product from its lead and a run from its conversation, so
-        none can close before inbound routing determines the lead's product ([D40],
-        [D45]).
+        Recorded because the plan first split them across 19, 22 and 23: a conversation
+        takes its product from its lead and a run from its conversation, so none could
+        close before inbound routing determined the lead's ([D40], [D45]).
         """
-        for table in ("leads", "conversations", "ai_runs"):
-            phase, _reason = NULLABLE_DEBT[table]
-            assert phase == 23, f"{table} should close with inbound routing"
+        for table in ("leads", "conversations", "messages", "ai_runs"):
+            assert table in CLOSED, f"{table} should have closed with inbound routing"
+            assert table not in NULLABLE_DEBT
 
-    def test_leads_closes_in_phase_23_not_19(self) -> None:
-        """Recorded because the plan originally said Phase 19, and that was wrong.
+    def test_templates_did_not_close_with_the_rest(self) -> None:
+        """The one WhatsApp column Phase 23 left open, deliberately.
 
-        Promotion can supply a product from the audience, but the inbound webhook path
-        cannot until routing on `metadata.phone_number_id` exists ([D40], [D45]). Phase
-        19 therefore introduces product-scoped identity without closing the nullability.
+        Its blocker is not sequencing: with a shared WABA the provider cannot say which
+        product a template belongs to, so ownership needs an explicit mechanism rather
+        than an earlier phase.
         """
-        phase, _reason = NULLABLE_DEBT["leads"]
-        assert phase == 23
+        phase, reason = NULLABLE_DEBT["whatsapp_templates"]
+        assert phase == 26
+        assert "shared WABA" in reason
 
     def test_notifications_is_not_debt(self) -> None:
         """It is nullable by design and no phase should ever tighten it."""

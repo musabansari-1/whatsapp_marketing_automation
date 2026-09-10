@@ -275,6 +275,9 @@ async def record_outbound_reply(
     message = Message(
         lead_id=lead.id,
         conversation_id=conversation.id,
+        # From the conversation, which is the authority for interaction context
+        # (§28.5). Never inferred from the message or the sender's number.
+        product_id=conversation.product_id,
         direction=MessageDirection.OUTBOUND,
         status=status,
         provider_message_id=provider_message_id,

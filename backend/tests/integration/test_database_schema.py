@@ -44,7 +44,7 @@ PHONE = "+919876543210"
 
 
 async def _make_lead(session: AsyncSession, phone: str = PHONE) -> Lead:
-    lead = Lead(phone_e164=phone)
+    lead = Lead(phone_e164=phone, product_id=await ensure_product_id(session))
     session.add(lead)
     await session.flush()
     return lead
@@ -123,10 +123,15 @@ class TestDefaultsAndEnums:
 
 
 class TestUniqueConstraints:
-    async def test_lead_phone_is_unique(self, session: AsyncSession) -> None:
-        """[D11]: one lead per normalized phone."""
-        await _make_lead(session)
-        session.add(Lead(phone_e164=PHONE))
+    async def test_lead_phone_is_unique_within_a_product(self, session: AsyncSession) -> None:
+        """[D11] as [D41] refined it: one lead per phone *per product*.
+
+        Both rows here name the same product, which is what makes them the same
+        person in the same pipeline. The same phone under a *different* product is a
+        different lead and is allowed — `test_product_routing.py` covers that side.
+        """
+        lead = await _make_lead(session)
+        session.add(Lead(phone_e164=PHONE, product_id=lead.product_id))
         with pytest.raises(IntegrityError):
             await session.flush()
 
@@ -145,6 +150,7 @@ class TestUniqueConstraints:
                     direction=MessageDirection.OUTBOUND,
                     phone_e164=PHONE,
                     provider_message_id="wamid.SAME",
+                    product_id=await ensure_product_id(session),
                 )
             )
         with pytest.raises(IntegrityError):

@@ -26,7 +26,7 @@ from app.persistence.models import (
     WhatsAppSuppression,
 )
 from tests.integration.conftest import SALES_EMAIL, login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import ensure_product_id, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -54,7 +54,13 @@ def seed_lead(
     status: LeadStatus = LeadStatus.RESPONDED,
 ) -> str:
     async def seed(session: AsyncSession) -> str:
-        lead = Lead(phone_e164=phone, full_name=name, company=company, status=status)
+        lead = Lead(
+            phone_e164=phone,
+            full_name=name,
+            company=company,
+            status=status,
+            product_id=await ensure_product_id(session),
+        )
         session.add(lead)
         await session.flush()
         return str(lead.id)
@@ -73,6 +79,7 @@ def seed_conversation(
         conversation = Conversation(
             lead_id=uuid.UUID(lead_id),
             status=status,
+            product_id=await ensure_product_id(session),
             last_inbound_at=(
                 None if last_inbound_age is None else datetime.now(UTC) - last_inbound_age
             ),

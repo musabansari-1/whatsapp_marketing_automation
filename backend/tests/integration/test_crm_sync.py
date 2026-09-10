@@ -79,6 +79,7 @@ def seed_lead(
             audience_id = audience.id
 
         lead = Lead(
+            product_id=await ensure_product_id(session),
             phone_e164=PHONE,
             full_name="Asha Rao",
             email="asha@example.com",
