@@ -46,7 +46,12 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105 - an endpoint, n
 
 
 class GoogleCalendarProvider(CalendarProvider):
-    """Reads availability from and writes events to one shared Google calendar."""
+    """Reads availability from and writes events to one Google calendar.
+
+    Generic on purpose: which calendar, and which refresh token, are constructor arguments.
+    Since Phase 24 the registry builds one per product from that product's configuration
+    ([D43]), so nothing in here knows or branches on which product it serves.
+    """
 
     name = "google"
 

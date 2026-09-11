@@ -23,6 +23,7 @@ import asyncio
 import os
 import uuid
 from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -514,3 +515,233 @@ class TestPhase19OneWayDoor:
                 ],
                 autocommit=False,
             )
+
+
+# ---------------------------------------------------------------- Phase 24
+
+PHASE_23 = "a4e81b2f7c93"
+TEMPLATE_OWNERSHIP = "b3c8d1e5f927"
+PHASE_24 = "c9e4a7b2d1f6"
+
+TUESDAY_10AM_IST = datetime(2026, 9, 8, 4, 30, tzinfo=UTC)
+TUESDAY_11AM_IST = datetime(2026, 9, 8, 5, 30, tzinfo=UTC)
+HALF_HOUR = timedelta(minutes=30)
+OTHER_PRODUCT = uuid.UUID("00000000-0000-4000-8000-0000000000b2")
+
+LEAD_SQL = (
+    "INSERT INTO leads (id, phone_e164, status, qualification_data, opted_out, product_id)"
+    " VALUES (:id, :phone, 'NEW', '{}', false, :product)"
+)
+BOOKING_SQL = (
+    "INSERT INTO bookings (lead_id, conversation_id, calendar_event_id, start_time, end_time,"
+    " timezone, status, product_id)"
+    " VALUES (:lead, :conversation, :event, :start, :end, 'Asia/Kolkata', :status, :product)"
+)
+
+
+def _booking(
+    lead: uuid.UUID,
+    event: str,
+    start: datetime,
+    *,
+    conversation: uuid.UUID | None = None,
+    product: uuid.UUID | None = None,
+    status: str = "CONFIRMED",
+) -> tuple[str, dict[str, Any]]:
+    return (
+        BOOKING_SQL,
+        {
+            "lead": lead,
+            "conversation": conversation,
+            "event": event,
+            "start": start,
+            "end": start + HALF_HOUR,
+            "status": status,
+            "product": product,
+        },
+    )
+
+
+class TestPhase24BookingOwnership:
+    """Bookings gain a product derived from their own parents, and the confirmed-slot
+    rule becomes per product. Continues from the state the classes above leave."""
+
+    lead_with_conversation = uuid.UUID("00000000-0000-4000-8000-0000000024a1")
+    lead_without_conversation = uuid.UUID("00000000-0000-4000-8000-0000000024a2")
+    conversation = uuid.UUID("00000000-0000-4000-8000-0000000024c1")
+
+    def test_unfiled_bookings_take_the_product_of_their_parents(
+        self, scratch_database: str
+    ) -> None:
+        """Bookings written between Phase 18 and 24 carry no product. Their conversation
+        says which, or their lead when the conversation has been deleted: the booking's
+        own parents, not a guess."""
+        # The transitional-lane test above leaves a lead with no product, which Phase 23
+        # rightly refuses to migrate past. It is a test artifact, so it goes.
+        _exec(
+            scratch_database, [("DELETE FROM leads WHERE product_id IS NULL", {})], autocommit=False
+        )
+        _alembic(scratch_database, PHASE_23, direction="up")
+
+        _exec(
+            scratch_database,
+            [
+                (
+                    LEAD_SQL,
+                    {
+                        "id": self.lead_with_conversation,
+                        "phone": "+919876541001",
+                        "product": ACADEMICAE_ID,
+                    },
+                ),
+                (
+                    LEAD_SQL,
+                    {
+                        "id": self.lead_without_conversation,
+                        "phone": "+919876541002",
+                        "product": ACADEMICAE_ID,
+                    },
+                ),
+                (
+                    "INSERT INTO conversations (id, lead_id, status, product_id)"
+                    " VALUES (:id, :lead, 'ACTIVE', :product)",
+                    {
+                        "id": self.conversation,
+                        "lead": self.lead_with_conversation,
+                        "product": ACADEMICAE_ID,
+                    },
+                ),
+                _booking(
+                    self.lead_with_conversation,
+                    "evt-p24-conversation",
+                    TUESDAY_10AM_IST,
+                    conversation=self.conversation,
+                ),
+                _booking(self.lead_without_conversation, "evt-p24-lead-only", TUESDAY_11AM_IST),
+            ],
+            autocommit=False,
+        )
+
+        _alembic(scratch_database, PHASE_24, direction="up")
+
+        assert _rows(
+            scratch_database,
+            "SELECT calendar_event_id, product_id FROM bookings"
+            " WHERE calendar_event_id LIKE 'evt-p24-%' ORDER BY calendar_event_id",
+        ) == [("evt-p24-conversation", ACADEMICAE_ID), ("evt-p24-lead-only", ACADEMICAE_ID)]
+        assert (
+            _scalar(
+                scratch_database,
+                "SELECT is_nullable FROM information_schema.columns"
+                " WHERE table_name = 'bookings' AND column_name = 'product_id'",
+            )
+            == "NO"
+        )
+
+    def test_every_product_may_confirm_the_same_hour(self, scratch_database: str) -> None:
+        other_lead = uuid.uuid4()
+        _exec(
+            scratch_database,
+            [
+                (
+                    "INSERT INTO products (id, slug, display_name, google_calendar_id)"
+                    " VALUES (:id, 'phase24-other', 'Other', 'other@calendar.example')",
+                    {"id": OTHER_PRODUCT},
+                ),
+                (LEAD_SQL, {"id": other_lead, "phone": "+919876541001", "product": OTHER_PRODUCT}),
+                # The hour Academicae already confirmed, on another calendar.
+                _booking(other_lead, "evt-p24-other", TUESDAY_10AM_IST, product=OTHER_PRODUCT),
+            ],
+            autocommit=False,
+        )
+
+        # Within one product the hour is still taken.
+        with pytest.raises(IntegrityError):
+            _exec(
+                scratch_database,
+                [
+                    _booking(
+                        self.lead_without_conversation,
+                        "evt-p24-double",
+                        TUESDAY_10AM_IST,
+                        product=ACADEMICAE_ID,
+                    )
+                ],
+                autocommit=False,
+            )
+
+    def test_the_downgrade_refuses_while_two_products_hold_one_hour(
+        self, scratch_database: str
+    ) -> None:
+        """The global rule cannot represent what this phase allows. The downgrade fails,
+        and no booking is cancelled or deleted to make room."""
+        with pytest.raises(IntegrityError):
+            _alembic(scratch_database, TEMPLATE_OWNERSHIP, direction="down")
+
+        assert (
+            _scalar(
+                scratch_database,
+                "SELECT count(*) FROM bookings WHERE calendar_event_id LIKE 'evt-p24-%'",
+            )
+            == 3
+        )
+
+        _exec(
+            scratch_database,
+            [
+                ("DELETE FROM bookings WHERE calendar_event_id = 'evt-p24-other'", {}),
+                ("DELETE FROM leads WHERE product_id = :id", {"id": OTHER_PRODUCT}),
+            ],
+            autocommit=False,
+        )
+
+        # With one product per hour again, it reverses, and comes back.
+        _alembic(scratch_database, TEMPLATE_OWNERSHIP, direction="down")
+        assert (
+            _scalar(
+                scratch_database,
+                "SELECT is_nullable FROM information_schema.columns"
+                " WHERE table_name = 'bookings' AND column_name = 'product_id'",
+            )
+            == "YES"
+        )
+        _alembic(scratch_database, PHASE_24, direction="up")
+
+    def test_disagreeing_parents_stop_the_upgrade(self, scratch_database: str) -> None:
+        """A booking filed under one product while its conversation belongs to another.
+        Nothing in the data says which is right, so the migration names it and stops."""
+        _alembic(scratch_database, TEMPLATE_OWNERSHIP, direction="down")
+
+        _exec(
+            scratch_database,
+            [
+                _booking(
+                    self.lead_with_conversation,
+                    "evt-p24-wrong",
+                    TUESDAY_11AM_IST,
+                    conversation=self.conversation,
+                    product=OTHER_PRODUCT,
+                    status="PENDING",
+                )
+            ],
+            autocommit=False,
+        )
+
+        with pytest.raises(RuntimeError, match="different product from its conversation"):
+            _alembic(scratch_database, PHASE_24, direction="up")
+
+        # Nothing was rewritten in the attempt.
+        assert (
+            _scalar(
+                scratch_database,
+                "SELECT product_id FROM bookings WHERE calendar_event_id = 'evt-p24-wrong'",
+            )
+            == OTHER_PRODUCT
+        )
+
+        _exec(
+            scratch_database,
+            [("DELETE FROM bookings WHERE calendar_event_id = 'evt-p24-wrong'", {})],
+            autocommit=False,
+        )
+        _alembic(scratch_database, PHASE_24, direction="up")

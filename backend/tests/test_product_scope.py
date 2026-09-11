@@ -39,7 +39,6 @@ NULLABLE_DEBT: dict[str, tuple[int, str]] = {
     # supply a product from the audience, but the **inbound** path cannot until routing
     # on `metadata.phone_number_id` arrives, and [D45] forbids guessing one. Phase 23
     # closes it, after attributing or refusing any transitional rows.
-    "bookings": (24, "inherits from its conversation; Phase 24 owns per-product calendars"),
     "knowledge_bases": (26, "POST /knowledge-bases takes no product"),
 }
 
@@ -100,6 +99,7 @@ CLOSED: dict[str, str] = {
     "conversations": "closed in Phase 23; snapshotted from the lead (§28.5)",
     "messages": "closed in Phase 23; from the campaign or the conversation",
     "ai_runs": "closed in Phase 23; from the conversation",
+    "bookings": "closed in Phase 24; from the conversation, whose product's calendar confirmed it",
 }
 
 SCOPED = set(NULLABLE_DEBT) | set(NULLABLE_BY_DESIGN) | set(CLOSED)

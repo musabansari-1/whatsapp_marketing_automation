@@ -72,7 +72,6 @@ class TestProviderConfigValidation:
     ) -> None:
         """[D19]: the refresh token lives in Secret Manager, so its location is required."""
         monkeypatch.setenv("CALENDAR_PROVIDER", "google")
-        monkeypatch.setenv("GOOGLE_CALENDAR_ID", "sales@example.com")
         with pytest.raises(ValueError, match="GOOGLE_SECRET_MANAGER_PROJECT"):
             Settings()
 

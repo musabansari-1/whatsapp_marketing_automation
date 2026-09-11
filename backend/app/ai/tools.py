@@ -72,8 +72,11 @@ class ToolContext:
     session: AsyncSession
     lead: Any
     conversation: Any
-    slot_policy: SlotPolicy
-    calendar: CalendarProvider
+    # Both None when this conversation's product cannot take bookings: no calendar
+    # configured, or a slot policy that does not resolve ([D43], [D52]). The booking tools
+    # then refuse, rather than reaching for another product's calendar.
+    slot_policy: SlotPolicy | None
+    calendar: CalendarProvider | None
     qualification_rules: qualification.QualificationRules
     now: datetime | None = None
     # Filled by tools whose effects the caller must act on after the turn.
@@ -328,33 +331,32 @@ async def _get_available_slots(arguments: dict[str, Any], context: ToolContext) 
     team's actual diary rather than a guess. §12's sequence starts here: retrieve real
     slots, then show those slots, and never invent one.
     """
+    policy, calendar = _booking_capability(context)
     limit = _positive_int(
         arguments.get("limit"), default=MAX_OFFERED_SLOTS, maximum=MAX_OFFERED_SLOTS
     )
     now = context.now or datetime.now(UTC)
-    horizon = TimeInterval(start=now, end=now + _days(context.slot_policy.horizon_days))
+    horizon = TimeInterval(start=now, end=now + _days(policy.horizon_days))
 
     try:
-        busy = await context.calendar.list_busy_intervals(horizon)
+        busy = await calendar.list_busy_intervals(horizon)
     except Exception as exc:  # noqa: BLE001 - any calendar failure is the same to the model
         # Reported as a tool failure rather than raised: the model can say it will
         # follow up, which is better than the whole turn failing.
         logger.warning("ai_slot_lookup_failed", error=str(exc))
         raise ToolError("Could not check the calendar just now") from exc
 
-    slots = available_slots(policy=context.slot_policy, busy=busy, now=now, limit=limit)
+    slots = available_slots(policy=policy, busy=busy, now=now, limit=limit)
 
     return ToolResult(
         ok=True,
         data={
-            "timezone": context.slot_policy.timezone,
-            "duration_minutes": context.slot_policy.duration_minutes,
+            "timezone": policy.timezone,
+            "duration_minutes": policy.duration_minutes,
             "slots": [
                 {
                     "start_time": slot.start.isoformat(),
-                    "local_time": slot.start.astimezone(context.slot_policy.zone).strftime(
-                        "%A %d %B, %I:%M %p"
-                    ),
+                    "local_time": slot.start.astimezone(policy.zone).strftime("%A %d %B, %I:%M %p"),
                 }
                 for slot in slots
             ],
@@ -375,9 +377,10 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
     so re-checking first would find the slot occupied and tell the customer their demo
     was lost — when in fact it is theirs.
     """
+    policy, calendar = _booking_capability(context)
     start = _parse_start_time(arguments.get("start_time"))
     now = context.now or datetime.now(UTC)
-    slot = TimeInterval(start=start, end=start + _minutes(context.slot_policy.duration_minutes))
+    slot = TimeInterval(start=start, end=start + _minutes(policy.duration_minutes))
 
     # Deterministic in the conversation and the slot, so a retried turn recognises its
     # own earlier success rather than treating it as somebody else's booking.
@@ -396,32 +399,32 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
                 "booked": True,
                 "event_id": event_id,
                 "start_time": already.start_time.isoformat(),
-                "local_time": already.start_time.astimezone(context.slot_policy.zone).strftime(
+                "local_time": already.start_time.astimezone(policy.zone).strftime(
                     "%A %d %B, %I:%M %p"
                 ),
                 "timezone": already.timezone,
             },
         )
 
-    horizon = TimeInterval(start=now, end=now + _days(context.slot_policy.horizon_days))
+    horizon = TimeInterval(start=now, end=now + _days(policy.horizon_days))
     try:
-        busy = await context.calendar.list_busy_intervals(horizon)
+        busy = await calendar.list_busy_intervals(horizon)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ai_booking_precheck_failed", error=str(exc))
         raise ToolError("Could not confirm the calendar just now") from exc
 
-    if not is_slot_available(policy=context.slot_policy, slot=slot, busy=busy, now=now):
+    if not is_slot_available(policy=policy, slot=slot, busy=busy, now=now):
         return ToolResult(
             ok=False,
             error="That time is no longer available. Offer the customer another slot.",
         )
 
     try:
-        event = await context.calendar.create_event(
+        event = await calendar.create_event(
             EventRequest(
                 event_id=event_id,
                 interval=slot,
-                timezone=context.slot_policy.timezone,
+                timezone=policy.timezone,
                 summary=f"Demo — {context.lead.full_name or context.lead.phone_e164}",
                 description=_booking_description(context.lead),
                 attendee_emails=(context.lead.email,) if context.lead.email else (),
@@ -447,7 +450,7 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
     booking, created = await booking_repo.record_confirmed_booking(
         context.session,
         lead=context.lead,
-        conversation_id=context.conversation.id,
+        conversation=context.conversation,
         event=event,
     )
     context.booking_id = booking.id
@@ -478,10 +481,10 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
             "booked": True,
             "event_id": event.event_id,
             "start_time": event.interval.start.isoformat(),
-            "local_time": event.interval.start.astimezone(context.slot_policy.zone).strftime(
+            "local_time": event.interval.start.astimezone(policy.zone).strftime(
                 "%A %d %B, %I:%M %p"
             ),
-            "timezone": context.slot_policy.timezone,
+            "timezone": policy.timezone,
         },
     )
 
@@ -519,6 +522,22 @@ _HANDLERS: dict[AuthorizedTool, Callable[[dict[str, Any], ToolContext], Awaitabl
 
 
 # ---------------------------------------------------------------- helpers
+
+
+def _booking_capability(context: ToolContext) -> tuple[SlotPolicy, CalendarProvider]:
+    """The calendar and slot policy this conversation may book with, or a refusal.
+
+    Both come from the conversation's product, resolved by the caller before the turn
+    ([D43]). Absent means that product cannot take bookings, and the model is told so in
+    terms it acts on: no time is offered or promised. There is no fallback calendar —
+    not another product's, and not a platform-wide one.
+    """
+    if context.calendar is None or context.slot_policy is None:
+        raise ToolError(
+            "Booking is not available for this conversation. Do not offer or promise a "
+            "time; tell the customer a colleague will follow up."
+        )
+    return context.slot_policy, context.calendar
 
 
 def _booking_description(lead: Any) -> str:

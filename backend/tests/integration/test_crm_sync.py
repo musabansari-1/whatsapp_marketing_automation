@@ -95,6 +95,7 @@ def seed_lead(
         if with_booking:
             session.add(
                 Booking(
+                    product_id=lead.product_id,
                     lead_id=lead.id,
                     calendar_event_id=f"demo-{uuid.uuid4()}",
                     start_time=START,

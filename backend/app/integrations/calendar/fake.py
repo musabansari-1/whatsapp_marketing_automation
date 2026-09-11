@@ -26,7 +26,11 @@ class FakeCalendarProvider(CalendarProvider):
         *,
         busy: list[TimeInterval] | None = None,
         fail_with: Exception | None = None,
+        calendar_id: str | None = None,
     ) -> None:
+        # Which calendar this stands in for. Carried so a test can see which product's
+        # calendar a turn was given ([D43]); the fake itself behaves the same either way.
+        self.calendar_id = calendar_id
         self.busy: list[TimeInterval] = list(busy or [])
         self.fail_with = fail_with
         self.events: dict[str, CalendarEvent] = {}

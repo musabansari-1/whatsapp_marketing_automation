@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import BookingStatus, NotificationType, UserRole
 from app.integrations.calendar import CalendarEvent
-from app.persistence.models import Booking, Lead, Notification, User
+from app.persistence.models import Booking, Conversation, Lead, Notification, User
 
 # §13 relates a notification to what it is about, so the dashboard can link to it.
 ENTITY_BOOKING = "booking"
@@ -52,14 +52,18 @@ async def find_by_event_id(session: AsyncSession, calendar_event_id: str) -> Boo
     return result.scalars().first()
 
 
-async def find_confirmed_at(session: AsyncSession, start_time: datetime) -> Booking | None:
-    """A confirmed booking already occupying this slot.
+async def find_confirmed_at(
+    session: AsyncSession, *, product_id: uuid.UUID, start_time: datetime
+) -> Booking | None:
+    """A confirmed booking already occupying this slot in this product's calendar.
 
     Only CONFIRMED counts: a cancelled or failed attempt must not block rebooking the
-    same time, which is why the unique index is partial.
+    same time, which is why the unique index is partial. Scoped to the product because
+    another product holding the same hour is on a different calendar ([D43]).
     """
     result = await session.execute(
         select(Booking).where(
+            Booking.product_id == product_id,
             Booking.start_time == start_time,
             Booking.status == BookingStatus.CONFIRMED,
         )
@@ -71,7 +75,7 @@ async def record_confirmed_booking(
     session: AsyncSession,
     *,
     lead: Lead,
-    conversation_id: uuid.UUID | None,
+    conversation: Conversation,
     event: CalendarEvent,
 ) -> tuple[Booking, bool]:
     """Record a booking Google has confirmed, or return the existing one.
@@ -82,14 +86,19 @@ async def record_confirmed_booking(
 
     CONFIRMED, not PENDING: this is only called once the calendar has returned an
     event, which is exactly what §12 requires before a booking may be treated as real.
+
+    The product is the conversation's (§28.5), taken here rather than passed in, so no
+    caller can file a booking under a product other than the one whose calendar the
+    conversation was given.
     """
     existing = await find_by_event_id(session, event.event_id)
     if existing is not None:
         return existing, False
 
     booking = Booking(
+        product_id=conversation.product_id,
         lead_id=lead.id,
-        conversation_id=conversation_id,
+        conversation_id=conversation.id,
         calendar_event_id=event.event_id,
         start_time=event.interval.start,
         end_time=event.interval.end,
@@ -160,8 +169,13 @@ async def fan_out_notification(
     message: str,
     entity_type: str,
     entity_id: uuid.UUID,
+    product_id: uuid.UUID | None,
 ) -> int:
     """Give every active internal user one notification, at most once each.
+
+    `product_id` has no default. [D47] requires a notification about one product to say
+    which, and NULL is reserved for one that genuinely concerns none — so every caller
+    has to state which it is rather than inherit an omission.
 
     Written as a single INSERT ... ON CONFLICT DO NOTHING rather than a read-then-write
     loop. Two reasons: a retry after a partial failure re-runs for everyone and adds
@@ -183,6 +197,7 @@ async def fan_out_notification(
             [
                 {
                     "user_id": user_id,
+                    "product_id": product_id,
                     "type": notification_type,
                     "title": title,
                     "message": message,

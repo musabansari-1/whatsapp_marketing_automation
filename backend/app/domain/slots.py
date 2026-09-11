@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Protocol
+from typing import Protocol, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.integrations.calendar import TimeInterval
@@ -233,6 +233,8 @@ __all__ = [
     "parse_clock_time",
     "parse_working_days",
     "policy_from_settings",
+    "resolve_slot_policy",
+    "SlotPolicyOverrides",
 ]
 
 
@@ -253,14 +255,96 @@ class SlotPolicySettings(Protocol):
     demo_timezone: str
 
 
-def policy_from_settings(settings: SlotPolicySettings) -> SlotPolicy:
-    """Build the policy from configuration ([D8])."""
-    return SlotPolicy(
-        duration_minutes=settings.demo_duration_minutes,
-        buffer_minutes=settings.demo_buffer_minutes,
-        working_days=parse_working_days(settings.demo_working_days),
-        working_start=parse_clock_time(settings.demo_working_hours_start),
-        working_end=parse_clock_time(settings.demo_working_hours_end),
-        horizon_days=settings.demo_booking_horizon_days,
-        timezone=settings.demo_timezone,
+class SlotPolicyOverrides(Protocol):
+    """A product's sparse overrides of the global policy ([D52]).
+
+    Read-only properties rather than attributes, so an ORM row satisfies it directly.
+    Every value `None` means inherit — a product whose hours match the platform's states
+    nothing.
+    """
+
+    @property
+    def demo_duration_minutes(self) -> int | None: ...
+    @property
+    def demo_buffer_minutes(self) -> int | None: ...
+    @property
+    def demo_working_days(self) -> list[str] | None: ...
+    @property
+    def demo_working_hours_start(self) -> str | None: ...
+    @property
+    def demo_working_hours_end(self) -> str | None: ...
+    @property
+    def demo_booking_horizon_days(self) -> int | None: ...
+    @property
+    def demo_timezone(self) -> str | None: ...
+
+
+_T = TypeVar("_T")
+
+
+def _inherit(override: _T | None, default: _T) -> _T:
+    # `is None`, never truthiness: a zero-minute buffer is a real override, and `0 or 15`
+    # would quietly put the platform's buffer back.
+    return default if override is None else override
+
+
+def resolve_slot_policy(
+    settings: SlotPolicySettings, overrides: SlotPolicyOverrides | None
+) -> SlotPolicy:
+    """Product override, then global default, field by field ([D8], [D52]).
+
+    Resolved per field rather than as a whole policy, so a product that changes only its
+    timezone keeps the platform's duration, buffer, days, hours and horizon.
+
+    The merged policy is validated as one, by `SlotPolicy` itself: an override that is fine
+    alone can be invalid in combination — a 90-minute demo in a product whose day is an
+    hour long — and that must fail rather than offer slots that cannot be booked.
+    """
+    working_days = _inherit(
+        overrides.demo_working_days if overrides else None, settings.demo_working_days
     )
+    if not isinstance(working_days, list):
+        # JSONB will hold whatever it is given; a string here would be parsed a letter
+        # at a time and fail confusingly.
+        raise SlotPolicyError("Working days must be a list such as ['MON', 'TUE']")
+
+    policy = SlotPolicy(
+        duration_minutes=_inherit(
+            overrides.demo_duration_minutes if overrides else None,
+            settings.demo_duration_minutes,
+        ),
+        buffer_minutes=_inherit(
+            overrides.demo_buffer_minutes if overrides else None, settings.demo_buffer_minutes
+        ),
+        working_days=parse_working_days(working_days),
+        working_start=parse_clock_time(
+            _inherit(
+                overrides.demo_working_hours_start if overrides else None,
+                settings.demo_working_hours_start,
+            )
+        ),
+        working_end=parse_clock_time(
+            _inherit(
+                overrides.demo_working_hours_end if overrides else None,
+                settings.demo_working_hours_end,
+            )
+        ),
+        horizon_days=_inherit(
+            overrides.demo_booking_horizon_days if overrides else None,
+            settings.demo_booking_horizon_days,
+        ),
+        timezone=_inherit(overrides.demo_timezone if overrides else None, settings.demo_timezone),
+    )
+    # Checked now rather than when a slot is first formatted: an unknown zone found inside a
+    # booking tool would fail the customer's turn instead of making booking unavailable.
+    _ = policy.zone
+    return policy
+
+
+def policy_from_settings(settings: SlotPolicySettings) -> SlotPolicy:
+    """Build the platform-wide policy from configuration ([D8]).
+
+    The same as resolving with no product overrides, and implemented that way so there is
+    one rule rather than two that could drift.
+    """
+    return resolve_slot_policy(settings, None)

@@ -63,14 +63,15 @@ def seed_booking(
 ) -> str:
     """Seed a booking in its own slot.
 
-    Distinct start times by default because `uq_bookings_confirmed_start_time` forbids
-    two confirmed bookings at the same moment — the constraint that closes §12's race.
+    Distinct start times by default because `uq_bookings_product_confirmed_start_time`
+    forbids two confirmed bookings at the same moment in one product — the constraint that closes §12's race.
     """
     if start is None:
         start = START + timedelta(hours=next(_slot_offsets))
 
     async def create(session: AsyncSession) -> str:
         booking = Booking(
+            product_id=await ensure_product_id(session),
             lead_id=uuid.UUID(lead_id),
             calendar_event_id=f"demo-{uuid.uuid4()}",
             start_time=start,
@@ -95,6 +96,7 @@ def notify_everyone(booking_id: str, *, title: str = "Demo booked") -> int:
             message="Asha Rao booked a demo.",
             entity_type=booking_repo.ENTITY_BOOKING,
             entity_id=uuid.UUID(booking_id),
+            product_id=await ensure_product_id(session),
         )
 
     return run_db(fan_out)

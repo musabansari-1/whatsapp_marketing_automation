@@ -29,7 +29,7 @@ from app.integrations.queue import TaskRequest
 from app.integrations.registry import build_whatsapp_provider
 from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
-from app.persistence.models import Booking, Conversation, Lead, Product
+from app.persistence.models import Booking, Lead, Product
 from app.persistence.repositories import bookings as booking_repo
 from app.persistence.repositories import conversations as conversation_repo
 from app.worker.handlers.campaign_send import RetryableSendError
@@ -70,13 +70,18 @@ async def notify_booking(task: TaskRequest) -> dict[str, int | str]:
 
         bind_log_context(booking_id=str(booking.id), lead_id=str(lead.id))
 
+        # [D47]: a notification about a booking names its product. The whole team still
+        # hears about every booking ([D3]), so the bell has to tell a SustainX presentation
+        # from an Academicae demo without anyone opening it.
+        product = await session.get(Product, booking.product_id)
         notified = await booking_repo.fan_out_notification(
             session,
             notification_type=NotificationType.DEMO_BOOKED,
-            title="Demo booked",
+            title=_notification_title(product),
             message=_notification_message(booking, lead),
             entity_type=booking_repo.ENTITY_BOOKING,
             entity_id=booking.id,
+            product_id=booking.product_id,
         )
         await session.commit()
 
@@ -84,6 +89,7 @@ async def notify_booking(task: TaskRequest) -> dict[str, int | str]:
         lead_id = lead.id
         confirmation = _confirmation_message(settings, booking)
         conversation_id = booking.conversation_id
+        product_id = booking.product_id
 
     logger.info("booking_notifications_created", notified=notified)
 
@@ -98,6 +104,7 @@ async def notify_booking(task: TaskRequest) -> dict[str, int | str]:
         phone=phone,
         body=confirmation,
         conversation_id=conversation_id,
+        product_id=product_id,
     )
 
     return {
@@ -118,6 +125,7 @@ async def _send_confirmation(
     phone: str,
     body: str,
     conversation_id: uuid.UUID | None,
+    product_id: uuid.UUID,
 ) -> bool:
     """Tell the customer their demo is booked.
 
@@ -134,19 +142,12 @@ async def _send_confirmation(
             logger.info("booking_confirmation_already_sent")
             return False
 
-        # The confirmation leaves from the product's own number ([D40]) — the same one
-        # the whole conversation has been running on, so it lands in that thread rather
-        # than opening a second one from a number the customer does not recognise.
-        conversation = (
-            await session.get(Conversation, conversation_id)
-            if conversation_id is not None
-            else None
-        )
-        product = (
-            await session.get(Product, conversation.product_id)
-            if conversation is not None
-            else None
-        )
+        # The confirmation leaves from the product's own number ([D40]) — the one the
+        # conversation ran on, so it lands in that thread. Taken from the booking, which
+        # carries its product since Phase 24, rather than through the conversation: that
+        # link is SET NULL on delete, and losing it used to fall back to the platform
+        # number, reaching the customer from one they had never seen.
+        product = await session.get(Product, product_id)
         whatsapp = build_whatsapp_provider(settings, product=product)
 
     try:
@@ -198,6 +199,16 @@ async def _send_confirmation(
 
     logger.info("booking_confirmation_sent")
     return True
+
+
+def _notification_title(product: Product | None) -> str:
+    """The bell's headline, naming the product ([D47]).
+
+    The display name is data, so a renamed product reads correctly with no code change.
+    `None` cannot happen — `bookings.product_id` is a NOT NULL foreign key — and is
+    handled only so the type is honest.
+    """
+    return f"Demo booked — {product.display_name}" if product is not None else "Demo booked"
 
 
 def _notification_message(booking: Booking, lead: Lead) -> str:

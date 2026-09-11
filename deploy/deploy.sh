@@ -91,7 +91,7 @@ common_env=(
 # These are applied with --update-env-vars, not --set-env-vars, and the difference is
 # load-bearing. --set replaces the service's entire environment, which would delete every
 # variable an operator set by hand — OPENROUTER_MODEL, AUDIENCE_COLUMN_SCHEMA,
-# QUALIFICATION_REQUIRED_FIELDS, GOOGLE_CALENDAR_ID, the MSG_* copy. The runbook
+# QUALIFICATION_REQUIRED_FIELDS, the MSG_* copy. The runbook
 # instructs setting exactly those by hand, so the next deploy would silently undo the
 # configuration and, under APP_ENV=production, the service would refuse to start.
 #

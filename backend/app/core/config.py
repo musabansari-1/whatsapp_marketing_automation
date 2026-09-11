@@ -198,8 +198,11 @@ class Settings(BaseSettings):
     worker_base_url: str | None = None
     worker_service_account_email: str | None = None
 
-    # ---------------------------------------------------------------- Calendar [D7][D19]
-    google_calendar_id: str | None = None
+    # ---------------------------------------------------------------- Calendar [D19][D43]
+    # Shared across every product: the operations account's OAuth client, where its refresh
+    # token lives, and the Secret Manager project. *Which* calendar is not configured here.
+    # It is `products.google_calendar_id`, one per product (Phase 24), and there is
+    # deliberately no platform-wide calendar to fall back to.
     google_secret_manager_project: str | None = None
     google_calendar_token_secret_name: str | None = None
     # The OAuth client the refresh token belongs to. The *token* lives in Secret
@@ -408,8 +411,6 @@ class Settings(BaseSettings):
                 missing.append("WHATSAPP_BUSINESS_ACCOUNT_ID")
 
         if self.calendar_provider is CalendarProviderName.GOOGLE:
-            if not self.google_calendar_id:
-                missing.append("GOOGLE_CALENDAR_ID")
             if not self.google_secret_manager_project:
                 missing.append("GOOGLE_SECRET_MANAGER_PROJECT")
             if not self.google_calendar_token_secret_name:

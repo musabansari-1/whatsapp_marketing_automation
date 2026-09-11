@@ -79,6 +79,36 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # right answer while one Meta App serves every product. Never a token value.
     whatsapp_access_token_secret_name: Mapped[str | None] = mapped_column(String(255))
 
+    # ---------------------------------------------------------------- Calendar (§28, [D43])
+    #
+    # One Google Calendar per product, which is what lets every product book the same
+    # wall-clock hour independently. NULL means this product has no calendar, and booking
+    # is refused for it — never sent to another product's calendar, and there is no
+    # platform-wide calendar to fall back to.
+    google_calendar_id: Mapped[str | None] = mapped_column(String(255))
+
+    # The refresh token stays in Secret Manager ([D19]); this only *names* an override, for
+    # a product whose calendar sits in a different Google account. NULL means the shared
+    # operations account's token, which is the approved setup. Never a token value.
+    #
+    # There is deliberately no client ID or client secret override. One OAuth client can be
+    # consented by several Google accounts, each producing its own refresh token, so a
+    # different account needs a different token — not a different client.
+    google_calendar_token_secret_name: Mapped[str | None] = mapped_column(String(255))
+
+    # ---------------------------------------------------------------- slot policy ([D8], [D52])
+    #
+    # Sparse overrides of the global slot policy. NULL inherits the platform value, so a
+    # product whose hours match everyone else's states nothing and duplicates nothing.
+    # Named exactly as the settings they override, which lets one resolver read both.
+    demo_duration_minutes: Mapped[int | None] = mapped_column(Integer)
+    demo_buffer_minutes: Mapped[int | None] = mapped_column(Integer)
+    demo_working_days: Mapped[list[str] | None] = mapped_column(JSONB)
+    demo_working_hours_start: Mapped[str | None] = mapped_column(String(5))
+    demo_working_hours_end: Mapped[str | None] = mapped_column(String(5))
+    demo_booking_horizon_days: Mapped[int | None] = mapped_column(Integer)
+    demo_timezone: Mapped[str | None] = mapped_column(String(64))
+
     segments: Mapped[list[Segment]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
     )
@@ -96,6 +126,16 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "whatsapp_phone_number_id",
             unique=True,
             postgresql_where=text("is_active AND whatsapp_phone_number_id IS NOT NULL"),
+        ),
+        # One calendar, one product ([D43]). This is what makes the confirmed-slot rule on
+        # `bookings (product_id, start_time)` equal to a per-calendar guarantee: if two
+        # active products shared a calendar, each could confirm the same hour on it.
+        # Partial for the same reasons as the number above.
+        Index(
+            "uq_products_active_google_calendar",
+            "google_calendar_id",
+            unique=True,
+            postgresql_where=text("is_active AND google_calendar_id IS NOT NULL"),
         ),
     )
 

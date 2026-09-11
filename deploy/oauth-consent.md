@@ -101,7 +101,10 @@ Also store the client secret, and set the client ID as ordinary configuration:
 PROJECT_ID=my-project ./deploy/secrets.sh google-oauth-client-secret
 ```
 
-Then set `GOOGLE_CALENDAR_ID` and `GOOGLE_OAUTH_CLIENT_ID` on the services, and switch
+Then set `GOOGLE_OAUTH_CLIENT_ID` on the services, record each product's calendar in
+`products.google_calendar_id` (Phase 24 — there is no service-wide calendar variable, and a
+product without a calendar refuses bookings), share every product calendar with the
+operations account that gave consent, and switch
 `CALENDAR_PROVIDER=google`.
 
 ## 6. Verify

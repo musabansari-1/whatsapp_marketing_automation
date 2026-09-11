@@ -39,19 +39,21 @@ class Booking(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     Google confirms — and §12 is explicit that no booking is confirmed until the
     provider says so.
 
-    The partial unique index on `start_time` for confirmed bookings is the database's
-    share of the race handling §12 requires: the pre-booking recheck narrows the
-    window, and this closes it, since two concurrent confirmations for the same slot
-    cannot both commit.
+    The partial unique index on `(product_id, start_time)` for confirmed bookings is the
+    database's share of the race handling §12 requires: the pre-booking recheck narrows
+    the window, and this closes it, since two concurrent confirmations for the same slot
+    in one product cannot both commit. Scoped to the product because each product books
+    into its own calendar ([D43]) — Academicae, SustainX and Life Herba may all confirm
+    Tuesday 10:00 at once.
     """
 
     __tablename__ = "bookings"
 
-    # §28 product scope. Nullable during the transition: a booking inherits its
-    # product from its conversation, which has none until Phase 22. Phase 24
-    # also changes the confirmed-slot unique index to (product_id, start_time).
-    product_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    # §28 product scope, NOT NULL since Phase 24. Taken from the conversation the booking
+    # was made in (§28.5) and never chosen by the booking tool, so a booking cannot land
+    # in a product other than the one whose calendar confirmed it.
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
 
     lead_id: Mapped[uuid.UUID] = mapped_column(
@@ -93,9 +95,11 @@ class Booking(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_bookings_status", "status"),
         Index("ix_bookings_start_time", "start_time"),
         # Partial: only a CONFIRMED booking occupies a slot. Cancelled and failed
-        # attempts must not block rebooking the same time.
+        # attempts must not block rebooking the same time. Per product, because each
+        # product's calendar is its own ([D43]).
         Index(
-            "uq_bookings_confirmed_start_time",
+            "uq_bookings_product_confirmed_start_time",
+            "product_id",
             "start_time",
             unique=True,
             postgresql_where=text("status = 'CONFIRMED'"),

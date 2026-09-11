@@ -25,6 +25,12 @@ from app.integrations.registry import (
     build_whatsapp_provider,
 )
 from app.integrations.whatsapp import FakeWhatsAppProvider, WhatsAppProvider
+from app.persistence.models import Product
+
+
+def a_product(calendar_id: str = "product@calendar.example") -> Product:
+    """An unsaved product carrying a calendar. The registry reads configuration only."""
+    return Product(slug="registry-product", display_name="Registry", google_calendar_id=calendar_id)
 
 
 class TestFakeSelection:
@@ -33,7 +39,6 @@ class TestFakeSelection:
         assert isinstance(providers.whatsapp, FakeWhatsAppProvider)
         assert isinstance(providers.llm, FakeLLMProvider)
         assert isinstance(providers.embedding, FakeEmbeddingProvider)
-        assert isinstance(providers.calendar, FakeCalendarProvider)
         assert isinstance(providers.crm, FakeCRMProvider)
         assert isinstance(providers.queue, InMemoryQueueProvider)
 
@@ -42,9 +47,18 @@ class TestFakeSelection:
         assert isinstance(providers.whatsapp, WhatsAppProvider)
         assert isinstance(providers.llm, LLMProvider)
         assert isinstance(providers.embedding, EmbeddingProvider)
-        assert isinstance(providers.calendar, CalendarProvider)
         assert isinstance(providers.crm, CRMProvider)
         assert isinstance(providers.queue, QueueProvider)
+
+    def test_the_calendar_is_built_per_product(self, settings: Settings) -> None:
+        """[D43]: there is no calendar without a product, so the product-blind bundle
+        carries none and the builder requires one."""
+        calendar = build_calendar_provider(settings, product=a_product("p@calendar.example"))
+
+        assert isinstance(calendar, FakeCalendarProvider)
+        assert isinstance(calendar, CalendarProvider)
+        assert calendar.calendar_id == "p@calendar.example"
+        assert not hasattr(build_providers(settings), "calendar")
 
     def test_embedding_dimension_follows_configuration(
         self, monkeypatch: pytest.MonkeyPatch
@@ -74,13 +88,12 @@ class TestFakeSelection:
         from app.integrations.calendar.google import GoogleCalendarProvider
 
         monkeypatch.setenv("CALENDAR_PROVIDER", "google")
-        monkeypatch.setenv("GOOGLE_CALENDAR_ID", "sales@example.com")
         monkeypatch.setenv("GOOGLE_SECRET_MANAGER_PROJECT", "proj")
         monkeypatch.setenv("GOOGLE_CALENDAR_TOKEN_SECRET_NAME", "refresh-token")
         monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
         monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
 
-        provider = build_calendar_provider(Settings())
+        provider = build_calendar_provider(Settings(), product=a_product("sales@example.com"))
 
         assert isinstance(provider, GoogleCalendarProvider)
         assert provider._refresh_token is None  # noqa: SLF001 - laziness is the point
@@ -153,7 +166,6 @@ class TestEveryProviderIsImplemented:
             ("WHATSAPP_VERIFY_TOKEN", "v"),
             ("WHATSAPP_BUSINESS_ACCOUNT_ID", "waba"),
             ("WHATSAPP_APP_SECRET", "s"),
-            ("GOOGLE_CALENDAR_ID", "cal"),
             ("GOOGLE_SECRET_MANAGER_PROJECT", "proj"),
             ("GOOGLE_CALENDAR_TOKEN_SECRET_NAME", "secret"),
             ("GOOGLE_OAUTH_CLIENT_ID", "client"),
@@ -166,11 +178,15 @@ class TestEveryProviderIsImplemented:
             monkeypatch.setenv(env_var, value)
 
         settings = Settings()
+
+        def build_calendar_for_a_product(settings: Settings) -> CalendarProvider:
+            return build_calendar_provider(settings, product=a_product())
+
         builders = (
             build_whatsapp_provider,
             build_llm_provider,
             build_embedding_provider,
-            build_calendar_provider,
+            build_calendar_for_a_product,
             build_crm_provider,
         )
 

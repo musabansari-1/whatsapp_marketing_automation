@@ -201,12 +201,19 @@ class TestBookings:
         names = {c.name for c in _table("bookings").constraints if c.name}
         assert "ck_bookings_end_after_start" in names
 
-    def test_confirmed_slot_is_uniquely_held(self) -> None:
-        """§12 race handling: two confirmations for one slot cannot both commit."""
+    def test_confirmed_slot_is_uniquely_held_per_product(self) -> None:
+        """§12 race handling: two confirmations for one slot cannot both commit.
+
+        Per product since Phase 24, because each product books into its own calendar
+        ([D43]) and every product may confirm the same hour.
+        """
         index = next(
-            i for i in _table("bookings").indexes if i.name == "uq_bookings_confirmed_start_time"
+            i
+            for i in _table("bookings").indexes
+            if i.name == "uq_bookings_product_confirmed_start_time"
         )
         assert index.unique is True
+        assert [column.name for column in index.columns] == ["product_id", "start_time"]
         # Partial, so cancelled bookings do not block rebooking the slot.
         assert index.dialect_options["postgresql"]["where"] is not None
 

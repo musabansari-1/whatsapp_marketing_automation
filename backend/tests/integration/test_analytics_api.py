@@ -253,6 +253,7 @@ class TestBookingMetrics:
                 start = START + timedelta(hours=offset)
                 session.add(
                     Booking(
+                        product_id=await ensure_product_id(session),
                         lead_id=uuid.UUID(lead_id),
                         calendar_event_id=f"demo-{uuid.uuid4()}",
                         start_time=start,

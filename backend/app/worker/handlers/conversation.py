@@ -50,12 +50,14 @@ from app.domain.enums import ConversationStatus, LeadStatus, MessageStatus
 from app.domain.qualification import rules_from_settings
 from app.domain.rag import RetrievalPolicy, RetrievalResult, retrieve
 from app.domain.retry import RetryPolicy, backoff_seconds, classify, should_retry
-from app.domain.slots import policy_from_settings
+from app.domain.slots import SlotPolicy, SlotPolicyError, resolve_slot_policy
 from app.domain.whatsapp_webhook import is_within_service_window
+from app.integrations.calendar import CalendarProvider
 from app.integrations.llm import Message as LLMMessage
 from app.integrations.llm import Role
 from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import (
+    CalendarNotConfiguredError,
     build_calendar_provider,
     build_embedding_provider,
     build_llm_provider,
@@ -239,12 +241,18 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             if lead is None or conversation is None:
                 raise ValueError(f"Conversation {conversation_id} disappeared mid-turn")
 
+            # The calendar and slot policy are the conversation's product's ([D43], [D52]).
+            # Resolved from the snapshotted product, never from anything the model says,
+            # so a turn cannot read or book another product's diary.
+            slot_policy, calendar = resolve_booking_capability(
+                settings, await session.get(Product, conversation.product_id)
+            )
             tool_context = ai_tools.ToolContext(
                 session=session,
                 lead=lead,
                 conversation=conversation,
-                slot_policy=policy_from_settings(settings),
-                calendar=build_calendar_provider(settings),
+                slot_policy=slot_policy,
+                calendar=calendar,
                 # Qualification criteria come from the resolved configuration, so a
                 # Life Herba pharmacist can be qualified on different facts from a
                 # consumer while SustainX's segments all share one rule (§28.4).
@@ -663,6 +671,43 @@ async def _record_failed_run(conversation_id: uuid.UUID, model: str, reason: str
             )
         )
         await session.commit()
+
+
+def resolve_booking_capability(
+    settings: Settings, product: Product | None
+) -> tuple[SlotPolicy | None, CalendarProvider | None]:
+    """The slot policy and calendar a conversation in `product` may book with ([D43]).
+
+    `(None, None)` means the product cannot take bookings, and the booking tools will
+    refuse. That is a normal state, not a failed turn: a product with no calendar can
+    still answer questions, and nothing here reaches for a different calendar to avoid
+    saying no.
+
+    Two reasons, logged differently. No calendar is a configuration choice and logged at
+    info. A slot policy that does not resolve — an override that is invalid, or valid
+    alone but not in combination — is a mistake someone needs to fix, and logged as one.
+    """
+    if product is None:  # pragma: no cover - conversations.product_id is a NOT NULL FK
+        return None, None
+
+    try:
+        calendar = build_calendar_provider(settings, product=product)
+        policy = resolve_slot_policy(settings, product)
+    except CalendarNotConfiguredError:
+        logger.info(
+            "booking_unavailable", reason="calendar_not_configured", product_id=str(product.id)
+        )
+        return None, None
+    except SlotPolicyError as exc:
+        logger.warning(
+            "booking_unavailable",
+            reason="slot_policy_invalid",
+            product_id=str(product.id),
+            error=str(exc),
+        )
+        return None, None
+
+    return policy, calendar
 
 
 def _raise_if_retryable(settings: Settings, exc: ProviderError) -> None:

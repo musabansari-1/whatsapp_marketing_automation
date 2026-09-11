@@ -24,6 +24,7 @@ from app.core.config import (
     get_settings,
 )
 from app.core.errors import ConfigurationError
+from app.domain.slots import resolve_slot_policy
 from app.integrations.calendar import CalendarProvider, FakeCalendarProvider
 from app.integrations.calendar.google import GoogleCalendarProvider
 from app.integrations.crm import CRMProvider, FakeCRMProvider
@@ -48,12 +49,16 @@ from app.persistence.models import Product
 
 @dataclass(frozen=True, slots=True)
 class Providers:
-    """The six integrations, resolved from configuration."""
+    """The integrations that can be built without a product, from configuration.
+
+    The calendar is absent on purpose. Each product has its own ([D43]), so there is no
+    calendar to build without knowing whose — and a slot here for a platform-wide one would
+    be exactly the fallback [D43] rules out. Use `build_calendar_provider` with the product.
+    """
 
     whatsapp: WhatsAppProvider
     llm: LLMProvider
     embedding: EmbeddingProvider
-    calendar: CalendarProvider
     crm: CRMProvider
     queue: QueueProvider
 
@@ -146,15 +151,43 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
             )
 
 
-def build_calendar_provider(settings: Settings) -> CalendarProvider:
+class CalendarNotConfiguredError(ConfigurationError):
+    """This product has no calendar, so nothing may be booked for it ([D43]).
+
+    Raised rather than defaulted. The alternatives are all worse: another product's
+    calendar would offer that product's free time and book into its diary, and a
+    platform-wide calendar would be a shared sales calendar by another name.
+    """
+
+
+def build_calendar_provider(settings: Settings, *, product: Product) -> CalendarProvider:
+    """The calendar for one product ([D43]).
+
+    `product` is required. Nothing builds a calendar without knowing whose it is, and no
+    caller supplies a calendar ID — the product row does, the same way it supplies the
+    WhatsApp number a message leaves from.
+
+    What varies by product: the calendar ID, optionally the refresh-token *secret name*
+    (for a calendar in a different Google account), and the timezone, from its resolved
+    slot policy. What is shared: the OAuth client and the Secret Manager project, because
+    one operations account holds access to every product's calendar.
+
+    Checked before the provider is selected, so the fake refuses exactly as the real one
+    does and the rule is exercised by the test suite rather than only in production.
+    """
+    if not product.google_calendar_id:
+        raise CalendarNotConfiguredError(
+            f"Product {product.slug!r} has no calendar configured, so bookings are refused for it"
+        )
+
     match settings.calendar_provider:
         case CalendarProviderName.FAKE:
-            return FakeCalendarProvider()
+            return FakeCalendarProvider(calendar_id=product.google_calendar_id)
         case CalendarProviderName.GOOGLE:
-            # Every value below is guaranteed present: configuration refuses to start
+            # The shared values are guaranteed present: configuration refuses to start
             # when the Google calendar is selected without them.
             return GoogleCalendarProvider(
-                calendar_id=settings.google_calendar_id or "",
+                calendar_id=product.google_calendar_id,
                 client_id=settings.google_oauth_client_id or "",
                 client_secret=(
                     settings.google_oauth_client_secret.get_secret_value()
@@ -162,10 +195,14 @@ def build_calendar_provider(settings: Settings) -> CalendarProvider:
                     else ""
                 ),
                 # [D19]: the refresh token comes from Secret Manager, never from
-                # configuration and never from the database.
+                # configuration and never from the database. Only its name may vary.
                 secret_store=build_secret_store(settings),
-                refresh_token_secret_name=settings.google_calendar_token_secret_name or "",
-                timezone=settings.demo_timezone,
+                refresh_token_secret_name=(
+                    product.google_calendar_token_secret_name
+                    or settings.google_calendar_token_secret_name
+                    or ""
+                ),
+                timezone=resolve_slot_policy(settings, product).timezone,
                 timeout_seconds=settings.google_calendar_timeout_seconds,
             )
 
@@ -229,7 +266,6 @@ def build_providers(settings: Settings | None = None) -> Providers:
         whatsapp=build_whatsapp_provider(settings),
         llm=build_llm_provider(settings),
         embedding=build_embedding_provider(settings),
-        calendar=build_calendar_provider(settings),
         crm=build_crm_provider(settings),
         queue=build_queue_provider(settings),
     )

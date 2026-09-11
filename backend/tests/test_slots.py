@@ -7,6 +7,7 @@ not be testing the rule.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,7 @@ from app.domain.slots import (
     parse_clock_time,
     parse_working_days,
     policy_from_settings,
+    resolve_slot_policy,
 )
 from app.integrations.calendar import TimeInterval
 
@@ -290,3 +292,97 @@ class TestPolicyFromSettings:
         assert policy.duration_minutes == Settings().demo_duration_minutes
         assert policy.timezone == Settings().demo_timezone
         assert policy.working_days == parse_working_days(Settings().demo_working_days)
+
+
+@dataclass
+class Overrides:
+    """A product's slot-policy columns. Every field None means inherit ([D52])."""
+
+    demo_duration_minutes: int | None = None
+    demo_buffer_minutes: int | None = None
+    demo_working_days: list[str] | None = None
+    demo_working_hours_start: str | None = None
+    demo_working_hours_end: str | None = None
+    demo_booking_horizon_days: int | None = None
+    demo_timezone: str | None = None
+
+
+class TestProductOverrides:
+    """[D52]: product override, then global default, resolved field by field."""
+
+    def test_no_overrides_is_exactly_the_platform_policy(self) -> None:
+        from app.core.config import Settings
+
+        assert resolve_slot_policy(Settings(), Overrides()) == policy_from_settings(Settings())
+
+    def test_one_override_changes_only_that_field(self) -> None:
+        from app.core.config import Settings
+
+        platform = policy_from_settings(Settings())
+        resolved = resolve_slot_policy(Settings(), Overrides(demo_timezone="Europe/London"))
+
+        assert resolved.timezone == "Europe/London"
+        assert resolved.duration_minutes == platform.duration_minutes
+        assert resolved.buffer_minutes == platform.buffer_minutes
+        assert resolved.working_days == platform.working_days
+        assert resolved.working_start == platform.working_start
+        assert resolved.working_end == platform.working_end
+        assert resolved.horizon_days == platform.horizon_days
+
+    def test_a_zero_buffer_is_a_real_override(self) -> None:
+        """Resolved with `is None`, not truthiness: `0 or 15` would restore the platform's
+        buffer and silently ignore the product's setting."""
+        from app.core.config import Settings
+
+        assert resolve_slot_policy(Settings(), Overrides(demo_buffer_minutes=0)).buffer_minutes == 0
+
+    def test_every_field_can_be_overridden(self) -> None:
+        from app.core.config import Settings
+
+        resolved = resolve_slot_policy(
+            Settings(),
+            Overrides(
+                demo_duration_minutes=45,
+                demo_buffer_minutes=5,
+                demo_working_days=["SAT", "SUN"],
+                demo_working_hours_start="09:00",
+                demo_working_hours_end="13:00",
+                demo_booking_horizon_days=7,
+                demo_timezone="Asia/Dubai",
+            ),
+        )
+
+        assert resolved == SlotPolicy(
+            duration_minutes=45,
+            buffer_minutes=5,
+            working_days=parse_working_days(["SAT", "SUN"]),
+            working_start=time(9, 0),
+            working_end=time(13, 0),
+            horizon_days=7,
+            timezone="Asia/Dubai",
+        )
+
+    def test_a_combination_that_cannot_fit_is_refused(self) -> None:
+        """Valid alone, invalid together: a 30-minute demo in a 15-minute day. Refused,
+        rather than offering slots that cannot be booked."""
+        from app.core.config import Settings
+
+        with pytest.raises(SlotPolicyError):
+            resolve_slot_policy(
+                Settings(),
+                Overrides(demo_working_hours_start="10:00", demo_working_hours_end="10:15"),
+            )
+
+    def test_working_days_must_be_a_list(self) -> None:
+        """JSONB holds whatever it is given; a string would otherwise be read a letter at
+        a time."""
+        from app.core.config import Settings
+
+        with pytest.raises(SlotPolicyError, match="list"):
+            resolve_slot_policy(Settings(), Overrides(demo_working_days="MON,TUE"))  # type: ignore[arg-type]
+
+    def test_an_unknown_timezone_is_refused_when_resolved(self) -> None:
+        from app.core.config import Settings
+
+        with pytest.raises(SlotPolicyError, match="timezone"):
+            resolve_slot_policy(Settings(), Overrides(demo_timezone="Mars/Olympus_Mons"))

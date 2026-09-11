@@ -78,7 +78,10 @@ class CalendarProvider(ABC):
 
     @abstractmethod
     async def list_busy_intervals(self, window: TimeInterval) -> list[TimeInterval]:
-        """Return busy intervals on the shared sales calendar within `window`.
+        """Return busy intervals on this provider's calendar within `window`.
+
+        One provider instance is one calendar, and since Phase 24 that is a product's own
+        ([D43]) — so these are that product's commitments and nobody else's.
 
         Never invent availability (§12): an empty list means genuinely free.
         """

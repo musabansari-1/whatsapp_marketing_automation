@@ -170,6 +170,7 @@ class TestUniqueConstraints:
         for _ in range(2):
             session.add(
                 Booking(
+                    product_id=lead.product_id,
                     lead_id=lead.id,
                     calendar_event_id="evt-same",
                     start_time=start,
@@ -209,6 +210,7 @@ class TestBookingConstraints:
         start = datetime(2026, 9, 1, 10, tzinfo=UTC)
         session.add(
             Booking(
+                product_id=lead.product_id,
                 lead_id=lead.id,
                 start_time=start,
                 end_time=start,
@@ -227,6 +229,7 @@ class TestBookingConstraints:
         for lead, event_id in ((first, "evt-1"), (second, "evt-2")):
             session.add(
                 Booking(
+                    product_id=lead.product_id,
                     lead_id=lead.id,
                     calendar_event_id=event_id,
                     start_time=start,
@@ -246,6 +249,7 @@ class TestBookingConstraints:
 
         session.add(
             Booking(
+                product_id=first.product_id,
                 lead_id=first.id,
                 calendar_event_id="evt-cancelled",
                 start_time=start,
@@ -256,6 +260,7 @@ class TestBookingConstraints:
         )
         session.add(
             Booking(
+                product_id=second.product_id,
                 lead_id=second.id,
                 calendar_event_id="evt-new",
                 start_time=start,
@@ -270,6 +275,7 @@ class TestBookingConstraints:
         lead = await _make_lead(session)
         start = datetime(2026, 9, 1, 10, tzinfo=UTC)
         booking = Booking(
+            product_id=lead.product_id,
             lead_id=lead.id,
             start_time=start,
             end_time=start + timedelta(minutes=30),

@@ -126,7 +126,7 @@ These have no safe default and the platform cannot infer them:
 | `OPENROUTER_MODEL` | The benchmark ([D17], D-20) — **no default exists and startup fails without it when the provider is `openrouter`** |
 | `QUALIFICATION_REQUIRED_FIELDS` | The criteria ([D37], D-19) — **empty means no lead can ever qualify** |
 | `AI_SYSTEM_PROMPT` | The client's tone and limits ([D21], D-21) |
-| `GOOGLE_CALENDAR_ID`, `GOOGLE_OAUTH_CLIENT_ID` | The calendar choice (D-28) |
+| `GOOGLE_OAUTH_CLIENT_ID` | The shared OAuth client (D-28). Each product's calendar is `products.google_calendar_id`, not an environment variable (Phase 24) |
 | `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID` | Meta ([D22]) |
 | `MSG_*` | Customer-facing copy ([D21]) |
 

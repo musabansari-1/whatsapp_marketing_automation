@@ -89,7 +89,7 @@ Blocks: every booking. **[D7]**, **[D19]**, checklist D-27/D-28.
 
 | ☐ | Item | Goes to | Verified by |
 |---|---|---|---|
-| ☐ | **Which calendar** — D-28 | `GOOGLE_CALENDAR_ID` | The platform treats *all* busy time there as unavailable |
+| ☐ | **Which calendar, per product** — D-28 | `products.google_calendar_id`, one per product | The platform treats *all* busy time on a product's calendar as unavailable for that product; a product with none refuses bookings |
 | ☐ | Google Calendar API enabled on the project | — | — |
 | ☐ | **OAuth client** (Desktop app, Internal) | `GOOGLE_OAUTH_CLIENT_ID`, secret `google-oauth-client-secret` | — |
 | ☐ | **Refresh token — the one-time human consent** — D-27 | secret `google-calendar-refresh-token` | Follow `deploy/oauth-consent.md` |
