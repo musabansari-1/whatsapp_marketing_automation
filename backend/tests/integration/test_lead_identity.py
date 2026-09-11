@@ -320,15 +320,16 @@ class TestGlobalSuppressionSurvives:
 
         run_db(suppress)
 
-        template_id = self._template()
-        for audience_id in (alpha_audience, beta_audience):
+        for product_id, audience_id in ((alpha, alpha_audience), (beta, beta_audience)):
             assert audience_id is not None
             response = admin.post(
                 f"{API_V1_PREFIX}/campaigns",
                 json={
                     "name": f"Campaign {audience_id[:8]}",
                     "audience_id": audience_id,
-                    "template_id": template_id,
+                    # One each: a template has one owner, and a campaign may use only its
+                    # own product's ([D57]).
+                    "template_id": self._template(product_id),
                 },
             )
             assert response.status_code == 201, response.text
@@ -343,11 +344,12 @@ class TestGlobalSuppressionSurvives:
             assert run_db(statuses) == [RecipientStatus.SKIPPED.value]
 
     @staticmethod
-    def _template() -> str:
+    def _template(product_id: uuid.UUID) -> str:
         async def insert(session: AsyncSession) -> str:
             template = WhatsAppTemplate(
                 name="identity_promo",
                 language="en",
+                product_id=product_id,
                 provider_template_id=f"tpl-{uuid.uuid4()}",
                 provider_status="APPROVED",
                 category=TemplateCategory.MARKETING,
@@ -375,7 +377,7 @@ class TestCampaignScope:
             json={
                 "name": "Derived",
                 "audience_id": audience_id,
-                "template_id": TestGlobalSuppressionSurvives._template(),
+                "template_id": TestGlobalSuppressionSurvives._template(product),
             },
         )
         assert response.status_code == 201, response.text

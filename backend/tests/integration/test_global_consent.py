@@ -320,18 +320,18 @@ class TestSendingStillChecksTheAuthoritativeTable:
         first = make_product("c-first")
         second = make_product("c-second")
         audiences = [
-            upload_and_confirm(admin, "first-list", first),
-            upload_and_confirm(admin, "second-list", second),
+            (first, upload_and_confirm(admin, "first-list", first)),
+            (second, upload_and_confirm(admin, "second-list", second)),
         ]
 
-        template_id = self._template()
-        for audience_id in audiences:
+        for product_id, audience_id in audiences:
             response = admin.post(
                 f"{API_V1_PREFIX}/campaigns",
                 json={
                     "name": f"Campaign {audience_id[:8]}",
                     "audience_id": audience_id,
-                    "template_id": template_id,
+                    # One each: a campaign may use only its own product's template ([D57]).
+                    "template_id": self._template(product_id),
                 },
             )
             assert response.status_code == 201, response.text
@@ -366,7 +366,7 @@ class TestSendingStillChecksTheAuthoritativeTable:
             json={
                 "name": "Stale mirror",
                 "audience_id": audience_id,
-                "template_id": self._template(),
+                "template_id": self._template(product),
             },
         )
         campaign_id = uuid.UUID(response.json()["campaign"]["id"])
@@ -408,7 +408,7 @@ class TestSendingStillChecksTheAuthoritativeTable:
             json={
                 "name": "Invalid and suppressed",
                 "audience_id": audience_id,
-                "template_id": self._template(),
+                "template_id": self._template(product),
             },
         )
         campaign_id = uuid.UUID(response.json()["campaign"]["id"])
@@ -422,11 +422,12 @@ class TestSendingStillChecksTheAuthoritativeTable:
         assert run_db(statuses) == [RecipientStatus.SKIPPED.value]
 
     @staticmethod
-    def _template() -> str:
+    def _template(product_id: uuid.UUID) -> str:
         async def insert(session: AsyncSession) -> str:
             template = WhatsAppTemplate(
                 name=f"consent_promo_{uuid.uuid4().hex[:6]}",
                 language="en",
+                product_id=product_id,
                 provider_template_id=f"tpl-{uuid.uuid4()}",
                 provider_status="APPROVED",
                 category=TemplateCategory.MARKETING,

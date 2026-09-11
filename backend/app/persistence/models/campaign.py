@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -44,10 +45,12 @@ class WhatsAppTemplate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "whatsapp_templates"
 
-    # §28 product scope. Nullable during the transition: template sync pulls a
-    # WABA's templates with no product context until Phase 23 makes the sync
-    # product-aware. The global (name, language) uniqueness therefore stays in
-    # force until then — see the Phase 18 note in PROJECT_STATUS.md.
+    # The owning product, **nullable by design** ([D57]).
+    #
+    # One Meta App and one shared WABA give one template pool, and Meta records no owner
+    # on a template. So NULL is a real state — a provider template the sync discovered
+    # and nobody has assigned yet — and no campaign may use one. NOT NULL is the owner,
+    # set only by an explicit assignment and never by sync.
     product_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
     )
@@ -66,8 +69,25 @@ class WhatsAppTemplate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     campaigns: Mapped[list[Campaign]] = relationship(back_populates="template")
 
     __table_args__ = (
-        # Meta identifies a template by name plus language.
-        UniqueConstraint("name", "language", name="uq_whatsapp_templates_name_language"),
+        # Provider identity is `provider_template_id`, unique above: one Meta artifact is
+        # one row, and ownership is not part of what it is.
+        #
+        # The application invariant is separate, and holds only for owned templates:
+        # within one product, a name and language mean one template, so "send welcome in
+        # en" is never ambiguous. Partial, because unassigned artifacts are not anyone's
+        # namespace — and because Meta can re-issue a deleted template's name under a new
+        # ID, which a global (name, language) rule would turn into a failed sync.
+        #
+        # This does not claim Meta allows duplicate names across products in one WABA; it
+        # does not. Provider naming and application ownership are separate concerns.
+        Index(
+            "uq_whatsapp_templates_product_name_language",
+            "product_id",
+            "name",
+            "language",
+            unique=True,
+            postgresql_where=text("product_id IS NOT NULL"),
+        ),
         Index("ix_whatsapp_templates_provider_status", "provider_status"),
         Index("ix_whatsapp_templates_product_id", "product_id"),
     )

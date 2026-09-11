@@ -337,6 +337,7 @@ class TestCampaignMetrics:
                 # Meta's own ID; required, because [D6] means a template only exists
                 # here because Meta reported it.
                 provider_template_id=f"tpl-{uuid.uuid4()}",
+                product_id=audience.product_id,
                 category="MARKETING",
                 provider_status="APPROVED",
                 variable_count=1,

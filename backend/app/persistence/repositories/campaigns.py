@@ -39,16 +39,23 @@ async def get_template(session: AsyncSession, template_id: uuid.UUID) -> WhatsAp
 async def list_approved_marketing_templates(
     session: AsyncSession,
 ) -> Sequence[WhatsAppTemplate]:
-    """Templates a broadcast may use ([D6]).
+    """Templates a broadcast may use ([D6], [D57]).
 
     Filters on the status Meta reported. Nothing here can mark a template approved;
     rows arrive only from the Phase 6 synchronization.
+
+    Unassigned templates are left out. A template the shared-WABA sync discovered but
+    nobody has given to a product is usable by no campaign, so offering it would only
+    produce a refusal after the admin chose it. Narrowing this list to one product is
+    Phase 26's product selector; until then it shows every assigned template, and
+    campaign creation rejects one owned by a different product.
     """
     result = await session.execute(
         select(WhatsAppTemplate)
         .where(
             WhatsAppTemplate.provider_status == META_STATUS_APPROVED,
             WhatsAppTemplate.category == TemplateCategory.MARKETING,
+            WhatsAppTemplate.product_id.is_not(None),
         )
         .order_by(WhatsAppTemplate.name)
     )

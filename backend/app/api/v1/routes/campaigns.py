@@ -28,7 +28,9 @@ from app.domain.campaign import (
     CampaignStateError,
     TemplateFacts,
     TemplateNotApprovedError,
+    TemplateOwnershipError,
     assert_sendable,
+    assert_template_owned_by,
     assert_template_usable,
     assert_transition,
 )
@@ -100,20 +102,17 @@ async def create_campaign(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
 
-    # A campaign may not reach across products (§28.8). The audience always has one, so
-    # its side is total; the template's is still nullable, because a shared WABA returns
-    # every product's templates in one list and Meta records no owner, so Phase 23 could
-    # not close it without inventing a mapping.
-    #
-    # So this enforces what is knowable: a template that *has* a product must be this
-    # campaign's. An unattributed one is allowed through rather than blocked, which keeps
-    # today's single-product behaviour working — and the check becomes total the moment
-    # ownership is decided, without changing shape.
-    if template.product_id is not None and template.product_id != audience.product_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="That template belongs to a different product",
+    # A campaign may not reach across products (§28.8), and an unassigned template belongs
+    # to none ([D57]). The campaign's product is the audience's, since the repository
+    # derives it from there — so this is checked against the same value it will be given.
+    try:
+        assert_template_owned_by(
+            template_product_id=template.product_id, campaign_product_id=audience.product_id
         )
+    except TemplateOwnershipError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
 
     campaign = await campaign_repo.create(
         session,
@@ -203,6 +202,18 @@ async def send_campaign(
     recipient, so a redelivered task is recognizable as a repeat (§20).
     """
     campaign = await _require_campaign(session, campaign_id)
+
+    # Checked again at the human moment, not only at creation ([D57]). A campaign created
+    # before ownership was enforced may point at a template with no product, and this is
+    # the last point where refusing costs nothing: nothing has been queued yet.
+    template = await campaign_repo.get_template(session, campaign.template_id)
+    try:
+        assert_template_owned_by(
+            template_product_id=template.product_id if template is not None else None,
+            campaign_product_id=campaign.product_id,
+        )
+    except TemplateOwnershipError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     # [D16]: re-check immediately before sending, because a customer can opt out
     # between the snapshot and this moment.

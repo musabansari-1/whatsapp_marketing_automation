@@ -476,6 +476,7 @@ class TestOptOut:
                 name="t",
                 language="en",
                 provider_template_id="tpl-x",
+                product_id=audience.product_id,
                 provider_status="APPROVED",
                 category="MARKETING",
             )

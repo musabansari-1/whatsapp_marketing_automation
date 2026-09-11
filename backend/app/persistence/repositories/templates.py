@@ -1,15 +1,79 @@
-"""WhatsApp template synchronization ([D6])."""
+"""WhatsApp template synchronization and ownership ([D6], [D57]).
+
+Two concerns that must not be confused.
+
+**Synchronization is WABA-level.** One Meta App and one shared WABA give one template
+pool, so there is one sync over it — not a sync per product pretending the same pool is
+three. It records what Meta says about each provider artifact and nothing about who
+owns it.
+
+**Ownership is application data, assigned explicitly.** A newly discovered template has
+no product, and stays that way until someone gives it one. Nothing here infers an owner
+from a name, the WABA, a phone number, the sole active product or campaign history.
+"""
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.campaign import TemplateAssignmentError, needs_assignment
 from app.integrations.whatsapp import ApprovedTemplate
-from app.persistence.models import WhatsAppTemplate
+from app.persistence.models import Product, WhatsAppTemplate
+
+
+async def assign_to_product(
+    session: AsyncSession, *, template_id: uuid.UUID, product_id: uuid.UUID
+) -> WhatsAppTemplate:
+    """Give an unassigned provider template to one product ([D57]).
+
+    The only way a template gains an owner. Phase 26 puts an admin screen in front of it;
+    the rule lives here so that screen cannot differ from it.
+
+    Refuses when the template or the product does not exist, when another product already
+    owns the template, and when the target product already owns a template with the same
+    name and language — which would make "send `welcome` in `en`" mean two different
+    things within one product. Assigning a template to the product that already owns it
+    succeeds and changes nothing.
+
+    The template row is locked for the check, so two admins assigning at once cannot both
+    pass it. `uq_whatsapp_templates_product_name_language` is the backstop.
+    """
+    template = await session.get(WhatsAppTemplate, template_id, with_for_update=True)
+    if template is None:
+        raise TemplateAssignmentError("Template not found")
+
+    product = await session.get(Product, product_id)
+    if product is None:
+        raise TemplateAssignmentError("Product not found")
+
+    if not needs_assignment(current_owner=template.product_id, target=product_id):
+        return template
+
+    clash = (
+        await session.execute(
+            select(WhatsAppTemplate.id).where(
+                WhatsAppTemplate.product_id == product_id,
+                WhatsAppTemplate.name == template.name,
+                WhatsAppTemplate.language == template.language,
+                WhatsAppTemplate.id != template.id,
+            )
+        )
+    ).first()
+    if clash is not None:
+        raise TemplateAssignmentError(
+            f"{product.display_name} already has a template named {template.name!r} "
+            f"in {template.language!r}"
+        )
+
+    template.product_id = product_id
+    await session.flush()
+    return template
 
 
 async def upsert_many(session: AsyncSession, templates: Sequence[ApprovedTemplate]) -> int:

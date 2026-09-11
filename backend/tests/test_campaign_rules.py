@@ -6,21 +6,27 @@ pin every edge that exists and — just as importantly — the ones that do not.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from app.domain.campaign import (
     META_STATUS_APPROVED,
     CampaignNotSendableError,
     CampaignStateError,
+    TemplateAssignmentError,
     TemplateFacts,
     TemplateNotApprovedError,
+    TemplateOwnershipError,
     allowed_transitions,
     assert_sendable,
+    assert_template_owned_by,
     assert_template_usable,
     assert_transition,
     can_transition,
     is_terminal,
     is_unsent,
+    needs_assignment,
     recipient_status_for,
 )
 from app.domain.enums import CampaignStatus, RecipientStatus
@@ -139,6 +145,49 @@ class TestTemplateApproval:
         approval."""
         with pytest.raises(TemplateNotApprovedError):
             assert_template_usable(TemplateFacts("approved", is_marketing=True))
+
+
+class TestTemplateOwnership:
+    """[D57]: a campaign may use only a template its own product explicitly owns."""
+
+    PRODUCT_A = uuid.UUID("0a000000-0000-4000-8000-00000000000a")
+    PRODUCT_B = uuid.UUID("0b000000-0000-4000-8000-00000000000b")
+
+    def test_a_template_owned_by_the_campaigns_product_is_usable(self) -> None:
+        assert_template_owned_by(
+            template_product_id=self.PRODUCT_A, campaign_product_id=self.PRODUCT_A
+        )
+
+    def test_an_unassigned_template_is_refused(self) -> None:
+        """NULL is a shared-WABA artifact nobody has claimed, not a template every product
+        may use. Reading it as "available to all" would let one product broadcast
+        another's approved wording from its own number."""
+        with pytest.raises(TemplateOwnershipError, match="not been assigned"):
+            assert_template_owned_by(template_product_id=None, campaign_product_id=self.PRODUCT_A)
+
+    def test_another_products_template_is_refused(self) -> None:
+        with pytest.raises(TemplateOwnershipError, match="different product"):
+            assert_template_owned_by(
+                template_product_id=self.PRODUCT_B, campaign_product_id=self.PRODUCT_A
+            )
+
+
+class TestTemplateAssignment:
+    PRODUCT_A = uuid.UUID("0a000000-0000-4000-8000-00000000000a")
+    PRODUCT_B = uuid.UUID("0b000000-0000-4000-8000-00000000000b")
+
+    def test_an_unassigned_template_can_be_assigned(self) -> None:
+        assert needs_assignment(current_owner=None, target=self.PRODUCT_A) is True
+
+    def test_assigning_to_the_current_owner_changes_nothing(self) -> None:
+        """A repeated request is harmless rather than an error."""
+        assert needs_assignment(current_owner=self.PRODUCT_A, target=self.PRODUCT_A) is False
+
+    def test_an_owned_template_cannot_move_to_another_product(self) -> None:
+        """One owner per provider template. Moving it would silently change what the
+        first product's existing campaigns may send."""
+        with pytest.raises(TemplateAssignmentError, match="another product"):
+            needs_assignment(current_owner=self.PRODUCT_A, target=self.PRODUCT_B)
 
 
 class TestSendability:

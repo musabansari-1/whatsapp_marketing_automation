@@ -11,6 +11,7 @@ table.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 
 from app.domain.enums import CampaignStatus, RecipientStatus
@@ -120,6 +121,53 @@ def assert_template_usable(template: TemplateFacts) -> None:
         )
     if not template.is_marketing:
         raise TemplateNotApprovedError("A broadcast requires a MARKETING category template")
+
+
+class TemplateOwnershipError(Exception):
+    """The template is not owned by the campaign's product (§28.8, [D57])."""
+
+
+class TemplateAssignmentError(Exception):
+    """A template cannot be given to that product ([D57])."""
+
+
+def assert_template_owned_by(
+    *, template_product_id: uuid.UUID | None, campaign_product_id: uuid.UUID
+) -> None:
+    """A campaign may use a template only when its own product explicitly owns it ([D57]).
+
+    Two refusals, and the first is the one that matters more. One Meta App and one
+    shared WABA means template sync returns every product's templates in a single pool
+    with no owner recorded, so a newly discovered template arrives with no product. That
+    is a provider artifact nobody has claimed — not a template every product may use.
+    Treating NULL as "available to all" would let one product broadcast another's
+    approved wording from its own number.
+
+    Ownership is compared, never inferred: not from the name, the WABA, the number, the
+    sole active product or campaign history.
+    """
+    if template_product_id is None:
+        raise TemplateOwnershipError(
+            "That template has not been assigned to a product yet, so no campaign can use it"
+        )
+    if template_product_id != campaign_product_id:
+        raise TemplateOwnershipError("That template belongs to a different product")
+
+
+def needs_assignment(*, current_owner: uuid.UUID | None, target: uuid.UUID) -> bool:
+    """Whether giving a template to `target` changes anything ([D57]).
+
+    Unassigned → assign. Already `target`'s → nothing to do, so a repeated request is
+    harmless. Already another product's → refused: one provider template has at most one
+    owner, and moving it would silently change what that product's existing campaigns
+    are allowed to send. Sharing one template across products is a separate requirement
+    that would need a mapping table, and nothing asks for it yet.
+    """
+    if current_owner is None:
+        return True
+    if current_owner == target:
+        return False
+    raise TemplateAssignmentError("That template already belongs to another product")
 
 
 def assert_sendable(status: CampaignStatus, sendable_recipients: int) -> None:

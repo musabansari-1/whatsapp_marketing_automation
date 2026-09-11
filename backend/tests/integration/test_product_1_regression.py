@@ -50,7 +50,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from tests.integration.conftest import login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import ensure_product_id, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -115,6 +115,8 @@ def seed_template() -> str:
         template = WhatsAppTemplate(
             name="regression_promo",
             language="en",
+            # Assigned, as an admin would after the sync discovered it ([D57]).
+            product_id=await ensure_product_id(session),
             provider_template_id=f"tpl-{uuid.uuid4()}",
             provider_status="APPROVED",
             category=TemplateCategory.MARKETING,

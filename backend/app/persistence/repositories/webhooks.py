@@ -150,9 +150,7 @@ async def get_or_create_lead(
 
     lead = (
         await session.execute(
-            select(Lead).where(
-                Lead.product_id == product_id, Lead.phone_e164 == phone_e164
-            )
+            select(Lead).where(Lead.product_id == product_id, Lead.phone_e164 == phone_e164)
         )
     ).scalar_one()
 

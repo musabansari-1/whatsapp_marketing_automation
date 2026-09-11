@@ -262,10 +262,16 @@ async def _handle_opt_out(
 
 
 async def sync_whatsapp_templates(task: TaskRequest) -> dict[str, int]:
-    """Synchronize template metadata from Meta ([D6]).
+    """Synchronize template metadata from Meta ([D6], [D57]).
+
+    **WABA-level, not per product.** One Meta App and one shared WABA give one template
+    pool, so this runs once over that pool with the platform's WhatsApp configuration
+    and takes no product. That absence is deliberate: a sync started "for" a product
+    has no business deciding templates belong to it.
 
     Stores what Meta reports, including the status. Nothing here decides approval;
-    campaigns filter on the stored value.
+    campaigns filter on the stored value. Nothing here decides ownership either — a
+    newly discovered template is stored unassigned, and an existing assignment survives.
     """
     settings = get_settings()
     provider = build_whatsapp_provider(settings)

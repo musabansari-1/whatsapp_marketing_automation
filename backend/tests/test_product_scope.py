@@ -40,16 +40,6 @@ NULLABLE_DEBT: dict[str, tuple[int, str]] = {
     # on `metadata.phone_number_id` arrives, and [D45] forbids guessing one. Phase 23
     # closes it, after attributing or refusing any transitional rows.
     "bookings": (24, "inherits from its conversation; Phase 24 owns per-product calendars"),
-    # The one WhatsApp debt Phase 23 could **not** close, and the reason is a decision
-    # rather than a sequencing gap.
-    #
-    # One Meta App and one shared WABA means `fetch_approved_templates` returns every
-    # product's templates in a single undifferentiated list, and Meta's records carry no
-    # product field — name, language, category, id, components, status and nothing else.
-    # Ownership therefore cannot be derived from the provider at all, and inventing a
-    # mapping is exactly what [D40]'s reasoning forbids. It closes once an explicit
-    # ownership mechanism is agreed.
-    "whatsapp_templates": (26, "a shared WABA cannot tell which product a template belongs to"),
     "knowledge_bases": (26, "POST /knowledge-bases takes no product"),
 }
 
@@ -58,6 +48,26 @@ NULLABLE_DEBT: dict[str, tuple[int, str]] = {
 #: NULL is a meaningful value here and always will be, so no phase closes it.
 NULLABLE_BY_DESIGN: dict[str, str] = {
     "notifications": "NULL means a notification that is not about any one product ([D47])",
+    # Was debt after Phase 23, and reclassified by decision rather than by a phase ([D57]).
+    #
+    # One Meta App and one shared WABA give one template pool, and Meta records no owner
+    # on a template. A newly discovered one therefore genuinely has no product until
+    # someone assigns it — NULL is that state, not a gap waiting to be filled. What must
+    # hold is not "every template has a product" but "every template a campaign uses is
+    # owned by that campaign's product", which the campaign rules enforce.
+    "whatsapp_templates": (
+        "NULL means a shared-WABA template not yet assigned to a product; no campaign may use it"
+    ),
+}
+
+#: `segment_id` columns, all nullable by design (§28.2).
+#:
+#: A product may have no segments at all, and product-wide entities are ordinary.
+SEGMENT_NULLABLE_BY_DESIGN: dict[str, str] = {
+    "audiences": "NULL means an audience targeting the whole product",
+    "campaigns": "NULL means a product-wide campaign, taken from its audience",
+    "conversations": "NULL means no segment could be proven at creation; never guessed ([D45])",
+    "knowledge_bases": "NULL means shared across every segment of the product ([D56])",
 }
 
 #: Global by design. Not product-scoped, and must never become so.
@@ -180,27 +190,50 @@ class TestNullabilityDebt:
             assert table in CLOSED, f"{table} should have closed with inbound routing"
             assert table not in NULLABLE_DEBT
 
-    def test_templates_did_not_close_with_the_rest(self) -> None:
-        """The one WhatsApp column Phase 23 left open, deliberately.
+    @pytest.mark.parametrize("name", sorted(NULLABLE_BY_DESIGN))
+    def test_a_by_design_column_is_nullable_and_not_debt(self, name: str) -> None:
+        """No phase should ever tighten these, so none may appear in the debt list."""
+        assert name not in NULLABLE_DEBT
+        assert _table(name).columns["product_id"].nullable is True
 
-        Its blocker is not sequencing: with a shared WABA the provider cannot say which
-        product a template belongs to, so ownership needs an explicit mechanism rather
-        than an earlier phase.
+    def test_templates_are_by_design_not_debt(self) -> None:
+        """[D57], recorded on its own because Phase 23 first listed it as debt.
+
+        A shared WABA returns one template pool with no owner on any template, so an
+        unassigned template is a real state. Scheduling the column to become NOT NULL
+        would mean either inventing owners or refusing to store what Meta reports.
         """
-        phase, reason = NULLABLE_DEBT["whatsapp_templates"]
-        assert phase == 26
-        assert "shared WABA" in reason
+        assert "whatsapp_templates" in NULLABLE_BY_DESIGN
+        assert "whatsapp_templates" not in NULLABLE_DEBT
+        assert "whatsapp_templates" not in CLOSED
 
-    def test_notifications_is_not_debt(self) -> None:
-        """It is nullable by design and no phase should ever tighten it."""
-        assert "notifications" not in NULLABLE_DEBT
-        assert _table("notifications").columns["product_id"].nullable is True
+    def test_assigned_templates_are_unique_per_product(self) -> None:
+        """The application invariant for owned templates: within one product, a name and
+        language identify one template. Partial, because unassigned provider artifacts
+        are not an application namespace."""
+        index = next(
+            (
+                index
+                for index in _table("whatsapp_templates").indexes
+                if index.name == "uq_whatsapp_templates_product_name_language"
+            ),
+            None,
+        )
+        assert index is not None
+        assert index.unique
+        assert [column.name for column in index.columns] == ["product_id", "name", "language"]
+        assert "product_id IS NOT NULL" in str(index.dialect_options["postgresql"]["where"])
+
+    def test_provider_identity_is_the_provider_template_id(self) -> None:
+        """One Meta artifact is one row. Ownership is not part of its identity, so the
+        same template is never copied into a row per product."""
+        assert _table("whatsapp_templates").columns["provider_template_id"].unique is True
 
 
 class TestSegmentScope:
     #: Segment context, always nullable: §28 allows product-wide entities, and a
     #: product may have no segments at all.
-    WITH_SEGMENT = ("audiences", "campaigns", "conversations", "knowledge_bases")
+    WITH_SEGMENT = tuple(SEGMENT_NULLABLE_BY_DESIGN)
 
     @pytest.mark.parametrize("name", WITH_SEGMENT)
     def test_segment_is_nullable(self, name: str) -> None:

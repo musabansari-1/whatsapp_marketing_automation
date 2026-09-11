@@ -111,6 +111,7 @@ def messaged_by_campaign(
             name=f"tpl_{uuid.uuid4().hex[:6]}",
             language="en",
             provider_template_id=f"tpl-{uuid.uuid4()}",
+            product_id=product_id,
             provider_status="APPROVED",
             category=TemplateCategory.MARKETING,
             variable_count=1,

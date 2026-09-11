@@ -99,6 +99,8 @@ def seed_campaign(
             name="q3_promo",
             language="en",
             provider_template_id=f"tpl-{uuid.uuid4()}",
+            # Owned by the campaign's product, as [D57] requires of any template in use.
+            product_id=audience.product_id,
             provider_status="APPROVED",
             category=TemplateCategory.MARKETING,
             variable_count=variable_count,

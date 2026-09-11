@@ -29,7 +29,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from tests.integration.conftest import login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import ensure_product_id, run_db
 
 pytestmark = pytest.mark.integration
 
@@ -70,17 +70,23 @@ def seed_template(
     name: str = "q3_promo",
     provider_status: str = "APPROVED",
     category: TemplateCategory = TemplateCategory.MARKETING,
+    assigned: bool = True,
 ) -> str:
-    """Insert a template as the Phase 6 Meta sync will.
+    """Insert a template as the Meta sync will, then assign it as an admin would.
 
     Direct insertion is deliberate: [D6] forbids this application creating or
     approving templates, so there is no endpoint to do it through.
+
+    Assigned to the test's product by default, because since [D57] an unassigned
+    template is usable by no campaign. `assigned=False` leaves it exactly as the sync
+    stores a newly discovered one.
     """
 
     async def insert(session: AsyncSession) -> str:
         template = WhatsAppTemplate(
             name=name,
             language="en",
+            product_id=await ensure_product_id(session) if assigned else None,
             provider_template_id=f"tpl-{name}-{provider_status}-{category.value}",
             provider_status=provider_status,
             category=category,
