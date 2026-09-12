@@ -32,8 +32,17 @@ from app.api.scope import (
     owned_by,
     segment_for_write,
 )
+from app.core.config import Settings
 from app.core.logging import get_logger
-from app.domain.audience import MissingColumnsError, find_missing_columns, validate_rows
+from app.domain.audience import (
+    AudienceColumnSchema,
+    AudienceSchemaError,
+    MissingColumnsError,
+    find_missing_columns,
+    is_development_placeholder,
+    parse_audience_schema,
+    validate_rows,
+)
 from app.domain.enums import AudienceStatus, ContactValidationStatus
 from app.domain.excel import ExcelParseError, TooManyRowsError, parse_excel
 from app.persistence.models import Audience, Product
@@ -55,23 +64,67 @@ XLSX_CONTENT_TYPES = {
 
 @router.get("/schema", response_model=AudienceSchemaResponse)
 async def get_schema(product: ProductScope, settings: SettingsDep) -> AudienceSchemaResponse:
-    """The column schema this product's uploads are validated against.
+    """The column schema this product's uploads are validated against ([D51]).
 
-    Under the product because [D51] makes the column mapping per product. Until Phase 27
-    supplies product mappings every product reads the platform schema, and the dashboard
-    is already asking the question in the shape that will not change.
+    The product's own mapping, and nobody else's. A product with none — or with one that
+    uploads would refuse — answers `configured: false` with the reason, so the upload page
+    can say why instead of offering a form that will fail.
     """
-    schema = settings.audience_schema()
+    try:
+        schema = configured_audience_schema(product, settings)
+    except AudienceSchemaUnavailableError as exc:
+        return AudienceSchemaResponse(
+            configured=False,
+            problem=str(exc),
+            columns=[],
+            is_placeholder=False,
+            phone_default_region=settings.audience_phone_default_region,
+            max_file_bytes=settings.audience_max_file_bytes,
+            max_rows=settings.audience_max_rows,
+        )
     return AudienceSchemaResponse(
+        configured=True,
+        problem=None,
         columns=[
             {"source": column.source, "field": column.field.value, "required": column.required}
             for column in schema.columns
         ],
-        is_placeholder=settings.audience_schema_is_placeholder,
+        is_placeholder=is_development_placeholder(schema),
         phone_default_region=settings.audience_phone_default_region,
         max_file_bytes=settings.audience_max_file_bytes,
         max_rows=settings.audience_max_rows,
     )
+
+
+class AudienceSchemaUnavailableError(Exception):
+    """This product's spreadsheets cannot be read, and nothing else's mapping will do."""
+
+
+def configured_audience_schema(product: Product, settings: Settings) -> AudienceColumnSchema:
+    """The mapping a product's uploads are read with, or the reason there is none.
+
+    Never a platform mapping and never another product's ([D51], Phase 27). And in
+    production never the development placeholder ([D20]): a product still carrying it has
+    not had its real spreadsheet format confirmed.
+    """
+    if product.audience_column_schema is None:
+        raise AudienceSchemaUnavailableError(
+            f"{product.display_name} has no audience column schema configured, so its "
+            "spreadsheets cannot be read. An administrator configures the confirmed column "
+            "mapping for this product."
+        )
+    try:
+        schema = parse_audience_schema(product.audience_column_schema)
+    except AudienceSchemaError as exc:
+        raise AudienceSchemaUnavailableError(
+            f"{product.display_name}'s audience column schema is invalid: {exc}"
+        ) from exc
+    if settings.is_production and is_development_placeholder(schema):
+        raise AudienceSchemaUnavailableError(
+            f"{product.display_name}'s audience column schema is still the development "
+            "placeholder. Production reads spreadsheets only with a confirmed format."
+        )
+    return schema
 
 
 @router.post("/upload", response_model=AudienceUploadResponse, status_code=status.HTTP_201_CREATED)
@@ -93,8 +146,13 @@ async def upload_audience(
     segments at all. When given, it must be one of this product's segments.
     """
     chosen_segment = await segment_for_write(session, product, segment_id)
+    try:
+        # This product's own mapping. A file for another product, read with that
+        # product's headers, would fail here as missing columns rather than import.
+        schema = configured_audience_schema(product, settings)
+    except AudienceSchemaUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     content = await _read_within_limit(file, settings.audience_max_file_bytes)
-    schema = settings.audience_schema()
 
     try:
         sheet = parse_excel(content, max_rows=settings.audience_max_rows)

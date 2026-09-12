@@ -1,4 +1,4 @@
-"""AI configuration inheritance (Phase 22, §28.4).
+"""AI configuration inheritance (Phases 22 and 27, §28.4).
 
 Product default, optional sparse segment override, resolved field by field. Pure logic,
 so the rule can be stated exactly and tested without a database.
@@ -7,10 +7,14 @@ Two shapes have to work from one mechanism, with no product-specific branching a
 
     SustainX-like    one product row, several segments, zero overrides
     Life Herba-like  one product row plus sparse per-segment overrides
+
+And since Phase 27 there is no platform policy at all: a product's prompt and criteria come
+from its own rows, whether one product exists or three.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,9 +49,7 @@ DEFAULTS = PlatformDefaults(
     rag_max_context_chars=4000,
     history_turns=20,
     max_tool_rounds=4,
-    legacy_system_prompt="Legacy platform prompt.",
-    legacy_qualification_required_fields=["legacy_field"],
-    legacy_fallback_message="Legacy fallback.",
+    fallback_message="Platform fallback.",
 )
 
 
@@ -57,7 +59,6 @@ class TestPrecedence:
             segment=Row(system_prompt="Segment prompt."),
             product=Row(system_prompt="Product prompt."),
             defaults=DEFAULTS,
-            legacy_policy_allowed=False,
         )
         assert resolved.system_prompt == "Segment prompt."
 
@@ -66,7 +67,6 @@ class TestPrecedence:
             segment=Row(),
             product=Row(system_prompt="Product prompt."),
             defaults=DEFAULTS,
-            legacy_policy_allowed=False,
         )
         assert resolved.system_prompt == "Product prompt."
 
@@ -74,15 +74,13 @@ class TestPrecedence:
         """Model, retrieval limits, history and tool rounds describe how the platform
         runs, not what a product says, so a platform default is legitimate."""
         resolved = resolve(
-            segment=None,
-            product=Row(system_prompt="Product prompt."),
-            defaults=DEFAULTS,
-            legacy_policy_allowed=False,
+            segment=None, product=Row(system_prompt="Product prompt."), defaults=DEFAULTS
         )
         assert resolved.rag_top_k == 5
         assert resolved.history_turns == 20
         assert resolved.max_tool_rounds == 4
         assert resolved.model == "platform/model"
+        assert resolved.fallback_message == "Platform fallback."
 
     def test_a_sparse_override_changes_only_what_it_states(self) -> None:
         """The Life Herba shape: a pharmacist prompt without restating everything."""
@@ -94,7 +92,6 @@ class TestPrecedence:
                 rag_top_k=8,
             ),
             defaults=DEFAULTS,
-            legacy_policy_allowed=False,
         )
         assert resolved.system_prompt == "Pharmacy focus."
         assert resolved.qualification_required_fields == ("interested",)
@@ -109,7 +106,6 @@ class TestNullVersusEmpty:
             segment=Row(qualification_required_fields=None),
             product=Row(system_prompt="p", qualification_required_fields=["interested", "budget"]),
             defaults=DEFAULTS,
-            legacy_policy_allowed=False,
         )
         assert resolved.qualification_required_fields == ("interested", "budget")
 
@@ -121,17 +117,12 @@ class TestNullVersusEmpty:
             segment=Row(qualification_required_fields=[]),
             product=Row(system_prompt="p", qualification_required_fields=["interested", "budget"]),
             defaults=DEFAULTS,
-            legacy_policy_allowed=False,
         )
         assert resolved.qualification_required_fields == ()
 
-    def test_an_empty_product_list_is_not_replaced_by_the_legacy_baseline(self) -> None:
-        resolved = resolve(
-            segment=None,
-            product=Row(system_prompt="p", qualification_required_fields=[], fallback_message="f"),
-            defaults=DEFAULTS,
-            legacy_policy_allowed=True,
-        )
+    def test_criteria_unset_everywhere_mean_none(self) -> None:
+        """The fail-safe direction: nobody qualifies on criteria nobody chose."""
+        resolved = resolve(segment=None, product=Row(system_prompt="p"), defaults=DEFAULTS)
         assert resolved.qualification_required_fields == ()
 
 
@@ -148,12 +139,8 @@ class TestProductShapes:
             fallback_message="A colleague will follow up.",
         )
 
-        government = resolve(
-            segment=None, product=product, defaults=DEFAULTS, legacy_policy_allowed=False
-        )
-        industry = resolve(
-            segment=None, product=product, defaults=DEFAULTS, legacy_policy_allowed=False
-        )
+        government = resolve(segment=None, product=product, defaults=DEFAULTS)
+        industry = resolve(segment=None, product=product, defaults=DEFAULTS)
 
         assert government == industry
         assert government.system_prompt == "Book a presentation with the team."
@@ -171,15 +158,9 @@ class TestProductShapes:
         )
         consumer = Row(system_prompt="Focus on consumer services.")
 
-        as_pharmacy = resolve(
-            segment=pharmacy, product=product, defaults=DEFAULTS, legacy_policy_allowed=False
-        )
-        as_consumer = resolve(
-            segment=consumer, product=product, defaults=DEFAULTS, legacy_policy_allowed=False
-        )
-        as_shared = resolve(
-            segment=None, product=product, defaults=DEFAULTS, legacy_policy_allowed=False
-        )
+        as_pharmacy = resolve(segment=pharmacy, product=product, defaults=DEFAULTS)
+        as_consumer = resolve(segment=consumer, product=product, defaults=DEFAULTS)
+        as_shared = resolve(segment=None, product=product, defaults=DEFAULTS)
 
         assert as_pharmacy.system_prompt == "Focus on pharmacy onboarding."
         assert as_pharmacy.qualification_required_fields == ("interested", "pharmacy_licence")
@@ -196,58 +177,48 @@ class TestProductShapes:
 
 
 class TestPolicyNeverCrossesProducts:
-    def test_a_product_without_policy_raises_rather_than_borrowing(self) -> None:
-        """The rule that keeps SustainX from speaking in Academicae's voice.
+    def test_two_configured_products_each_resolve_their_own_policy(self) -> None:
+        """Academicae and SustainX both configured: each speaks with its own prompt and
+        qualifies on its own criteria, and neither sees the other's."""
+        academicae = Row(system_prompt="Academicae's prompt.", qualification_required_fields=["a"])
+        sustainx = Row(system_prompt="SustainX's prompt.", qualification_required_fields=["s"])
 
-        With more than one active product the legacy baseline is unavailable to
-        everyone, so a product that configured nothing has nothing to say — and saying
-        nothing is the correct outcome.
-        """
+        first = resolve(segment=None, product=academicae, defaults=DEFAULTS)
+        second = resolve(segment=None, product=sustainx, defaults=DEFAULTS)
+
+        assert (first.system_prompt, first.qualification_required_fields) == (
+            "Academicae's prompt.",
+            ("a",),
+        )
+        assert (second.system_prompt, second.qualification_required_fields) == (
+            "SustainX's prompt.",
+            ("s",),
+        )
+
+    def test_a_product_without_policy_raises_rather_than_borrowing(self) -> None:
+        """The rule that keeps SustainX from speaking in Academicae's voice. There is no
+        platform policy to fall back to, however many products are active."""
         with pytest.raises(AIConfigurationError, match="system prompt"):
-            resolve(segment=None, product=None, defaults=DEFAULTS, legacy_policy_allowed=False)
+            resolve(segment=None, product=None, defaults=DEFAULTS)
 
     def test_a_product_row_without_a_prompt_also_raises(self) -> None:
         with pytest.raises(AIConfigurationError, match="system prompt"):
-            resolve(
-                segment=None,
-                product=Row(rag_top_k=9),
-                defaults=DEFAULTS,
-                legacy_policy_allowed=False,
-            )
+            resolve(segment=None, product=Row(rag_top_k=9), defaults=DEFAULTS)
 
-    def test_operational_defaults_still_apply_without_policy(self) -> None:
-        """Platform operational values are not policy and are never withheld — the
-        failure above is about voice, not about retrieval limits."""
+    def test_the_platform_offers_no_policy_to_borrow(self) -> None:
+        """Phase 27 deleted the legacy prompt and criteria from the platform defaults.
+        What remains is operational only, so a policy fallback cannot be reintroduced by
+        passing a value that happens to be there."""
+        fields = {field.name for field in dataclasses.fields(PlatformDefaults)}
+        assert not {name for name in fields if "prompt" in name or "qualification" in name}
+
+    def test_operational_defaults_still_apply_without_policy_of_the_platform(self) -> None:
         resolved = resolve(
             segment=None,
-            product=Row(system_prompt="p", qualification_required_fields=[], fallback_message="f"),
+            product=Row(system_prompt="p", qualification_required_fields=[]),
             defaults=DEFAULTS,
-            legacy_policy_allowed=False,
         )
         assert resolved.rag_top_k == 5
-
-
-class TestLegacyCompatibility:
-    def test_the_sole_product_may_use_the_platform_policy(self) -> None:
-        """[D54]: while one product is active and has configured nothing, it keeps
-        behaving exactly as it did before products existed."""
-        resolved = resolve(
-            segment=None, product=None, defaults=DEFAULTS, legacy_policy_allowed=True
-        )
-        assert resolved.system_prompt == "Legacy platform prompt."
-        assert resolved.qualification_required_fields == ("legacy_field",)
-        assert resolved.fallback_message == "Legacy fallback."
-        assert resolved.used_legacy_policy is True
-
-    def test_a_configured_product_does_not_use_it(self) -> None:
-        resolved = resolve(
-            segment=None,
-            product=Row(system_prompt="Own prompt.", qualification_required_fields=["own"]),
-            defaults=DEFAULTS,
-            legacy_policy_allowed=True,
-        )
-        assert resolved.system_prompt == "Own prompt."
-        assert resolved.used_legacy_policy is False
 
 
 class TestValidation:
@@ -272,7 +243,6 @@ class TestValidation:
                     **{field: value},  # type: ignore[arg-type]
                 ),
                 defaults=DEFAULTS,
-                legacy_policy_allowed=True,
             )
 
     @pytest.mark.parametrize("value", [-0.1, 1.1])
@@ -284,7 +254,6 @@ class TestValidation:
                     system_prompt="p", qualification_required_fields=[], rag_min_similarity=value
                 ),
                 defaults=DEFAULTS,
-                legacy_policy_allowed=True,
             )
 
     def test_a_blank_system_prompt_is_refused(self) -> None:
@@ -293,5 +262,4 @@ class TestValidation:
                 segment=None,
                 product=Row(system_prompt="   ", qualification_required_fields=[]),
                 defaults=DEFAULTS,
-                legacy_policy_allowed=True,
             )

@@ -88,7 +88,7 @@ not.
 
 ### Startup will refuse these (production only)
 
-`APP_ENV=production` activates four guards. Each exists because the alternative is a
+`APP_ENV=production` activates three guards. Each exists because the alternative is a
 silent, dangerous default:
 
 | Variable | Guard |
@@ -96,10 +96,11 @@ silent, dangerous default:
 | `APP_SECRET` | Refuses the development placeholder |
 | `SESSION_COOKIE_SECURE` | Cannot be `false` |
 | `RATE_LIMIT_ENABLED` | Cannot be `false` (§19) |
-| `AUDIENCE_COLUMN_SCHEMA` | Refuses the development placeholder ([D32]) |
 
-**The last one is currently a hard blocker on production.** It needs the client's real
-Excel column names (D-46b). Staging boots without it.
+The development audience schema is no longer a startup guard. Each product's spreadsheet
+format is its own configuration, and a product still carrying the placeholder is NOT READY
+in production and refuses uploads (Phase 27). What a product lacks is reported by
+`product-readiness`, below — startup cannot see products, because products are rows.
 
 ### Set by `deploy.sh`
 
@@ -122,13 +123,50 @@ These have no safe default and the platform cannot infer them:
 
 | Variable | Waiting on |
 |---|---|
-| `AUDIENCE_COLUMN_SCHEMA` | The client's Excel headers (D-46b) |
 | `OPENROUTER_MODEL` | The benchmark ([D17], D-20) — **no default exists and startup fails without it when the provider is `openrouter`** |
-| `QUALIFICATION_REQUIRED_FIELDS` | The criteria ([D37], D-19) — **empty means no lead can ever qualify** |
-| `AI_SYSTEM_PROMPT` | The client's tone and limits ([D21], D-21) |
 | `GOOGLE_OAUTH_CLIENT_ID` | The shared OAuth client (D-28). Each product's calendar is `products.google_calendar_id`, not an environment variable (Phase 24) |
-| `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID` | Meta ([D22]) |
 | `MSG_*` | Customer-facing copy ([D21]) |
+
+**Not environment variables any more (Phase 27):** each product's WhatsApp phone number ID
+and business account, calendar ID, spreadsheet format, system prompt and qualification
+criteria. They are product configuration — see *Product configuration* below. The retired
+variables `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `AUDIENCE_COLUMN_SCHEMA`,
+`QUALIFICATION_REQUIRED_FIELDS`, `AI_SYSTEM_PROMPT` and `AI_KNOWLEDGE_BASE_NAME` are ignored if
+still set; `import-legacy-config` is their only reader.
+
+---
+
+## Product configuration (Phase 27)
+
+Business configuration is applied by command after migrating, from the API image, which
+carries `config/products.json`. **Not executed; each run against staging or production
+needs explicit approval (§23).** The commands send nothing and call no provider.
+
+```bash
+# 1. Create or update the products and segments the catalog names. Idempotent.
+gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
+  --args "run,python,-m,app.cli,configure-products,--file,config/products.json"
+
+# 2. Once only: copy Academicae's pre-Phase-27 environment configuration into its rows.
+#    Needs the retired variables in that execution's environment; --dry-run first.
+gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
+  --args "run,python,-m,app.cli,import-legacy-config,academicae,--dry-run"
+
+# 3. Report readiness. Exits non-zero only if an ACTIVE product is not ready.
+gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
+  --args "run,python,-m,app.cli,product-readiness"
+
+# 4. Only when a product is READY, and only deliberately.
+gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
+  --args "run,python,-m,app.cli,activate-product,sustainx"
+```
+
+`--args` on `jobs execute` overrides the job's arguments for that execution only; confirm
+the flag against the installed gcloud version before relying on it. Afterwards the job's
+own arguments are still `run,alembic,upgrade,head`.
+
+`deploy.sh` does not run these: configuration and activation are decisions, not deployment
+steps. The per-product checklist is `STAGING_READINESS.md`, Part 2.
 
 ---
 
@@ -140,11 +178,11 @@ a single credential exists — and turning a real one on is a visible, deliberat
 
 | Provider | Variable | Real value | Needs |
 |---|---|---|---|
-| WhatsApp | `WHATSAPP_PROVIDER` | `meta` | Access token, phone number ID, WABA ID, verify token, App Secret ([D22]) |
+| WhatsApp | `WHATSAPP_PROVIDER` | `meta` | Access token, verify token, App Secret ([D22]); each product's phone number ID and WABA ID are product configuration ([D40]) |
 | LLM | `LLM_PROVIDER` | `openrouter` | API key **and** `OPENROUTER_MODEL` ([D17]) |
 | Embedding | `EMBEDDING_PROVIDER` | `local_sentence_transformer` | Nothing — runs in-process, weights baked into the image ([D1]) |
-| Calendar | `CALENDAR_PROVIDER` | `google` | Calendar ID, OAuth client, refresh token ([D19]) |
-| CRM | `CRM_PROVIDER` | `hubspot` | Access token **and eight custom properties** (§14) |
+| Calendar | `CALENDAR_PROVIDER` | `google` | OAuth client, refresh token ([D19]); each product's calendar ID is product configuration ([D43]) |
+| CRM | `CRM_PROVIDER` | `hubspot` | **Deferred ([D58]).** Leave `fake`: synchronization is skipped while more than one product exists |
 | Queue | `QUEUE_PROVIDER` | `cloud_tasks` | The queue — created by `setup-infrastructure.sh` |
 
 Embedding defaults to the real provider because it needs no credential and no third

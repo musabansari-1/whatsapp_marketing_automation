@@ -1,4 +1,4 @@
-"""AI configuration resolution (§28.4, Phase 22).
+"""AI configuration resolution (§28.4, Phases 22 and 27).
 
 One product default, optional sparse segment overrides, resolved field by field. Pure
 logic: the caller supplies the rows and the platform baseline, and this decides what the
@@ -21,14 +21,18 @@ no-knowledge fallback — describe how the platform runs. They fall back to plat
 defaults, because they say nothing about a product's voice.
 
 *Policy* — the system prompt and the qualification criteria — decide what a product says
-to its customers and whom it treats as qualified. Neither may reach a product that did
-not configure it: SustainX must not inherit Academicae's prompt merely because both use
-the same model. A product without them fails closed rather than borrowing.
+to its customers and whom it treats as qualified. They come from the product's own rows
+and from nowhere else. A product without a system prompt fails closed.
+
+**There is no platform policy.** Until Phase 27 a transitional rule let the sole active
+product fall back to the prompt and criteria in the environment, so the original product
+kept working before it had rows of its own ([D54]). Phase 27 copies that configuration into
+the product (`python -m app.cli import-legacy-config`) and deletes the rule. An active
+product's voice is its own configuration, however many products exist.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
@@ -55,11 +59,11 @@ class ConfigurationRow(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class PlatformDefaults:
-    """Operational baselines, and the legacy policy the sole product may still use.
+    """The operational baselines every product inherits.
 
-    `legacy_policy` carries the environment-configured prompt, criteria and fallback
-    copy. It is only ever offered when `legacy_policy_allowed` is true — see
-    `resolve`.
+    Deliberately no system prompt and no qualification criteria: those are a product's
+    policy, and a platform value for them is exactly the fallback that would let one
+    product speak with another's instructions.
     """
 
     model: str | None
@@ -68,10 +72,7 @@ class PlatformDefaults:
     rag_max_context_chars: int
     history_turns: int
     max_tool_rounds: int
-
-    legacy_system_prompt: str
-    legacy_qualification_required_fields: Sequence[str]
-    legacy_fallback_message: str
+    fallback_message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,10 +89,6 @@ class ResolvedAIConfig:
     max_tool_rounds: int
     fallback_message: str
 
-    #: True when the product's policy came from the platform's legacy environment
-    #: configuration rather than from its own row. Transitional; see `resolve`.
-    used_legacy_policy: bool = False
-
 
 def _first(*candidates: T | None) -> T | None:
     """The first value that is not NULL. Absence is NULL, never falsiness."""
@@ -106,36 +103,19 @@ def resolve(
     segment: ConfigurationRow | None,
     product: ConfigurationRow | None,
     defaults: PlatformDefaults,
-    legacy_policy_allowed: bool,
 ) -> ResolvedAIConfig:
     """Combine a segment override, a product default and the platform baseline.
 
-    Precedence, per field: **segment, then product, then platform.**
+    Precedence, per field: **segment, then product, then platform** — where the platform
+    supplies operational values only.
 
-    For operational fields the platform baseline is always available — they describe how
-    the platform runs, not what a product says.
-
-    For **policy** fields — the system prompt and the qualification criteria — the
-    platform baseline is only reachable when `legacy_policy_allowed`. Those two decide
-    what a product says and who it treats as qualified, and neither may reach a product
-    that did not configure it. That flag is the
-    transitional compatibility rule of §28.4: while exactly one active product exists and
-    it has configured no AI row of its own, the environment-configured behaviour it has
-    always used continues to apply, so [D54] holds.
-
-    It is deliberately structural. It depends on the *count* of active products and
-    never on which product it is — no slug, no name, no UUID, no "first". The moment a
-    second active product exists the flag is false for everyone, and a product with no
-    policy of its own raises rather than borrowing another's voice.
-
-    Raises `AIConfigurationError` when a policy field cannot be resolved. The caller
-    fails the turn closed rather than replying with configuration that belongs to someone
-    else.
+    Raises `AIConfigurationError` when the system prompt cannot be resolved from the
+    product's own rows, or when a resolved value is out of bounds. The caller fails the
+    turn closed rather than replying with configuration that belongs to someone else.
     """
     system_prompt = _first(
         segment.system_prompt if segment else None,
         product.system_prompt if product else None,
-        defaults.legacy_system_prompt if legacy_policy_allowed else None,
     )
     if system_prompt is None:
         raise AIConfigurationError(
@@ -143,19 +123,18 @@ def resolve(
             "prompt may be used in its place."
         )
 
-    # Platform-defaulted rather than gated, and the distinction is deliberate.
+    # Platform-defaulted rather than refused, and the distinction is deliberate.
     #
     # This is the "I don't have verified information on that yet" safety net, not a
-    # product's voice — generic infrastructure copy that Academicae happens to use too.
-    # Withholding it would leave a correctly configured product unable to say even that,
-    # while gaining nothing: a product that has not configured a *prompt* never reaches
-    # here, because the check above already refused the turn.
+    # product's voice — generic infrastructure copy. Withholding it would leave a correctly
+    # configured product unable to say even that, while gaining nothing: a product that has
+    # not configured a *prompt* never reaches here, because the check above refused it.
     #
     # A product or segment that wants its own wording simply sets one.
     fallback_message = _first(
         segment.fallback_message if segment else None,
         product.fallback_message if product else None,
-        defaults.legacy_fallback_message,
+        defaults.fallback_message,
     )
     if fallback_message is None:  # pragma: no cover - the platform always supplies one
         raise AIConfigurationError("No fallback message is configured anywhere.")
@@ -164,15 +143,11 @@ def resolve(
     # can qualify. `_first` distinguishes them where `or` would not.
     #
     # Unset everywhere resolves to **no criteria** rather than raising, and that is the
-    # fail-safe direction. The harm here is qualifying a lead on criteria nobody chose
-    # for their product; declining to qualify anyone is merely inert, and is exactly what
-    # the platform does today while [D37] is unresolved. A product that has configured no
-    # prompt is already refused above, so this only affects one that has a voice but has
-    # not yet said what "qualified" means to it.
+    # fail-safe direction. The harm here is qualifying a lead on criteria nobody chose for
+    # their product; declining to qualify anyone is merely inert. Readiness reports it.
     criteria = _first(
         segment.qualification_required_fields if segment else None,
         product.qualification_required_fields if product else None,
-        list(defaults.legacy_qualification_required_fields) if legacy_policy_allowed else [],
     )
 
     resolved = ResolvedAIConfig(
@@ -219,9 +194,6 @@ def resolve(
             )
         ),
         fallback_message=fallback_message,
-        used_legacy_policy=legacy_policy_allowed
-        and (segment is None or segment.system_prompt is None)
-        and (product is None or product.system_prompt is None),
     )
 
     _validate(resolved)

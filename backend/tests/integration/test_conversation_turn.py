@@ -28,8 +28,10 @@ from app.domain.enums import (
 )
 from app.integrations.llm import FakeLLMProvider
 from app.integrations.queue import TaskRequest, TaskType
+from app.integrations.registry import WhatsAppNotConfiguredError
 from app.integrations.whatsapp import FakeWhatsAppProvider
 from app.persistence.models import (
+    AIConfiguration,
     AIRun,
     Conversation,
     ConversationMessage,
@@ -202,6 +204,37 @@ def outbound_messages(conversation_id: str) -> list[Message]:
     return run_db(fetch)
 
 
+def product_prompt() -> str:
+    """The fixture product's own system prompt, as stored on its AI configuration row."""
+
+    async def read(session: AsyncSession) -> str:
+        product_id = await ensure_product_id(session)
+        prompt = (
+            await session.execute(
+                select(AIConfiguration.system_prompt).where(
+                    AIConfiguration.product_id == product_id,
+                    AIConfiguration.segment_id.is_(None),
+                )
+            )
+        ).scalar_one()
+        assert prompt is not None
+        return prompt
+
+    return run_db(read)
+
+
+def remove_product_policy() -> None:
+    """Take the fixture product's AI configuration away. The next fixture restores it."""
+
+    async def remove(session: AsyncSession) -> None:
+        product_id = await ensure_product_id(session)
+        await session.execute(
+            delete(AIConfiguration).where(AIConfiguration.product_id == product_id)
+        )
+
+    run_db(remove)
+
+
 def ai_runs() -> list[AIRun]:
     async def fetch(session: AsyncSession) -> list[AIRun]:
         result = await session.execute(select(AIRun))
@@ -256,18 +289,52 @@ class TestHappyPath:
         assert sent_messages[0].role.value == "system"
         assert any("support" in message.content for message in sent_messages)
 
-    def test_the_system_prompt_comes_from_configuration(
+    def test_the_system_prompt_is_the_products_own(
         self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
     ) -> None:
-        """[D21]: customer-facing behaviour is configuration, never a literal."""
-        from app.core.config import get_settings
-
+        """[D21], §28.4: customer-facing behaviour is configuration — the product's own
+        `ai_configurations` row, never an environment value (Phase 27)."""
         llm, _whatsapp = turn_env
         _lead_id, _conversation_id, message_id = seed_turn()
 
         run_turn(message_id)
 
-        assert llm.requests[0].messages[0].content == get_settings().ai_system_prompt
+        assert llm.requests[0].messages[0].content == product_prompt()
+
+    def test_a_product_without_policy_does_not_answer(
+        self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
+    ) -> None:
+        """No policy of its own and nothing to borrow — not the environment's, not another
+        product's. The turn is refused rather than answered in a voice nobody configured."""
+        llm, whatsapp = turn_env
+        _lead_id, _conversation_id, message_id = seed_turn()
+        remove_product_policy()
+
+        result = run_turn(message_id)
+
+        assert result["result"] == "ai_not_configured"
+        assert llm.requests == []
+        assert whatsapp.sent_texts == []
+
+    def test_a_product_without_a_number_does_not_reply_from_another(
+        self,
+        turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The number went away after the message arrived. No other number stands in."""
+        _llm, whatsapp = turn_env
+        _lead_id, conversation_id, message_id = seed_turn()
+
+        def refuse(_settings: Any, **_: Any) -> FakeWhatsAppProvider:
+            raise WhatsAppNotConfiguredError("no number configured")
+
+        monkeypatch.setattr("app.worker.handlers.conversation.build_whatsapp_provider", refuse)
+
+        result = run_turn(message_id)
+
+        assert result["result"] == "whatsapp_not_configured"
+        assert whatsapp.sent_texts == []
+        assert outbound_messages(conversation_id) == []
 
     def test_the_conversation_waits_for_the_customer(
         self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]

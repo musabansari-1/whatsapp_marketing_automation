@@ -224,6 +224,17 @@ async def send_campaign(
     except TemplateOwnershipError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
+    # The broadcast leaves from this product's own number ([D40]). Without one nothing is
+    # queued: no other number may stand in, and every recipient would only fail (Phase 27).
+    if not product.whatsapp_phone_number_id or not product.whatsapp_business_account_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{product.display_name} has no WhatsApp number configured, so nothing can "
+                "be sent for it."
+            ),
+        )
+
     # [D16]: re-check immediately before sending, because a customer can opt out
     # between the snapshot and this moment.
     newly_suppressed = await campaign_repo.suppress_recipients_now_opted_out(session, campaign.id)

@@ -16,6 +16,12 @@ Written in Phase 17, when it necessarily passes, so that it is already in place 
 already meaningful before Phase 18 begins moving data. A guard written after the change
 it is meant to guard proves nothing.
 
+**Since Phase 27 it runs on imported configuration.** The environment no longer supplies
+the product's spreadsheet format or AI policy; the product's own rows do. So before every
+test the product's configuration is replaced by what `import-legacy-config` copies from an
+environment that set nothing — which is what the product ran with before — and the guard
+proves that configuration behaves as the environment did.
+
 If a later phase makes this fail, the phase is wrong until proven otherwise — not the
 test.
 """
@@ -32,6 +38,14 @@ from openpyxl import Workbook
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.configuration.legacy import (
+    FORMER_DEFAULT_SYSTEM_PROMPT,
+    LegacyEnvironment,
+    import_legacy_configuration,
+    read_legacy_configuration,
+)
+from app.core.config import Settings
+from app.domain.ai_config import ResolvedAIConfig
 from app.domain.enums import (
     AudienceStatus,
     CampaignStatus,
@@ -41,14 +55,18 @@ from app.domain.enums import (
     TemplateCategory,
 )
 from app.persistence.models import (
+    AIConfiguration,
     Audience,
     AudienceContact,
     Campaign,
     CampaignRecipient,
     Lead,
+    Product,
     WhatsAppSuppression,
     WhatsAppTemplate,
 )
+from app.persistence.repositories import ai_configurations as ai_config_repo
+from app.persistence.repositories.readiness import platform_inputs_from_settings
 from tests.integration.conftest import login
 from tests.integration.helpers import ensure_product_id, run_db, scoped_prefix
 
@@ -97,11 +115,39 @@ def _clean(seeded_users: dict[str, str], seeded_product: uuid.UUID) -> Iterator[
         await session.execute(delete(WhatsAppTemplate))
 
     run_db(clear)
+    run_db(import_the_legacy_configuration)
     yield
     run_db(clear)
     from app.api.deps import reset_queue_provider
 
     reset_queue_provider()
+
+
+async def import_the_legacy_configuration(session: AsyncSession) -> None:
+    """Replace the product's configuration with what the operator's import produces.
+
+    Removes whatever the fixtures configured, then runs the same import an operator runs,
+    against an environment that sets none of the retired variables — the state in which the
+    product ran on the platform's built-in defaults.
+    """
+    product_id = await ensure_product_id(session)
+    await session.execute(
+        delete(AIConfiguration).where(
+            AIConfiguration.product_id == product_id, AIConfiguration.segment_id.is_(None)
+        )
+    )
+    product = await session.get(Product, product_id)
+    assert product is not None
+    product.audience_column_schema = None
+    await session.flush()
+
+    await import_legacy_configuration(
+        session,
+        product,
+        read_legacy_configuration(LegacyEnvironment()),
+        overwrite=False,
+        platform=platform_inputs_from_settings(Settings()),
+    )
 
 
 @pytest.fixture
@@ -291,6 +337,37 @@ class TestTheMarketingPathIsUnchanged:
             return dict(result.all())  # type: ignore[arg-type]
 
         return run_db(read)
+
+
+class TestTheConversationPolicyIsUnchanged:
+    """Phase 27 deleted the rule that let the sole product use the environment's prompt and
+    criteria. The imported configuration must resolve to exactly what that rule supplied."""
+
+    def test_the_imported_policy_resolves_as_the_environment_did(self) -> None:
+        settings = Settings()
+
+        async def resolve(session: AsyncSession) -> ResolvedAIConfig:
+            return await ai_config_repo.resolve_for(
+                session,
+                product_id=await ensure_product_id(session),
+                segment_id=None,
+                defaults=ai_config_repo.platform_defaults_from_settings(settings),
+            )
+
+        # Field by field, what the pre-Phase-27 resolution produced for the sole product
+        # with no configuration row: the environment's prompt and criteria (their defaults,
+        # since none was set) and the platform's operational values.
+        assert run_db(resolve) == ResolvedAIConfig(
+            system_prompt=FORMER_DEFAULT_SYSTEM_PROMPT,
+            qualification_required_fields=(),
+            model=settings.openrouter_model,
+            rag_top_k=settings.rag_top_k,
+            rag_min_similarity=settings.rag_min_similarity,
+            rag_max_context_chars=settings.rag_max_context_chars,
+            history_turns=settings.conversation_history_turns,
+            max_tool_rounds=settings.ai_max_tool_rounds,
+            fallback_message=settings.msg_rag_fallback,
+        )
 
 
 class TestTheAuditTrailIsUnchanged:

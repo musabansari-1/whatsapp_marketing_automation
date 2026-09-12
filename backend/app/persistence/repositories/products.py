@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterable, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.persistence.models import Product, Segment
@@ -131,9 +131,58 @@ async def list_segments(session: AsyncSession, product_id: uuid.UUID) -> Sequenc
     return result.scalars().all()
 
 
+async def slugs_sharing_phone_number(session: AsyncSession, product: Product) -> tuple[str, ...]:
+    """Other products holding this product's WhatsApp number, active or not.
+
+    Wider than `uq_products_active_whatsapp_number`, which only covers active products. An
+    inactive product holding the same number is a collision waiting for its activation.
+    """
+    if not product.whatsapp_phone_number_id:
+        return ()
+    return await _other_slugs(
+        session, product, Product.whatsapp_phone_number_id == product.whatsapp_phone_number_id
+    )
+
+
+async def slugs_sharing_calendar(session: AsyncSession, product: Product) -> tuple[str, ...]:
+    """Other products holding this product's calendar, active or not ([D43])."""
+    if not product.google_calendar_id:
+        return ()
+    return await _other_slugs(
+        session, product, Product.google_calendar_id == product.google_calendar_id
+    )
+
+
+async def _other_slugs(
+    session: AsyncSession, product: Product, condition: ColumnElement[bool]
+) -> tuple[str, ...]:
+    result = await session.execute(
+        select(Product.slug).where(condition, Product.id != product.id).order_by(Product.slug)
+    )
+    return tuple(result.scalars().all())
+
+
+async def list_whatsapp_business_accounts(session: AsyncSession) -> list[str]:
+    """Every WhatsApp Business Account a product is configured under, once each.
+
+    One shared account today, so normally a single value. Template sync reads each one; a
+    product later moved to an account of its own is configuration, not a redesign.
+    """
+    result = await session.execute(
+        select(Product.whatsapp_business_account_id)
+        .where(Product.whatsapp_business_account_id.is_not(None))
+        .distinct()
+        .order_by(Product.whatsapp_business_account_id)
+    )
+    return [account for account in result.scalars().all() if account]
+
+
 __all__ = [
     "UnknownReceivingNumberError",
     "count_products",
+    "list_whatsapp_business_accounts",
+    "slugs_sharing_calendar",
+    "slugs_sharing_phone_number",
     "get_by_slug",
     "get_product",
     "get_segment",

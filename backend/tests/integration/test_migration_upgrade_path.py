@@ -853,3 +853,68 @@ class TestPhase26KnowledgeOwnership:
         _alembic(scratch_database, PHASE_24, direction="down")
         assert _scalar(scratch_database, KNOWLEDGE_NULLABLE_SQL) == "YES"
         _alembic(scratch_database, PHASE_26, direction="up")
+
+
+# ---------------------------------------------------------------- Phase 27
+
+PHASE_27 = "f4a1c7e9b2d5"
+
+AUDIENCE_SCHEMA_COLUMN_SQL = (
+    "SELECT is_nullable FROM information_schema.columns"
+    " WHERE table_name = 'products' AND column_name = 'audience_column_schema'"
+)
+CONFIGURED_SCHEMAS_SQL = "SELECT count(*) FROM products WHERE audience_column_schema IS NOT NULL"
+
+
+class TestPhase27AudienceSchemas:
+    """Each product gains its own audience column schema. Schema only: the migration copies
+    nothing from any environment and gives no product a mapping. Continues from the state
+    the Phase 26 class leaves: at Phase 26."""
+
+    def test_the_upgrade_adds_an_empty_nullable_column(self, scratch_database: str) -> None:
+        _alembic(scratch_database, PHASE_27, direction="up")
+
+        assert _scalar(scratch_database, AUDIENCE_SCHEMA_COLUMN_SQL) == "YES"
+        assert _scalar(scratch_database, CONFIGURED_SCHEMAS_SQL) == 0
+
+    def test_only_a_list_of_mappings_fits_the_column(self, scratch_database: str) -> None:
+        with pytest.raises(IntegrityError):
+            _exec(
+                scratch_database,
+                [
+                    (
+                        "UPDATE products SET audience_column_schema ="
+                        " CAST(:schema AS jsonb) WHERE id = :id",
+                        {"schema": '{"columns": []}', "id": ACADEMICAE_ID},
+                    )
+                ],
+                autocommit=False,
+            )
+
+    def test_the_downgrade_refuses_to_discard_a_configured_schema(
+        self, scratch_database: str
+    ) -> None:
+        _exec(
+            scratch_database,
+            [
+                (
+                    "UPDATE products SET audience_column_schema = CAST(:schema AS jsonb)"
+                    " WHERE id = :id",
+                    {"schema": "[]", "id": ACADEMICAE_ID},
+                )
+            ],
+            autocommit=False,
+        )
+
+        with pytest.raises(RuntimeError, match="audience column schema configured"):
+            _alembic(scratch_database, PHASE_26, direction="down")
+        assert _scalar(scratch_database, CONFIGURED_SCHEMAS_SQL) == 1
+
+        _exec(
+            scratch_database,
+            [("UPDATE products SET audience_column_schema = NULL", {})],
+            autocommit=False,
+        )
+        _alembic(scratch_database, PHASE_26, direction="down")
+        assert _rows(scratch_database, AUDIENCE_SCHEMA_COLUMN_SQL) == []
+        _alembic(scratch_database, PHASE_27, direction="up")

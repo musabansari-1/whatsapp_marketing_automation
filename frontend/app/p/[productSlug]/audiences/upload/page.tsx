@@ -87,7 +87,13 @@ export default function UploadAudiencePage() {
         </Alert>
       ) : null}
 
-      {schema ? (
+      {schema && !schema.configured ? (
+        <Alert tone="warning" className="mb-6">
+          {schema.problem ?? `${product.display_name} cannot accept spreadsheets yet.`}
+        </Alert>
+      ) : null}
+
+      {schema?.configured ? (
         <Card className="mb-6">
           <h2 className="text-sm font-semibold">Expected columns</h2>
           <ul className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -185,7 +191,10 @@ export default function UploadAudiencePage() {
             />
           </div>
 
-          <Button type="submit" disabled={busy || !file || !product.is_active}>
+          <Button
+            type="submit"
+            disabled={busy || !file || !product.is_active || !schema?.configured}
+          >
             {busy ? 'Validating…' : 'Validate file'}
           </Button>
         </form>

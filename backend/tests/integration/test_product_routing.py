@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.domain.whatsapp_webhook import parse_webhook
-from app.integrations.registry import build_whatsapp_provider
+from app.integrations.registry import WhatsAppNotConfiguredError, build_whatsapp_provider
 from app.integrations.whatsapp.meta import MetaWhatsAppProvider
 from app.persistence.models import (
     AIRun,
@@ -290,21 +290,29 @@ class TestOutboundNumberSelection:
         return Settings(
             whatsapp_provider="meta",
             whatsapp_access_token="shared-token",  # noqa: S106 - test fixture
-            whatsapp_phone_number_id="108000000000000",
-            whatsapp_business_account_id="waba-1",
             whatsapp_app_secret="s",  # noqa: S106 - test fixture
             whatsapp_verify_token="v",  # noqa: S106 - test fixture
             openrouter_model="test/model",
         )
 
-    def _provider(self, product: Product | None) -> MetaWhatsAppProvider:
+    def _provider(self, product: Product) -> MetaWhatsAppProvider:
         provider = build_whatsapp_provider(self._settings(), product=product)
         assert isinstance(provider, MetaWhatsAppProvider)
         return provider
 
     def test_each_product_sends_from_its_own_number(self) -> None:
-        alpha = Product(slug="r-alpha", display_name="A", whatsapp_phone_number_id=ALPHA_NUMBER)
-        beta = Product(slug="r-beta", display_name="B", whatsapp_phone_number_id=BETA_NUMBER)
+        alpha = Product(
+            slug="r-alpha",
+            display_name="A",
+            whatsapp_phone_number_id=ALPHA_NUMBER,
+            whatsapp_business_account_id="waba-1",
+        )
+        beta = Product(
+            slug="r-beta",
+            display_name="B",
+            whatsapp_phone_number_id=BETA_NUMBER,
+            whatsapp_business_account_id="waba-1",
+        )
 
         assert self._provider(alpha)._phone_number_id == ALPHA_NUMBER
         assert self._provider(beta)._phone_number_id == BETA_NUMBER
@@ -312,8 +320,18 @@ class TestOutboundNumberSelection:
     def test_two_providers_do_not_share_state(self) -> None:
         """Nothing caches a provider by settings alone. If anything ever does, this is
         the test that catches the second product being handed the first one's number."""
-        alpha = Product(slug="r-alpha", display_name="A", whatsapp_phone_number_id=ALPHA_NUMBER)
-        beta = Product(slug="r-beta", display_name="B", whatsapp_phone_number_id=BETA_NUMBER)
+        alpha = Product(
+            slug="r-alpha",
+            display_name="A",
+            whatsapp_phone_number_id=ALPHA_NUMBER,
+            whatsapp_business_account_id="waba-1",
+        )
+        beta = Product(
+            slug="r-beta",
+            display_name="B",
+            whatsapp_phone_number_id=BETA_NUMBER,
+            whatsapp_business_account_id="waba-1",
+        )
 
         first = self._provider(alpha)
         second = self._provider(beta)
@@ -323,15 +341,28 @@ class TestOutboundNumberSelection:
 
     def test_the_credential_is_shared_because_the_app_is(self) -> None:
         """One Meta App, so one access token. Only the number is per-product."""
-        alpha = Product(slug="r-alpha", display_name="A", whatsapp_phone_number_id=ALPHA_NUMBER)
-        beta = Product(slug="r-beta", display_name="B", whatsapp_phone_number_id=BETA_NUMBER)
+        alpha = Product(
+            slug="r-alpha",
+            display_name="A",
+            whatsapp_phone_number_id=ALPHA_NUMBER,
+            whatsapp_business_account_id="waba-1",
+        )
+        beta = Product(
+            slug="r-beta",
+            display_name="B",
+            whatsapp_phone_number_id=BETA_NUMBER,
+            whatsapp_business_account_id="waba-1",
+        )
 
         assert self._provider(alpha)._access_token == self._provider(beta)._access_token
 
-    def test_a_product_without_a_number_falls_back_to_configuration(self) -> None:
-        """Not a routing decision — this is the pre-product path, still used wherever
-        no product is in hand, and it reaches the platform's own number only."""
-        assert self._provider(None)._phone_number_id == "108000000000000"
+    def test_a_product_without_a_number_is_refused_not_given_another(self) -> None:
+        """Until Phase 27 this fell back to the platform-wide number — which, with three
+        products, is some other product's. There is no platform number any more."""
+        with pytest.raises(WhatsAppNotConfiguredError):
+            build_whatsapp_provider(
+                self._settings(), product=Product(slug="r-none", display_name="None")
+            )
 
 
 class TestTheParserFeedsTheRouter:

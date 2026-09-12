@@ -46,6 +46,63 @@ def run_db(operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
     return asyncio.run(_run())
 
 
+#: The spreadsheet format a fixture product reads: the canonical names as headers, which is
+#: what every upload test sends. Configuration on the product, as it is in production.
+TEST_AUDIENCE_SCHEMA: list[dict[str, object]] = [
+    {"source": "Name", "field": "name", "required": True},
+    {"source": "Phone", "field": "phone", "required": True},
+    {"source": "Email", "field": "email", "required": False},
+    {"source": "Company", "field": "company", "required": False},
+    {"source": "Designation", "field": "designation", "required": False},
+    {"source": "City", "field": "city", "required": False},
+]
+TEST_SYSTEM_PROMPT = "You are the fixture product's assistant. Answer briefly and truthfully."
+TEST_WHATSAPP_NUMBER = "fixture-phone-number-id"
+TEST_WHATSAPP_ACCOUNT = "fixture-business-account"
+
+
+async def configure_test_product(session: AsyncSession, product_id: uuid.UUID) -> None:
+    """Give a fixture product what a configured product holds, wherever it holds nothing.
+
+    Phase 27 removed the platform-wide fallbacks — the environment's audience schema,
+    system prompt and WhatsApp number — so an unconfigured product now refuses uploads,
+    replies and sends, exactly as it should. A test about uploading, replying or sending
+    needs a product that is configured, the way a real one is.
+
+    Fills only what is absent, so a test that configured something itself keeps it. A test
+    about the *unconfigured* case builds its own product.
+    """
+    from sqlalchemy import select
+
+    from app.persistence.models import AIConfiguration, Product
+
+    product = await session.get(Product, product_id)
+    assert product is not None
+    if product.audience_column_schema is None:
+        product.audience_column_schema = [dict(column) for column in TEST_AUDIENCE_SCHEMA]
+    if product.whatsapp_business_account_id is None:
+        product.whatsapp_business_account_id = TEST_WHATSAPP_ACCOUNT
+    if product.whatsapp_phone_number_id is None:
+        claimed = (
+            await session.execute(
+                select(Product.id).where(Product.whatsapp_phone_number_id == TEST_WHATSAPP_NUMBER)
+            )
+        ).first()
+        if claimed is None:
+            product.whatsapp_phone_number_id = TEST_WHATSAPP_NUMBER
+
+    has_policy = (
+        await session.execute(
+            select(AIConfiguration.id).where(
+                AIConfiguration.product_id == product_id, AIConfiguration.segment_id.is_(None)
+            )
+        )
+    ).first()
+    if has_policy is None:
+        session.add(AIConfiguration(product_id=product_id, system_prompt=TEST_SYSTEM_PROMPT))
+    await session.flush()
+
+
 async def ensure_product_id(session: AsyncSession) -> uuid.UUID:
     """The product a test's rows belong to, creating one if the schema has none.
 
@@ -56,6 +113,9 @@ async def ensure_product_id(session: AsyncSession) -> uuid.UUID:
     Reuses whatever product already exists rather than adding another, and never asserts
     which one it is: the slug and display name are configuration and a test that depended
     on them would make renaming the product a code change.
+
+    The product is configured for tests (`configure_test_product`), because since Phase 27
+    nothing outside a product's own row can stand in for its configuration.
     """
     from sqlalchemy import select
 
@@ -65,11 +125,13 @@ async def ensure_product_id(session: AsyncSession) -> uuid.UUID:
         await session.execute(select(Product).order_by(Product.created_at).limit(1))
     ).scalar_one_or_none()
     if existing is not None:
+        await configure_test_product(session, existing.id)
         return existing.id
 
     product = Product(slug=f"fixture-{uuid.uuid4().hex[:8]}", display_name="Fixture product")
     session.add(product)
     await session.flush()
+    await configure_test_product(session, product.id)
     return product.id
 
 

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Float,
     ForeignKey,
     ForeignKeyConstraint,
@@ -103,11 +104,25 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Named exactly as the settings they override, which lets one resolver read both.
     demo_duration_minutes: Mapped[int | None] = mapped_column(Integer)
     demo_buffer_minutes: Mapped[int | None] = mapped_column(Integer)
-    demo_working_days: Mapped[list[str] | None] = mapped_column(JSONB)
+    demo_working_days: Mapped[list[str] | None] = mapped_column(JSONB(none_as_null=True))
     demo_working_hours_start: Mapped[str | None] = mapped_column(String(5))
     demo_working_hours_end: Mapped[str | None] = mapped_column(String(5))
     demo_booking_horizon_days: Mapped[int | None] = mapped_column(Integer)
     demo_timezone: Mapped[str | None] = mapped_column(String(64))
+
+    # ---------------------------------------------------------------- audience ([D51], Phase 27)
+    #
+    # How this product's spreadsheets map onto the canonical contact fields ([D25]): a list
+    # of `{"source", "field", "required"}` column mappings, validated by
+    # `app.domain.audience.parse_audience_schema` before any file is read with it.
+    #
+    # NULL means no format has been confirmed, and uploads are refused. There is
+    # deliberately no platform-wide mapping to fall back to: products receive spreadsheets
+    # from different sources, and reading one with another's headers would put the wrong
+    # column in the phone field without an error.
+    audience_column_schema: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
 
     segments: Mapped[list[Segment]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
@@ -136,6 +151,12 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "google_calendar_id",
             unique=True,
             postgresql_where=text("is_active AND google_calendar_id IS NOT NULL"),
+        ),
+        # JSONB holds whatever it is given. The application validates a mapping in full
+        # before reading a file with it; this keeps out only the grossly wrong shapes.
+        CheckConstraint(
+            "audience_column_schema IS NULL OR jsonb_typeof(audience_column_schema) = 'array'",
+            name="audience_column_schema_is_array",
         ),
     )
 
@@ -206,7 +227,9 @@ class AIConfiguration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     system_prompt: Mapped[str | None] = mapped_column(Text)
-    qualification_required_fields: Mapped[list[Any] | None] = mapped_column(JSONB)
+    qualification_required_fields: Mapped[list[Any] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
     model: Mapped[str | None] = mapped_column(String(255))
 
     rag_top_k: Mapped[int | None] = mapped_column(Integer)

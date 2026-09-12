@@ -16,6 +16,7 @@ from app.integrations.embedding import EmbeddingProvider, FakeEmbeddingProvider
 from app.integrations.llm import FakeLLMProvider, LLMProvider
 from app.integrations.queue import InMemoryQueueProvider, QueueProvider
 from app.integrations.registry import (
+    WhatsAppNotConfiguredError,
     build_calendar_provider,
     build_crm_provider,
     build_embedding_provider,
@@ -23,20 +24,27 @@ from app.integrations.registry import (
     build_providers,
     build_queue_provider,
     build_whatsapp_provider,
+    build_whatsapp_template_source,
 )
 from app.integrations.whatsapp import FakeWhatsAppProvider, WhatsAppProvider
 from app.persistence.models import Product
 
 
 def a_product(calendar_id: str = "product@calendar.example") -> Product:
-    """An unsaved product carrying a calendar. The registry reads configuration only."""
-    return Product(slug="registry-product", display_name="Registry", google_calendar_id=calendar_id)
+    """An unsaved product carrying a calendar and a WhatsApp number. The registry reads
+    configuration only."""
+    return Product(
+        slug="registry-product",
+        display_name="Registry",
+        google_calendar_id=calendar_id,
+        whatsapp_phone_number_id="registry-number",
+        whatsapp_business_account_id="registry-account",
+    )
 
 
 class TestFakeSelection:
-    def test_builds_all_six_fakes(self, settings: Settings) -> None:
+    def test_builds_the_product_blind_fakes(self, settings: Settings) -> None:
         providers = build_providers(settings)
-        assert isinstance(providers.whatsapp, FakeWhatsAppProvider)
         assert isinstance(providers.llm, FakeLLMProvider)
         assert isinstance(providers.embedding, FakeEmbeddingProvider)
         assert isinstance(providers.crm, FakeCRMProvider)
@@ -44,7 +52,6 @@ class TestFakeSelection:
 
     def test_fakes_satisfy_their_interfaces(self, settings: Settings) -> None:
         providers = build_providers(settings)
-        assert isinstance(providers.whatsapp, WhatsAppProvider)
         assert isinstance(providers.llm, LLMProvider)
         assert isinstance(providers.embedding, EmbeddingProvider)
         assert isinstance(providers.crm, CRMProvider)
@@ -59,6 +66,37 @@ class TestFakeSelection:
         assert isinstance(calendar, CalendarProvider)
         assert calendar.calendar_id == "p@calendar.example"
         assert not hasattr(build_providers(settings), "calendar")
+
+    def test_whatsapp_is_built_per_product(self, settings: Settings) -> None:
+        """[D40]: a number belongs to a product, so the product-blind bundle carries no
+        WhatsApp provider and the builder requires the product."""
+        provider = build_whatsapp_provider(settings, product=a_product())
+
+        assert isinstance(provider, FakeWhatsAppProvider)
+        assert isinstance(provider, WhatsAppProvider)
+        assert not hasattr(build_providers(settings), "whatsapp")
+
+    def test_a_product_without_a_number_is_refused_even_by_the_fake(
+        self, settings: Settings
+    ) -> None:
+        """Checked before a provider is chosen, so the suite exercises the refusal that
+        production relies on. There is no platform number to fall back to (Phase 27)."""
+        unconfigured = Product(slug="no-number", display_name="No number")
+
+        with pytest.raises(WhatsAppNotConfiguredError, match="no-number"):
+            build_whatsapp_provider(settings, product=unconfigured)
+
+    def test_a_number_without_its_business_account_is_refused(self, settings: Settings) -> None:
+        half = Product(slug="half", display_name="Half", whatsapp_phone_number_id="1")
+
+        with pytest.raises(WhatsAppNotConfiguredError):
+            build_whatsapp_provider(settings, product=half)
+
+    def test_template_sync_reads_an_account_and_takes_no_product(self, settings: Settings) -> None:
+        """[D57]: templates belong to a business account; ownership is decided later."""
+        source = build_whatsapp_template_source(settings, business_account_id="shared")
+
+        assert isinstance(source, FakeWhatsAppProvider)
 
     def test_embedding_dimension_follows_configuration(
         self, monkeypatch: pytest.MonkeyPatch
@@ -162,9 +200,7 @@ class TestEveryProviderIsImplemented:
             ("OPENROUTER_API_KEY", "k"),
             ("OPENROUTER_MODEL", "vendor/model"),
             ("WHATSAPP_ACCESS_TOKEN", "t"),
-            ("WHATSAPP_PHONE_NUMBER_ID", "1"),
             ("WHATSAPP_VERIFY_TOKEN", "v"),
-            ("WHATSAPP_BUSINESS_ACCOUNT_ID", "waba"),
             ("WHATSAPP_APP_SECRET", "s"),
             ("GOOGLE_SECRET_MANAGER_PROJECT", "proj"),
             ("GOOGLE_CALENDAR_TOKEN_SECRET_NAME", "secret"),
@@ -182,8 +218,11 @@ class TestEveryProviderIsImplemented:
         def build_calendar_for_a_product(settings: Settings) -> CalendarProvider:
             return build_calendar_provider(settings, product=a_product())
 
+        def build_whatsapp_for_a_product(settings: Settings) -> WhatsAppProvider:
+            return build_whatsapp_provider(settings, product=a_product())
+
         builders = (
-            build_whatsapp_provider,
+            build_whatsapp_for_a_product,
             build_llm_provider,
             build_embedding_provider,
             build_calendar_for_a_product,
@@ -219,21 +258,26 @@ class TestEveryProviderIsImplemented:
 
         monkeypatch.setenv("WHATSAPP_PROVIDER", "meta")
         monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "t")
-        monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "1")
         monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "v")
         monkeypatch.setenv("WHATSAPP_APP_SECRET", "s")
-        monkeypatch.setenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "waba")
 
-        provider = build_whatsapp_provider(Settings())
+        provider = build_whatsapp_provider(Settings(), product=a_product())
         assert isinstance(provider, MetaWhatsAppProvider)
         assert isinstance(provider, WhatsAppProvider)
+        # The product's number and account, never a platform-wide one.
+        assert provider._phone_number_id == "registry-number"  # noqa: SLF001
+        assert provider._business_account_id == "registry-account"  # noqa: SLF001
+
+        # A template source reads an account and has no number to send from.
+        source = build_whatsapp_template_source(Settings(), business_account_id="shared")
+        assert isinstance(source, MetaWhatsAppProvider)
+        assert source._phone_number_id is None  # noqa: SLF001
 
     def test_meta_requires_its_webhook_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """§19: webhook signatures cannot be verified without the app secret, so a
         partial configuration must fail at startup rather than at the first webhook."""
         monkeypatch.setenv("WHATSAPP_PROVIDER", "meta")
         monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "t")
-        monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "1")
         monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "v")
         with pytest.raises(ValueError, match="WHATSAPP_APP_SECRET"):
             Settings()

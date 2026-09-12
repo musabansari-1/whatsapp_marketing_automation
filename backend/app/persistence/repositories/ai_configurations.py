@@ -1,4 +1,4 @@
-"""AI configuration lookup and resolution (§28.4, Phase 22)."""
+"""AI configuration lookup and resolution (§28.4, Phases 22 and 27)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.ai_config import PlatformDefaults, ResolvedAIConfig, resolve
-from app.persistence.models import AIConfiguration, Product
+from app.persistence.models import AIConfiguration, Segment
 
 if TYPE_CHECKING:
     # Type-only: a repository does not depend on configuration at runtime, and the
@@ -47,22 +47,16 @@ async def get_segment_override(
     return result.scalars().first()
 
 
-async def _legacy_policy_allowed(session: AsyncSession, product_id: uuid.UUID) -> bool:
-    """Whether this product may still use the platform's environment-configured policy.
-
-    True only while **exactly one product is active** and that product is this one. The
-    rule is on the count, never on identity: there is no slug, name, UUID or "first"
-    anywhere in it, so it cannot quietly become "default to Academicae". The moment a
-    second product is activated it is false for every product at once, including the
-    original.
-
-    Transitional. Phase 27 seeds real per-product configuration, after which no product
-    reaches this path and the rule can be deleted.
-    """
-    active = list(
-        (await session.execute(select(Product.id).where(Product.is_active.is_(True)))).scalars()
+async def segment_overrides_by_slug(
+    session: AsyncSession, product_id: uuid.UUID
+) -> dict[str, AIConfiguration]:
+    """Every segment override a product holds, keyed by the segment's slug."""
+    result = await session.execute(
+        select(Segment.slug, AIConfiguration)
+        .join(Segment, AIConfiguration.segment_id == Segment.id)
+        .where(AIConfiguration.product_id == product_id)
     )
-    return len(active) == 1 and active[0] == product_id
+    return dict(result.tuples().all())
 
 
 async def resolve_for(
@@ -74,12 +68,13 @@ async def resolve_for(
 ) -> ResolvedAIConfig:
     """The configuration one turn runs with (§28.4).
 
-    Segment override, then product default, then — for operational settings only, or for
-    policy while the legacy compatibility rule holds — the platform baseline.
+    Segment override, then product default, then — for operational settings only — the
+    platform baseline. Policy comes from the product's own rows or not at all; Phase 27
+    removed the rule that let the sole active product use the environment's.
 
     Raises `AIConfigurationError` when a product's policy cannot be resolved. The caller
-    fails the turn closed: replying with another product's prompt would be worse than
-    not replying.
+    fails the turn closed: replying with another product's prompt would be worse than not
+    replying.
     """
     product = await get_product_default(session, product_id)
     segment = (
@@ -87,22 +82,11 @@ async def resolve_for(
         if segment_id is not None
         else None
     )
-
-    return resolve(
-        segment=segment,
-        product=product,
-        defaults=defaults,
-        legacy_policy_allowed=await _legacy_policy_allowed(session, product_id),
-    )
+    return resolve(segment=segment, product=product, defaults=defaults)
 
 
 def platform_defaults_from_settings(settings: Settings) -> PlatformDefaults:
-    """Operational baselines, plus the legacy policy the sole product may still use.
-
-    Reads the existing environment configuration so [D54] holds unchanged: while
-    Academicae is the only active product and has configured no row of its own, it keeps
-    behaving exactly as it did.
-    """
+    """The operational baselines every product inherits. There is no policy among them."""
     return PlatformDefaults(
         model=settings.openrouter_model,
         rag_top_k=settings.rag_top_k,
@@ -110,9 +94,7 @@ def platform_defaults_from_settings(settings: Settings) -> PlatformDefaults:
         rag_max_context_chars=settings.rag_max_context_chars,
         history_turns=settings.conversation_history_turns,
         max_tool_rounds=settings.ai_max_tool_rounds,
-        legacy_system_prompt=settings.ai_system_prompt,
-        legacy_qualification_required_fields=settings.qualification_required_fields,
-        legacy_fallback_message=settings.msg_rag_fallback,
+        fallback_message=settings.msg_rag_fallback,
     )
 
 
@@ -121,4 +103,5 @@ __all__ = [
     "get_segment_override",
     "platform_defaults_from_settings",
     "resolve_for",
+    "segment_overrides_by_slug",
 ]

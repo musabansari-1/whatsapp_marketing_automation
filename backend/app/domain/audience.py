@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.domain.enums import ContactValidationStatus
 from app.domain.phone import normalize_phone
@@ -46,7 +46,12 @@ class ColumnMapping(BaseModel):
     `source` is the header text as it appears in the client's file. It is matched
     case-insensitively and ignoring surrounding whitespace, because spreadsheet
     headers are typed by humans.
+
+    Unknown keys are refused rather than ignored: a misspelled `"requird": true` would
+    otherwise leave a column silently optional.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     source: str = Field(min_length=1)
     field: AudienceField
@@ -65,6 +70,8 @@ class AudienceColumnSchema(BaseModel):
     platform's WhatsApp identity ([D11]); the name is what every downstream surface
     displays, and a contact the salesperson cannot identify is not usable.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     columns: list[ColumnMapping]
 
@@ -99,6 +106,54 @@ class AudienceColumnSchema(BaseModel):
 
     def source_for(self, target: AudienceField) -> str | None:
         return next((c.source for c in self.columns if c.field is target), None)
+
+
+#: The development placeholder: the canonical field names used as their own headers. It is
+#: what the platform read spreadsheets with before a client format was confirmed, and what
+#: the legacy import copies when the environment never set one. Production refuses to read
+#: files with it ([D20]).
+DEVELOPMENT_PLACEHOLDER_COLUMNS: tuple[dict[str, object], ...] = (
+    {"source": "Name", "field": "name", "required": True},
+    {"source": "Phone", "field": "phone", "required": True},
+    {"source": "Email", "field": "email", "required": False},
+    {"source": "Company", "field": "company", "required": False},
+    {"source": "Designation", "field": "designation", "required": False},
+    {"source": "City", "field": "city", "required": False},
+)
+
+
+class AudienceSchemaError(ValueError):
+    """A stored or supplied column schema cannot be used."""
+
+
+def parse_audience_schema(raw: object) -> AudienceColumnSchema:
+    """Validate a product's column mapping before anything reads a file with it ([D51]).
+
+    Stored as JSONB, so the database accepts any shape. This is where a shape becomes a
+    schema, or is refused with a reason a person can act on.
+    """
+    if not isinstance(raw, list):
+        raise AudienceSchemaError("the audience column schema must be a list of column mappings")
+    try:
+        return AudienceColumnSchema.model_validate({"columns": raw})
+    except ValidationError as exc:
+        raise AudienceSchemaError(_describe(exc)) from exc
+
+
+def is_development_placeholder(schema: AudienceColumnSchema) -> bool:
+    """Whether a schema is still the development placeholder rather than a real format."""
+    placeholder = AudienceColumnSchema.model_validate(
+        {"columns": list(DEVELOPMENT_PLACEHOLDER_COLUMNS)}
+    )
+    return schema.columns == placeholder.columns
+
+
+def _describe(exc: ValidationError) -> str:
+    parts = []
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error["loc"])
+        parts.append(f"{location}: {error['msg']}" if location else str(error["msg"]))
+    return "; ".join(parts)
 
 
 class MissingColumnsError(Exception):

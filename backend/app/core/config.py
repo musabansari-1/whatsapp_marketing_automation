@@ -6,19 +6,22 @@ slot policy values or customer-facing copy.
 
 Provider selection is configuration too, so no layer above `app.integrations`
 ever names a concrete provider (CLAUDE.md).
+
+**Only platform configuration lives here.** Since Phase 27, what belongs to one product —
+its WhatsApp number, calendar, spreadsheet format, system prompt and qualification
+criteria — is that product's own row, applied with `python -m app.cli configure-products`.
+None of it has a platform-wide value to fall back to, because with several products a
+platform-wide value is always some other product's.
 """
 
 from __future__ import annotations
 
 import functools
 from enum import StrEnum
-from typing import TYPE_CHECKING, Annotated, ClassVar, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
-
-if TYPE_CHECKING:
-    from app.domain.audience import AudienceColumnSchema
 
 
 class AppEnv(StrEnum):
@@ -62,17 +65,6 @@ class QueueProviderName(StrEnum):
 # comma-separated lists work (`OPT_OUT_KEYWORDS=STOP,UNSUBSCRIBE`) rather than
 # requiring JSON. The `_parse_csv` validator below does the splitting.
 CommaSeparated = Annotated[list[str], NoDecode]
-
-# The development-only audience schema. Production must replace it; the value is named
-# here so the production guard can detect that it has not been.
-PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA = (
-    '[{"source": "Name", "field": "name", "required": true},'
-    ' {"source": "Phone", "field": "phone", "required": true},'
-    ' {"source": "Email", "field": "email", "required": false},'
-    ' {"source": "Company", "field": "company", "required": false},'
-    ' {"source": "Designation", "field": "designation", "required": false},'
-    ' {"source": "City", "field": "city", "required": false}]'
-)
 
 
 def _split_csv(value: object) -> object:
@@ -126,17 +118,17 @@ class Settings(BaseSettings):
     crm_provider: CRMProviderName = CRMProviderName.FAKE
     queue_provider: QueueProviderName = QueueProviderName.INLINE
 
-    # ---------------------------------------------------------------- WhatsApp
+    # ---------------------------------------------------------------- WhatsApp [D40][D50]
+    # Shared by every product: one Meta App, one access token, one webhook. *Which* number
+    # a product sends from, and the business account it sits under, are
+    # `products.whatsapp_phone_number_id` and `products.whatsapp_business_account_id`
+    # (Phase 27). There is deliberately no platform-wide number to fall back to.
     whatsapp_access_token: SecretStr | None = None
-    whatsapp_phone_number_id: str | None = None
     whatsapp_verify_token: SecretStr | None = None
     # Meta signs webhook payloads with the App Secret (HMAC-SHA256). §19 requires
     # webhooks to be authenticated, and §24 does not list this variable, so it is a
     # documented addition rather than an invented requirement.
     whatsapp_app_secret: SecretStr | None = None
-    # Needed to list message templates, which hang off the WABA rather than the
-    # phone number.
-    whatsapp_business_account_id: str | None = None
     whatsapp_api_version: str = "v21.0"
     whatsapp_api_base_url: str = "https://graph.facebook.com"
     whatsapp_timeout_seconds: float = 15.0
@@ -159,14 +151,6 @@ class Settings(BaseSettings):
     # from the conversation alone, which is the safe behaviour before the client's
     # documents are loaded (§11).
     ai_retrieval_enabled: bool = True
-    # **No longer read at runtime.** Phase 21 ([D56]) made knowledge ownership come from
-    # the product relationship, so selecting one platform-wide base by name is
-    # meaningless — and its "use the only base" fallback was the multi-product leak.
-    #
-    # Kept as a field only so an existing `.env` still parses. Retiring it from
-    # `.env.example` and the deployment scripts is Phase 27's configuration cleanup;
-    # nothing in `app/` reads it, and nothing may start.
-    ai_knowledge_base_name: str | None = None
 
     # ---------------------------------------------------------------- embeddings [D1]
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
@@ -217,15 +201,13 @@ class Settings(BaseSettings):
     hubspot_base_url: str = "https://api.hubapi.com"
     hubspot_timeout_seconds: float = 20.0
 
-    # ---------------------------------------------------------------- audience [D4][D20]
+    # ---------------------------------------------------------------- audience [D4][D20][D51]
+    # Operational parsing limits, shared by every product. *Which* spreadsheet headers map
+    # onto the canonical fields ([D25]) is not here: it is `products.audience_column_schema`,
+    # one per product (Phase 27), and there is deliberately no platform-wide mapping to fall
+    # back to — reading one product's file with another's headers would put the wrong
+    # column in the phone field without an error.
     audience_phone_default_region: str = "IN"
-
-    # Maps the client's spreadsheet headers onto the canonical fields ([D25]). The
-    # canonical set is fixed; only this mapping varies per client. The value below uses
-    # the canonical names as headers, which suits development and tests; production
-    # refuses to start with it (see _validate_production_hardening), so a real mapping
-    # must always be supplied ([D32]).
-    audience_column_schema: str = PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA
     audience_max_file_bytes: int = 5 * 1024 * 1024
     audience_max_rows: int = 50_000
 
@@ -244,9 +226,6 @@ class Settings(BaseSettings):
     demo_working_hours_end: str = "18:00"
     demo_booking_horizon_days: int = 14
     demo_timezone: str = "Asia/Kolkata"
-
-    # ---------------------------------------------------------------- qualification [D9][D18]
-    qualification_required_fields: CommaSeparated = Field(default_factory=list)
 
     # ---------------------------------------------------------------- conversations §9 §10
     # How many prior turns are sent to the model. A context window is finite and the
@@ -283,24 +262,15 @@ class Settings(BaseSettings):
     sweep_batch_size: int = 200
 
     # ---------------------------------------------------------------- customer copy [D21]
-    # Never hard-coded in application logic.
+    # Never hard-coded in application logic. A product's system prompt and qualification
+    # criteria are not here: they are its own `ai_configurations` rows (§28.4, Phase 27).
+    # The RAG fallback is the platform's default safety net, which a product may override.
     msg_rag_fallback: str = (
         "I don't have verified information on that yet. "
         "Let me have someone from our team follow up with you."
     )
     msg_booking_confirmation: str = "Your demo is confirmed for {start_time} ({timezone})."
     msg_opt_out_response: str = "You have been unsubscribed and will not receive further messages."
-    # The AI's operating instructions. Configuration ([D21]) because it is
-    # customer-facing behaviour, and because Phase 10 will iterate on it against real
-    # conversations. Deliberately conservative: it tells the model what it may not do,
-    # since the tools and retrieval that let it do more arrive in Phase 10.
-    ai_system_prompt: str = (
-        "You are a helpful assistant replying to a customer on WhatsApp on behalf of "
-        "the business. Be brief and professional. Only state facts that appear in the "
-        "conversation or in verified information provided to you. If you do not know "
-        "something, say you will have a colleague follow up. Never invent prices, "
-        "availability, or commitments."
-    )
 
     # ---------------------------------------------------------------- retries [D27]
     # Maximum attempts per recipient, counting the first. Configuration, never a
@@ -332,12 +302,7 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------------- validators
 
-    @field_validator(
-        "opt_out_keywords",
-        "demo_working_days",
-        "qualification_required_fields",
-        mode="before",
-    )
+    @field_validator("opt_out_keywords", "demo_working_days", mode="before")
     @classmethod
     def _parse_csv(cls, value: object) -> object:
         return _split_csv(value)
@@ -387,6 +352,10 @@ class Settings(BaseSettings):
         OpenRouter provider without one is a startup error rather than a runtime
         surprise. Fake providers need no credentials, which is why local development
         and tests start with no secrets present.
+
+        Only the *shared* credentials are checked. Per-product identifiers — a phone
+        number, a calendar — cannot be checked at startup, because products are rows; the
+        product readiness check reports them, and the provider builders refuse without them.
         """
         missing: list[str] = []
 
@@ -399,16 +368,12 @@ class Settings(BaseSettings):
         if self.whatsapp_provider is WhatsAppProviderName.META:
             if not self.whatsapp_access_token:
                 missing.append("WHATSAPP_ACCESS_TOKEN")
-            if not self.whatsapp_phone_number_id:
-                missing.append("WHATSAPP_PHONE_NUMBER_ID")
             if not self.whatsapp_verify_token:
                 missing.append("WHATSAPP_VERIFY_TOKEN")
             # Without it, webhook signatures cannot be verified and anyone could post
             # forged inbound messages (§19).
             if not self.whatsapp_app_secret:
                 missing.append("WHATSAPP_APP_SECRET")
-            if not self.whatsapp_business_account_id:
-                missing.append("WHATSAPP_BUSINESS_ACCOUNT_ID")
 
         if self.calendar_provider is CalendarProviderName.GOOGLE:
             if not self.google_secret_manager_project:
@@ -440,6 +405,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_production_hardening(self) -> Settings:
+        """Refuse the settings that are unsafe in production whatever the products are.
+
+        The development audience schema used to be checked here too. It moved with the
+        mapping itself: a product whose schema is the placeholder is NOT READY in
+        production, and its uploads are refused ([D20], Phase 27).
+        """
         if self.app_env is not AppEnv.PRODUCTION:
             return self
         if self.app_secret.get_secret_value() == "dev-insecure-change-me":
@@ -450,12 +421,6 @@ class Settings(BaseSettings):
             # §19 requires rate limits. The flag exists for tests that need to make many
             # attempts; production must not be able to start without them.
             raise ValueError("RATE_LIMIT_ENABLED cannot be disabled in production (§19)")
-        if self.audience_column_schema == PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA:
-            raise ValueError(
-                "AUDIENCE_COLUMN_SCHEMA is still the development placeholder. "
-                "Set the client's confirmed Excel column schema before production "
-                "([D4]/[D20])."
-            )
         return self
 
     #: Cloud Tasks rejects a task larger than 1 MB. Base64 costs a third, and the task
@@ -482,23 +447,6 @@ class Settings(BaseSettings):
         return self
 
     # ---------------------------------------------------------------- helpers
-
-    def audience_schema(self) -> AudienceColumnSchema:
-        """Parse the configured column schema.
-
-        Imported locally to keep `app.core` free of a dependency on `app.domain`,
-        which would otherwise invert the layering.
-        """
-        import json
-
-        from app.domain.audience import AudienceColumnSchema
-
-        return AudienceColumnSchema(columns=json.loads(self.audience_column_schema))
-
-    @property
-    def audience_schema_is_placeholder(self) -> bool:
-        """True while the development placeholder is still in force ([D20])."""
-        return self.audience_column_schema == PLACEHOLDER_AUDIENCE_COLUMN_SCHEMA
 
     @property
     def is_production(self) -> bool:

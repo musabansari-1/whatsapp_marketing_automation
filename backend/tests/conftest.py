@@ -12,6 +12,7 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
+from app.configuration.legacy import LegacyEnvironment
 from app.core.config import Settings, reset_settings_cache
 from app.integrations.calendar import FakeCalendarProvider
 from app.integrations.crm import FakeCRMProvider
@@ -39,10 +40,14 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     environments agree.
     """
     monkeypatch.setitem(Settings.model_config, "env_file", None)
+    # The retired single-product variables have their own reader (Phase 27), and a
+    # developer's `.env` must not reach it either.
+    monkeypatch.setitem(LegacyEnvironment.model_config, "env_file", None)
 
     for key in list(os.environ):
         if key.upper().startswith(
             (
+                "AI_",
                 "APP_",
                 "AUDIENCE_",
                 "CALENDAR_",

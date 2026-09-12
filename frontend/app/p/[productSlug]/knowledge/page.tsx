@@ -10,6 +10,10 @@
  * invisible to the assistant, and without the reason on screen nobody knows why an answer
  * was missing.
  *
+ * Changing knowledge is for administrators (D-07): it is what the assistant tells
+ * customers. Everyone can read it. The API enforces the rule; hiding the controls only
+ * spares a salesperson a refusal.
+ *
  * Knowledge is configuration, so an inactive product can still be prepared here.
  */
 
@@ -24,7 +28,7 @@ import { Alert, Button, Card, EmptyState, PageHeader } from '@/components/ui';
 import type { KnowledgeBase, KnowledgeDocument } from '@/lib/api';
 
 export default function KnowledgePage() {
-  const { api, product } = useProduct();
+  const { api, product, user } = useProduct();
   const [bases, setBases] = useState<KnowledgeBase[]>([]);
   const [selected, setSelected] = useState<string>('');
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
@@ -34,6 +38,7 @@ export default function KnowledgePage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const isAdmin = user?.role === 'ADMIN';
   const segments = product.segments.filter((segment) => segment.is_active);
 
   const loadBases = useCallback(() => {
@@ -125,6 +130,13 @@ export default function KnowledgePage() {
 
       {error ? <Alert className="mb-6">{error}</Alert> : null}
 
+      {user && !isAdmin ? (
+        <Alert tone="info" className="mb-6">
+          Only administrators can add, upload or archive knowledge, because it is what the assistant
+          tells customers.
+        </Alert>
+      ) : null}
+
       <div className="grid gap-6 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
         <Card>
           <h2 className="text-sm font-semibold">Collections</h2>
@@ -153,40 +165,42 @@ export default function KnowledgePage() {
             </ul>
           )}
 
-          <form onSubmit={createBase} className="mt-5 space-y-2 border-t border-line pt-4">
-            <label htmlFor="new-kb" className="block text-xs font-medium text-ink-muted">
-              New knowledge base
-            </label>
-            <input
-              id="new-kb"
-              value={newBaseName}
-              onChange={(event) => setNewBaseName(event.target.value)}
-              placeholder="Product FAQs"
-              className="ui-input"
-            />
-            {segments.length > 0 ? (
-              <select
-                aria-label="Segment"
-                value={newBaseSegment}
-                onChange={(event) => setNewBaseSegment(event.target.value)}
-                className="ui-select"
-              >
-                <option value="">Shared across segments</option>
-                {segments.map((segment) => (
-                  <option key={segment.id} value={segment.id}>
-                    Only {segment.display_name}
-                  </option>
-                ))}
-              </select>
-            ) : null}
-            <Button type="submit" variant="secondary" className="w-full">
-              Create
-            </Button>
-          </form>
+          {isAdmin ? (
+            <form onSubmit={createBase} className="mt-5 space-y-2 border-t border-line pt-4">
+              <label htmlFor="new-kb" className="block text-xs font-medium text-ink-muted">
+                New knowledge base
+              </label>
+              <input
+                id="new-kb"
+                value={newBaseName}
+                onChange={(event) => setNewBaseName(event.target.value)}
+                placeholder="Product FAQs"
+                className="ui-input"
+              />
+              {segments.length > 0 ? (
+                <select
+                  aria-label="Segment"
+                  value={newBaseSegment}
+                  onChange={(event) => setNewBaseSegment(event.target.value)}
+                  className="ui-select"
+                >
+                  <option value="">Shared across segments</option>
+                  {segments.map((segment) => (
+                    <option key={segment.id} value={segment.id}>
+                      Only {segment.display_name}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <Button type="submit" variant="secondary" className="w-full">
+                Create
+              </Button>
+            </form>
+          ) : null}
         </Card>
 
         <div className="space-y-4">
-          {selected ? (
+          {selected && isAdmin ? (
             <Card>
               <div className="flex flex-wrap items-center gap-2">
                 <label htmlFor="upload" className="block text-sm font-semibold">
@@ -272,7 +286,7 @@ export default function KnowledgePage() {
                     </div>
                     <div className="flex shrink-0 items-center gap-3">
                       <StatusBadge status={document.status} />
-                      {document.status === 'ARCHIVED' ? null : (
+                      {document.status === 'ARCHIVED' || !isAdmin ? null : (
                         <button
                           type="button"
                           onClick={() => archive(document.id)}

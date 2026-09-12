@@ -17,8 +17,12 @@ from app.core.correlation import bind_log_context
 from app.core.logging import get_logger
 from app.domain.whatsapp_webhook import matches_opt_out, parse_webhook
 from app.integrations.queue import TaskRequest, TaskType
-from app.integrations.registry import build_queue_provider, build_whatsapp_provider
-from app.integrations.whatsapp import OutboundTextMessage
+from app.integrations.registry import (
+    build_queue_provider,
+    build_whatsapp_provider,
+    build_whatsapp_template_source,
+)
+from app.integrations.whatsapp import ApprovedTemplate, OutboundTextMessage
 from app.persistence.database import get_session_factory
 from app.persistence.models import Product
 from app.persistence.repositories import products as product_repo
@@ -264,24 +268,36 @@ async def _handle_opt_out(
 async def sync_whatsapp_templates(task: TaskRequest) -> dict[str, int]:
     """Synchronize template metadata from Meta ([D6], [D57]).
 
-    **WABA-level, not per product.** One Meta App and one shared WABA give one template
-    pool, so this runs once over that pool with the platform's WhatsApp configuration
-    and takes no product. That absence is deliberate: a sync started "for" a product
-    has no business deciding templates belong to it.
+    **Account-level, not per product.** A template belongs to a WhatsApp Business Account,
+    and one shared account serves every product today. So this reads each distinct account
+    the products are configured under — normally one — and takes no product. That absence
+    is deliberate: a sync started "for" a product has no business deciding templates belong
+    to it.
 
     Stores what Meta reports, including the status. Nothing here decides approval;
     campaigns filter on the stored value. Nothing here decides ownership either — a
     newly discovered template is stored unassigned, and an existing assignment survives.
+
+    With no account configured on any product there is nothing to read, and the sync says
+    so. There is no platform-wide account to fall back to (Phase 27).
     """
     settings = get_settings()
-    provider = build_whatsapp_provider(settings)
-
-    templates = await provider.fetch_approved_templates()
-
     factory = get_session_factory()
+    async with factory() as session:
+        accounts = await product_repo.list_whatsapp_business_accounts(session)
+
+    if not accounts:
+        logger.warning("whatsapp_templates_sync_skipped", reason="no_business_account_configured")
+        return {"synced": 0, "accounts": 0}
+
+    templates: list[ApprovedTemplate] = []
+    for account in accounts:
+        provider = build_whatsapp_template_source(settings, business_account_id=account)
+        templates.extend(await provider.fetch_approved_templates())
+
     async with factory() as session:
         synced = await template_repo.upsert_many(session, templates)
         await session.commit()
 
-    logger.info("whatsapp_templates_synced", count=synced)
-    return {"synced": synced}
+    logger.info("whatsapp_templates_synced", count=synced, accounts=len(accounts))
+    return {"synced": synced, "accounts": len(accounts)}

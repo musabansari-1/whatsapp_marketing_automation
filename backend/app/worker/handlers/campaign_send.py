@@ -47,7 +47,7 @@ from app.domain.retry import (
     should_retry,
 )
 from app.integrations.queue import TaskRequest
-from app.integrations.registry import build_whatsapp_provider
+from app.integrations.registry import WhatsAppNotConfiguredError, build_whatsapp_provider
 from app.integrations.whatsapp import OutboundTemplateMessage
 from app.persistence.database import get_session_factory
 from app.persistence.models import (
@@ -222,6 +222,22 @@ async def _process(
         await session.flush()
         return SendOutcome("recovered_prior_send", str(recipient.id), existing.provider_message_id)
 
+    # The campaign's product selects the provider, and therefore the number this goes
+    # out from ([D40]). A SustainX campaign cannot be sent through Academicae's number,
+    # because no caller supplies a number — the domain object does.
+    try:
+        provider = build_whatsapp_provider(settings, product=product)
+    except WhatsAppNotConfiguredError as exc:
+        # The product has no number, and no other number may stand in (Phase 27). Failed
+        # rather than retried: another attempt cannot fix configuration.
+        recipient.status = RecipientStatus.FAILED
+        recipient.error_message = str(exc)[:1000]
+        recipient.failed_at = datetime.now(UTC)
+        await session.flush()
+        logger.warning("campaign_send_failed", reason="whatsapp_not_configured", error=str(exc))
+        await _complete_campaign_if_finished(session, campaign)
+        return SendOutcome("failed_whatsapp_not_configured", str(recipient.id))
+
     lead = await session.get(Lead, recipient.lead_id)
 
     # Counted before the attempt, so a crash mid-send still consumes an attempt rather
@@ -230,10 +246,6 @@ async def _process(
     attempts_made = recipient.attempts
     await session.flush()
 
-    # The campaign's product selects the provider, and therefore the number this goes
-    # out from ([D40]). A SustainX campaign cannot be sent through Academicae's number,
-    # because no caller supplies a number — the domain object does.
-    provider = build_whatsapp_provider(settings, product=product)
     try:
         sent = await provider.send_template_message(
             OutboundTemplateMessage(

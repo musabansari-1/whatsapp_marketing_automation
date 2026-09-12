@@ -91,7 +91,6 @@ class TestProviderConfigValidation:
             Settings()
         message = str(exc_info.value)
         assert "WHATSAPP_ACCESS_TOKEN" in message
-        assert "WHATSAPP_PHONE_NUMBER_ID" in message
         assert "WHATSAPP_VERIFY_TOKEN" in message
 
 
@@ -114,42 +113,40 @@ class TestEmbeddingConfig:
             Settings()
 
 
-class TestAudienceSchema:
-    def test_placeholder_is_flagged(self, settings: Settings) -> None:
-        """[D20]: a development default must never look authoritative."""
-        assert settings.audience_schema_is_placeholder is True
+class TestProductConfigurationIsNotPlatformConfiguration:
+    """Phase 27: what belongs to one product has no platform-wide setting to fall back to.
 
-    def test_schema_parses_into_column_mappings(self, settings: Settings) -> None:
-        schema = settings.audience_schema()
-        assert any(column.field.value == "phone" and column.required for column in schema.columns)
+    With three products, a platform-wide spreadsheet format, prompt or number is always some
+    other product's. Each now lives on the product row, applied by `configure-products`.
+    """
 
-    def test_client_schema_replaces_it_without_code_changes(
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "audience_column_schema",
+            "ai_system_prompt",
+            "qualification_required_fields",
+            "whatsapp_phone_number_id",
+            "whatsapp_business_account_id",
+            "ai_knowledge_base_name",
+        ],
+    )
+    def test_per_product_values_are_not_settings(self, field: str) -> None:
+        assert field not in Settings.model_fields
+
+    def test_a_leftover_variable_is_ignored_rather_than_read(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv(
-            "AUDIENCE_COLUMN_SCHEMA",
-            '[{"source": "Full Name", "field": "name", "required": true},'
-            ' {"source": "Mobile", "field": "phone", "required": true}]',
-        )
+        """An environment still carrying a retired variable starts normally, and nothing
+        reads it. `import-legacy-config` is its only reader."""
+        monkeypatch.setenv("AI_SYSTEM_PROMPT", "A leftover prompt.")
+        monkeypatch.setenv("AUDIENCE_COLUMN_SCHEMA", "[]")
+        monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "123")
+
         settings = Settings()
-        assert [c.source for c in settings.audience_schema().columns] == ["Full Name", "Mobile"]
-        assert settings.audience_schema_is_placeholder is False
 
-    def test_a_schema_without_a_phone_column_is_rejected(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv(
-            "AUDIENCE_COLUMN_SCHEMA",
-            '[{"source": "Name", "field": "name", "required": true}]',
-        )
-        with pytest.raises(ValueError, match="phone column"):
-            Settings().audience_schema()
-
-    def test_the_placeholder_is_the_canonical_field_set(self, settings) -> None:  # type: ignore[no-untyped-def]
-        """[D25]/[D32]: the placeholder differs from production only in its header
-        names, never in which canonical fields exist."""
-        fields = {column.field.value for column in settings.audience_schema().columns}
-        assert fields == {"name", "phone", "email", "company", "designation", "city"}
+        assert not hasattr(settings, "ai_system_prompt")
+        assert not hasattr(settings, "whatsapp_phone_number_id")
 
 
 class TestSlotPolicy:
@@ -217,19 +214,6 @@ class TestProductionHardening:
         with pytest.raises(ValueError, match="SESSION_COOKIE_SECURE"):
             Settings()
 
-    def test_production_requires_a_real_audience_schema(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """[D4]/[D20]: the development placeholder must never reach production.
-
-        This is what makes it safe to build the audience pipeline before the client
-        confirms their column names.
-        """
-        monkeypatch.setenv("APP_ENV", "production")
-        monkeypatch.setenv("APP_SECRET", "a-real-secret")
-        with pytest.raises(ValueError, match="AUDIENCE_COLUMN_SCHEMA"):
-            Settings()
-
     def test_production_refuses_a_disabled_rate_limiter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -240,9 +224,6 @@ class TestProductionHardening:
         """
         monkeypatch.setenv("APP_ENV", "production")
         monkeypatch.setenv("APP_SECRET", "a-real-secret")
-        monkeypatch.setenv(
-            "AUDIENCE_COLUMN_SCHEMA", '[{"source": "Mobile", "field": "phone", "required": true}]'
-        )
         monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
         with pytest.raises(ValueError, match="RATE_LIMIT_ENABLED"):
             Settings()
@@ -250,13 +231,9 @@ class TestProductionHardening:
     def test_production_accepts_hardened_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("APP_ENV", "production")
         monkeypatch.setenv("APP_SECRET", "a-real-secret")
-        monkeypatch.setenv(
-            "AUDIENCE_COLUMN_SCHEMA", '[{"source": "Mobile", "field": "phone", "required": true}]'
-        )
         settings = Settings()
         assert settings.is_production
         assert settings.app_env is AppEnv.PRODUCTION
-        assert settings.audience_schema_is_placeholder is False
 
 
 class TestSettingsCache:

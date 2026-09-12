@@ -56,7 +56,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from tests.integration.conftest import ADMIN_EMAIL, SALES_EMAIL, login
-from tests.integration.helpers import run_db, scoped_prefix
+from tests.integration.helpers import TEST_AUDIENCE_SCHEMA, run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -109,7 +109,12 @@ def admin(client: TestClient, seeded_users: dict[str, str]) -> TestClient:
 
 def make_product(slug: str, *, active: bool = True) -> uuid.UUID:
     async def create(session: AsyncSession) -> uuid.UUID:
-        product = Product(slug=slug, display_name=slug.upper(), is_active=active)
+        product = Product(
+            slug=slug,
+            display_name=slug.upper(),
+            is_active=active,
+            audience_column_schema=[dict(column) for column in TEST_AUDIENCE_SCHEMA],
+        )
         session.add(product)
         await session.flush()
         return product.id

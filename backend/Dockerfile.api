@@ -24,6 +24,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
+# The product catalog, applied by `python -m app.cli configure-products` from the migrate
+# job's image (Phase 27). Business configuration, never secrets.
+COPY config ./config
 
 ENV PATH="/app/.venv/bin:$PATH"
 

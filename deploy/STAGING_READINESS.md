@@ -1,198 +1,257 @@
-# Real Provider Staging Readiness
+# Staging and Production Readiness
 
-Everything required before the first staging deployment that exercises **real**
-integrations rather than fakes.
+Everything required before a deployment that exercises **real** integrations rather than
+fakes. Updated for Phase 27: the platform serves three products, so this checklist is in two
+parts — what the platform needs once, and what **each product** needs before it may be
+activated.
 
-Nothing here is a decision I have made. Where a value is a business choice it is named,
-its checklist ID given, and the space left blank. Where it is a credential, this says
-who issues it, which secret or variable receives it, and how to prove it arrived.
+Nothing here is a decision made on the product owner's behalf. Where a value is a business
+input it is named and left blank. Where it is a credential, this says who issues it, where it
+goes, and how to prove it arrived.
 
-**Status key:** ☐ not supplied · ◐ partially supplied · ☑ verified against the real provider
+**Status key:** ☐ not supplied · ◐ partially supplied · ☑ verified
 
-> A **fake-provider staging deployment needs none of this.** It runs end to end today
-> and is the sensible first use of `deploy/`. This checklist is the gate for the
-> deployment *after* that one — the first where a mistake reaches a real person.
+> A **fake-provider staging deployment needs none of this.** It runs end to end today and is
+> the sensible first use of `deploy/`. This checklist gates the deployment *after* that one —
+> the first where a mistake reaches a real person.
+
+> **Nothing in `deploy/` may be executed without explicit approval (§23).** That includes the
+> product configuration commands below when they target staging or production.
 
 ---
 
-## 0. Before any of it — accounts
+## Part 1 — Global infrastructure (once per environment)
+
+### 1.1 Accounts and hosting
 
 | ☐ | Item | Who | Notes |
 |---|---|---|---|
-| ☐ | Google Cloud project (staging) | Us/client | Separate project from production — see `deploy/config.sh` |
-| ☐ | Billing enabled on that project | Client | Cloud Run, Tasks, Scheduler and Secret Manager all bill |
-| ☐ | Neon PostgreSQL database + `CREATE EXTENSION vector` | Us | Connection string → secret `database-url` |
+| ☐ | Google Cloud project — **staging separate from production** | Us/client | `deploy/config.sh` |
+| ☐ | Billing on that project | Client | Cloud Run, Tasks, Scheduler, Secret Manager all bill |
+| ☐ | Neon PostgreSQL + `CREATE EXTENSION vector` | Us | Connection string → secret `database-url` |
 | ☐ | Vercel project | Us | `INTERNAL_API_BASE_URL` → the Cloud Run API URL |
-| ☐ | A test WhatsApp number we control | Us | The only number any real send may target |
+| ☐ | Test WhatsApp numbers we control | Us | The only numbers any real staging send may target |
 
----
+### 1.2 Shared secrets and platform settings
 
-## 1. META (WhatsApp Cloud API)
+| ☐ | Item | Goes to |
+|---|---|---|
+| ☐ | `APP_SECRET` (real value; production refuses the placeholder) | secret `app-secret` |
+| ☐ | First ADMIN credentials, for `bootstrap-admin` only | `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` |
+| ☐ | Provider selections — `deploy.sh` defaults every external one to `fake` | `*_PROVIDER` |
+| ☐ | Dispatch rate from the real messaging tier — D-05 | `QUEUE_MAX_DISPATCHES_PER_SECOND`, `DISPATCH_RATE_PER_SECOND` |
+| ☐ | Platform slot-policy defaults confirmed — [D8] | `DEMO_*` (a product overrides only what differs) |
+| ☐ | Customer copy reviewed — [D21] | `MSG_RAG_FALLBACK`, `MSG_BOOKING_CONFIRMATION`, `MSG_OPT_OUT_RESPONSE` |
 
-Blocks: everything. Nothing is sent or received without it. **[D22]**, checklist D-22.
+**Retired variables.** `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`,
+`GOOGLE_CALENDAR_ID`, `AUDIENCE_COLUMN_SCHEMA`, `QUALIFICATION_REQUIRED_FIELDS`,
+`AI_SYSTEM_PROMPT` and `AI_KNOWLEDGE_BASE_NAME` are no longer read. Each product holds its own
+values (Part 2). If an environment still sets them, `product-readiness` lists them, and
+`import-legacy-config` is their only reader.
+
+### 1.3 Meta App — shared by every product
+
+One Meta Developer App, one shared WhatsApp Business Account today, one phone number per
+product ([D40], [D50]).
 
 | ☐ | Item | Goes to | Verified by |
 |---|---|---|---|
-| ☐ | Meta App + WhatsApp Business Account (WABA) | — | Both IDs visible in the Meta dashboard |
-| ☐ | **Access token** (permanent System User token, not a 24-hour test token) | secret `whatsapp-access-token` | Template sync returns rows |
-| ☐ | **Phone number ID** | `WHATSAPP_PHONE_NUMBER_ID` | — |
-| ☐ | **WABA ID** | `WHATSAPP_BUSINESS_ACCOUNT_ID` | Templates hang off the WABA, not the number ([D6]) |
-| ☐ | **Verify token** (we choose the string) | secret `whatsapp-verify-token` | `smoke-test.sh` handshake check |
+| ☐ | **Permanent System User access token** (not a 24-hour test token) | secret `whatsapp-access-token` | Template sync returns rows |
+| ☐ | **Verify token** (we choose it) | secret `whatsapp-verify-token` | `smoke-test.sh` handshake |
 | ☐ | **App Secret** | secret `whatsapp-app-secret` | `smoke-test.sh` rejects an unsigned delivery |
-| ☐ | Webhook subscribed to the Cloud Run API URL, fields `messages` | Meta dashboard | Handshake succeeds |
-| ☐ | **Approved MARKETING template(s)** — D-23 | `GET /whatsapp-templates` | **No campaign can be created without one** |
-| ☐ | **Approved UTILITY fallback template** (out-of-24-hour window) — D-24 | `TEMPLATE_WINDOW_FALLBACK` | Currently: outside the window, nothing is sent |
-| ☐ | **Approved booking-confirmation template** — D-24 | `TEMPLATE_BOOKING_CONFIRMATION` | Needed only if confirmation may fall outside the window |
-| ☐ | Template **variable mapping** beyond variable 1 — D-02 | Code + configuration | A 3-variable template currently sends 2 empty ones |
-| ☐ | **Confirmed messaging tier / dispatch rate** — D-05 | `QUEUE_MAX_DISPATCHES_PER_SECOND` (queue) and `DISPATCH_RATE_PER_SECOND` (courtesy) | The queue value is the only true global ceiling |
+| ☐ | Webhook subscribed to the Cloud Run API URL, field `messages` | Meta dashboard | Handshake succeeds |
+| ☐ | Template variable mapping beyond variable 1 — D-02 | Code + configuration | A 3-variable template currently sends 2 empty |
+| ☐ | Out-of-window fallback / booking confirmation template names — D-24 | `TEMPLATE_WINDOW_FALLBACK`, `TEMPLATE_BOOKING_CONFIRMATION` | Names only; content is Meta's |
 
-⚠️ Template approval takes days. It is the longest lead time on this page — start it first.
+Phone number IDs and business account IDs are **not** here: they are per product (Part 2).
 
-**Business decisions still open here:** the template text itself ([D23] — Meta approves
-content, we never invent it), and D-18: what happens to a customer who replies after 24
-hours. Today the turn is recorded and nothing is sent.
+⚠️ Template approval takes days. Start it first.
 
----
-
-## 2. OPENROUTER (LLM)
-
-Blocks: every AI reply. **[D17]**, checklist D-20.
+### 1.4 OpenRouter (LLM)
 
 | ☐ | Item | Goes to | Verified by |
 |---|---|---|---|
-| ☐ | API key | secret `openrouter-api-key` | Any real turn produces a reply |
-| ☐ | **Selected production model** — D-20 | `OPENROUTER_MODEL` | **No default exists; startup fails without it when `LLM_PROVIDER=openrouter`** |
-| ☐ | **Benchmark completed** — D-20 | — | 3–4 candidates × ~20 representative conversations |
-| ☐ | **System prompt** — D-21 | `AI_SYSTEM_PROMPT` | Customer-facing copy; currently a conservative placeholder |
-| ☐ | `CONVERSATION_HISTORY_TURNS` reviewed — D-16 | configuration | Currently 20, a judgement |
-| ☐ | `AI_MAX_TOOL_ROUNDS` reviewed — D-26 | configuration | Currently 4, a judgement |
+| ☐ | API key | secret `openrouter-api-key` | A real turn produces a reply |
+| ☐ | **Production model** — D-20 | `OPENROUTER_MODEL` | No default; startup fails without it when the provider is `openrouter` |
+| ☐ | Benchmark with real prompts and documents — D-20 | — | 3–4 candidates × ~20 conversations per product |
+| ☐ | `CONVERSATION_HISTORY_TURNS`, `AI_MAX_TOOL_ROUNDS` reviewed — D-16, D-26 | configuration | A product may override either |
+| ☐ | `RAG_MIN_SIMILARITY` tuned with real documents — D-09 | configuration | A product may override it |
+| ☐ | Embedding model unchanged — [D1] | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION` | One model for every product; changing it is a migration plus full re-embedding |
 
-### RAG (must be ready before the benchmark means anything)
+System prompts and qualification criteria are **not** here: they are per product (Part 2).
 
-| ☐ | Item | Goes to | Verified by |
-|---|---|---|---|
-| ☐ | **Real knowledge documents** — D-12 | Uploaded via the dashboard | Documents reach READY, not FAILED |
-| ☐ | Which knowledge base the AI answers from — D-25 | `AI_KNOWLEDGE_BASE_NAME` | With several bases and this unset, the AI retrieves from none |
-| ☐ | `RAG_MIN_SIMILARITY` tuned — D-09 | configuration | Currently 0.25, a guess. Tune with real documents |
-| ☐ | Documents fit the ~700 KB upload cap — D-08 | — | A larger file needs object storage first |
-| ☐ | Embedding configuration verified | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION` | Must stay `all-MiniLM-L6-v2` / 384 — changing either is a migration **plus full re-embedding** |
-
-⚠️ The embedding model runs in-process in the worker with the weights baked into the
-image ([D1]). It needs **no credential and no third party** — it is the one integration
-that is already real.
-
----
-
-## 3. GOOGLE (Calendar)
-
-Blocks: every booking. **[D7]**, **[D19]**, checklist D-27/D-28.
+### 1.5 Google Calendar — shared operations account
 
 | ☐ | Item | Goes to | Verified by |
 |---|---|---|---|
-| ☐ | **Which calendar, per product** — D-28 | `products.google_calendar_id`, one per product | The platform treats *all* busy time on a product's calendar as unavailable for that product; a product with none refuses bookings |
-| ☐ | Google Calendar API enabled on the project | — | — |
-| ☐ | **OAuth client** (Desktop app, Internal) | `GOOGLE_OAUTH_CLIENT_ID`, secret `google-oauth-client-secret` | — |
-| ☐ | **Refresh token — the one-time human consent** — D-27 | secret `google-calendar-refresh-token` | Follow `deploy/oauth-consent.md` |
-| ☐ | Worker SA holds `secretmanager.secretVersionAdder` | IAM | Without it everything works until Google rotates the token, then fails at once |
-| ☐ | **Timezone** | `DEMO_TIMEZONE` | Currently `Asia/Kolkata` |
-| ☐ | **Availability policy** — [D8] | `DEMO_DURATION_MINUTES`, `DEMO_BUFFER_MINUTES`, `DEMO_WORKING_DAYS`, `DEMO_WORKING_HOURS_START/END`, `DEMO_BOOKING_HORIZON_DAYS` | Confirm each with the client; the defaults are ours |
-| ☐ | Should the salesperson be an attendee — D-30 | — | Today the event is on the shared calendar and the customer is the only attendee |
+| ☐ | Calendar API enabled | — | — |
+| ☐ | **OAuth client** (Desktop app, Internal) — one for every product | `GOOGLE_OAUTH_CLIENT_ID`, secret `google-oauth-client-secret` | — |
+| ☐ | **Refresh token — one human consent** — D-27 | secret `google-calendar-refresh-token` | `deploy/oauth-consent.md` |
+| ☐ | Worker SA holds `secretmanager.secretVersionAdder` | IAM | Otherwise booking fails when Google rotates the token |
+| ☐ | Each product's calendar **shared with the operations account** | Google Calendar | That product's slots reflect its diary |
 
-⚠️ **The consent flow cannot be automated, scripted, or done by a service account.** A
-person clicks Allow, once. Prefer a shared operations account: whoever consents is whose
-access the platform inherits, and a deleted account stops booking.
+Calendar IDs are per product (Part 2). No new OAuth client or token is needed per product
+unless a calendar sits in a different Google account ([D43]).
 
----
+⚠️ The consent flow cannot be automated or done by a service account.
 
-## 4. HUBSPOT (CRM)
+### 1.6 HubSpot — DEFERRED / DISABLED FOR MULTI-PRODUCT
 
-Blocks: nothing — §14 requires a CRM failure to be invisible to everything else. But
-data is lost silently if the properties are missing. Checklist D-39.
+**Not a launch blocker.** The multi-product CRM design is deferred ([D58], planned Phase 28).
+While more than one product row exists the CRM sync task skips every lead and writes nothing,
+because the flat `wa_*` properties carry no product. Leave `CRM_PROVIDER=fake`. No HubSpot
+token, property or portal work is needed for launch.
 
-| ☐ | Item | Goes to | Verified by |
-|---|---|---|---|
-| ☐ | Private App access token | secret `hubspot-access-token` | A synced contact appears |
-| ☐ | Scopes: read + write contacts | HubSpot app | — |
-| ☐ | **All eight custom contact properties created** — D-39 | HubSpot | **Open a synced contact and read the values back** |
-| ☐ | Property mappings verified field by field | — | See below |
+### 1.7 Knowledge upload limit
 
-The eight properties, exactly as written:
+**At most ~700 KB per document** (D-08). V1 has no blob store, so the bytes travel inside the
+Cloud Tasks message, and startup refuses a larger `KNOWLEDGE_MAX_FILE_BYTES` with Cloud Tasks
+selected. **Check every real document against this before staging.** If a supplied document
+exceeds it, stop and report — do not redesign ingestion unannounced.
+
+### 1.8 Schema, catalog and readiness
+
+In order, after `deploy.sh` has migrated (commands in `deploy/README.md`, *Product
+configuration*; each needs approval):
 
 ```text
-wa_lead_status      wa_lead_source      wa_campaign        wa_opted_out
-wa_qualification    wa_demo_at          wa_demo_status     wa_last_synced_at
+configure-products --file config/products.json   products and segments; idempotent
+import-legacy-config academicae                  once; Academicae's pre-Phase-27 environment values
+configure-products (with real values added)      as each product's inputs arrive
+product-readiness                                must exit 0 before any real provider is enabled
+activate-product <slug>                          per product, only when READY
 ```
 
-⚠️ **HubSpot silently ignores properties it does not recognise.** The write succeeds,
-returns 200, and discards the data. There is no error to alert on. This is the single
-most likely way an integration appears to work while losing half of what it sends —
-reading one contact back after the first sync is the only reliable check.
-
-**Business decisions still open here:** D-40 (our `wa_lead_status` overwriting a
-salesperson's own judgement) and D-38 (whether the conversation transcript should ever
-go to HubSpot — today it does not, deliberately).
+Academicae's row is **active** from its migration. Until its configuration is imported and its
+real WhatsApp number and calendar are set, `product-readiness` reports it active but NOT READY
+and exits non-zero. On a fake-provider staging that is harmless; before any real provider is
+enabled it must be resolved — by configuring Academicae, or by deliberately deactivating it
+until it is configured.
 
 ---
 
-## 5. EXCEL (audience)
+## Part 2 — Per product
 
-Blocks: **production startup**, not staging. Checklist D-46b/D-06.
-
-| ☐ | Item | Goes to | Verified by |
-|---|---|---|---|
-| ☐ | **A real client Excel file** | — | One is enough |
-| ☐ | **Final column mapping** — D-46b | `AUDIENCE_COLUMN_SCHEMA` | **Production refuses to start with the development placeholder** |
-| ☐ | **Required fields confirmed** — D-06 | — | `name` and `phone` are both required today; a row with a phone and no name is rejected. Confirm that is wanted |
-| ☐ | Phone region confirmed | `AUDIENCE_PHONE_DEFAULT_REGION` | Currently `IN` |
-| ☐ | A real upload previews cleanly | — | Upload → preview → check the invalid-row report before confirming |
-
-The mapping is a translation exercise, not a design one: the six canonical fields
-(`name`, `phone`, `email`, `company`, `designation`, `city`) never change — only the
-client's header names do.
-
----
-
-## 6. BUSINESS DECISIONS
-
-None of these has been made. Each is listed with what the platform does *today*, so a
-decision to leave it alone is also a decision.
-
-| ☐ | Decision | ID | Today | Blocks |
-|---|---|---|---|---|
-| ☐ | **Qualification criteria** | D-19 / [D37] | `QUALIFICATION_REQUIRED_FIELDS` is empty, so **no lead can ever reach QUALIFIED** | Staging being meaningful |
-| ☐ | **Analytics scope** | D-33 | Eight of §17's nine sections exist; Analytics' metrics *are* the Overview | The rest of Phase 14 |
-| ☐ | **Rescheduling behaviour** | D-29 | Unimplemented. "Can we move it?" produces a **second** booking | Production |
-| ☐ | Pause semantics — cancel, or resume | D-01 | No pause endpoint exists; the state is unreachable | Phase 14 completion |
-| ☐ | ADMIN-only knowledge upload | D-07 | Any authenticated user may upload documents the AI will quote | Phase 14 completion |
-| ☐ | What closes a conversation | D-14 / D-24b | `CLOSED` is honoured everywhere but **no code path takes it** | Production |
-| ☐ | Out-of-24-hour-window behaviour | D-18 | Recorded; nothing sent | Production |
-| ☐ | Data retention windows | D-44 | Nothing purges `webhook_events`, `ai_runs`, `conversation_messages` | Production |
-| ☐ | The three dashboard metric definitions | D-34 | Defined in `analytics.py`; unconfirmed with the client | Staging sign-off |
-| ☐ | May a human change a lead's status | D-13 | `PATCH /leads/{id}` allows it, validated and audited | Staging sign-off |
-
----
-
-## 7. Order of work
-
-Dependencies, not preferences:
+### 2.1 How a product goes live
 
 ```text
-Meta template submission ─────────────┐   (days of Meta review — start first)
-Google OAuth consent ─────────────────┤   (one human action, cannot be parallelised)
-HubSpot properties ───────────────────┤
-Client Excel file ────────────────────┤
-Real knowledge documents ─────────────┘
-                                      ↓
-                            OpenRouter benchmark (D-20)
-                                      ↓
-                    D-19 qualification · D-09 similarity · D-21 prompt
-                                      ↓
-                          First real-provider staging deployment
-                                      ↓
-                              The E2E plan, one provider at a time
+create the product (catalog)        → inactive
+configure segments                  → catalog
+configure WhatsApp                  → phone number ID (unique) + business account ID (may be shared)
+configure calendar                  → its own calendar ID
+configure AI                        → product default; sparse segment overrides only where needed
+configure audience schema           → the confirmed spreadsheet headers
+sync and assign templates           → Meta-approved MARKETING templates, assigned explicitly
+load knowledge                      → READY documents, each ≤ ~700 KB
+product-readiness <slug>            → READY, or READY WITH GAPS accepted knowingly
+activate-product <slug>             → explicit; never a side effect
 ```
 
-**Turn providers on one at a time.** Four real integrations enabled together means
-debugging four at once, each unproven and each with its own failure mode. The order
-above is also the order of risk: WhatsApp first (nothing works without it), then LLM,
-then Calendar, then HubSpot — which, by §14's design, cannot break anything else.
+Nothing missing falls back to another product. The runtime refuses regardless of readiness: an
+unknown number is not routed, a product without policy does not answer, without a calendar it
+does not book, without its own number it does not send, an unassigned template is unusable.
+
+### 2.2 Checklist
+
+| Item | Academicae | SustainX | Life Herba |
+|---|---|---|---|
+| Row, slug, display name | ☑ `academicae` — existing row, fixed ID | ◐ `sustainx` — in the catalog, created on first apply | ◐ `life-herba` — in the catalog, created on first apply |
+| Active | **active** (migration) | inactive | inactive |
+| Segments | none — valid | ☑ `government`, `industry` (more later, as data) | ☑ `healthcare-professionals`, `wellness-centers`, `pharmacies`, `consumers` |
+| Audience column schema | ☐ import from its environment, then confirm the real headers (D-46b) | ☐ not supplied | ☐ not supplied |
+| AI system prompt | ☐ import from its environment, then review | ☐ not supplied — one product-level prompt | ☐ not supplied — product default |
+| Qualification criteria — [D37] | ☐ | ☐ | ☐ |
+| Segment AI overrides | none | **none** — every segment shares one behaviour | ☐ sparse, only where a segment genuinely differs |
+| WhatsApp phone number ID | ☐ | ☐ | ☐ |
+| WhatsApp business account ID | ☐ | ☐ (may equal the others) | ☐ (may equal the others) |
+| Google Calendar ID | ☐ | ☐ | ☐ |
+| Slot policy | platform default unless an override is supplied | platform default; one calendar for all segments | platform default; no segment calendars |
+| Templates: synced, assigned, APPROVED, MARKETING | ☐ | ☐ | ☐ |
+| Knowledge: READY documents | ☐ | ☐ one shared product knowledge base | ☐ one shared ecosystem knowledge base (not one per segment) |
+| `product-readiness` today | NOT READY | NOT READY | NOT READY |
+| CRM | deferred | deferred | deferred |
+
+### 2.3 Templates
+
+1. Synchronize templates from Meta (the sync reads each business account a product is
+   configured under).
+2. Review the unassigned templates on any product's Templates page.
+3. Assign each usable template to the product it belongs to — ADMIN, explicit, confirmed.
+   Nothing infers ownership ([D57]).
+4. Confirm Meta shows it APPROVED and MARKETING.
+5. Only then create campaigns with it.
+
+A product with no assigned, approved marketing template is **not campaign-ready**
+(`templates.none_usable`). Campaign sending also re-checks the stored state at confirmation.
+Templates Meta later deletes are not removed by the sync ([D57]); a send with one fails at
+Meta and is recorded as a failed recipient.
+
+### 2.4 Knowledge
+
+Only the product owner's real documents. Nothing is generated or invented. One shared
+knowledge base per product is the normal shape. Upload is ADMIN-only (D-07). A product with no
+READY document answers factual questions only with the fallback (`knowledge.none_ready`).
+
+### 2.5 Activation
+
+`activate-product <slug>` runs the readiness check and refuses a NOT READY product. A product
+READY WITH GAPS — typically no template or no knowledge yet — is activated only with
+`--accept-gaps`. `deactivate-product <slug>` stops new customer activity; records stay
+readable.
+
+---
+
+## Part 3 — Business decisions
+
+| ☐ | Decision | ID | Status |
+|---|---|---|---|
+| ☐ | **Qualification criteria, per product** | D-19 / [D37] | Open. Empty criteria mean no lead can reach QUALIFIED |
+| ☑ | Pause semantics | D-01 | **Deferred** ([D61]). Cancel is the stop |
+| ☑ | Knowledge upload permissions | D-07 | **ADMIN-only** ([D61]) |
+| ◐ | Analytics | D-33 | Visibility decided: all internal users ([D61]). Analytics beyond the Overview not built |
+| ☐ | Rescheduling behaviour | D-29 | Unimplemented. "Can we move it?" produces a second booking |
+| ☐ | What closes a conversation | D-14 / D-24b | `CLOSED` honoured, never taken |
+| ☐ | Out-of-24-hour-window behaviour | D-18 | Recorded; nothing sent |
+| ☐ | Data retention windows | D-44 | Nothing purges message content |
+| ☐ | Dashboard metric definitions | D-34 | Unconfirmed with the client |
+| ☐ | May a human change a lead's status | D-13 | Allowed, validated and audited |
+
+---
+
+## Part 4 — Order of work
+
+```text
+Meta template submission, per product ─────┐   (days of review — start first)
+Meta phone numbers, one per product ───────┤
+Google OAuth consent (once) ───────────────┤
+Calendar IDs, one per product ─────────────┤
+Spreadsheet headers, per product ──────────┤
+Prompts and criteria, per product ─────────┤
+Knowledge documents, per product ──────────┘
+                                           ↓
+                   configure-products · import-legacy-config academicae
+                                           ↓
+                        OpenRouter benchmark (D-20) · D-09 tuning
+                                           ↓
+                        product-readiness — exit 0, reviewed
+                                           ↓
+                    First real-provider staging deployment (approval)
+                                           ↓
+               The E2E plan, one provider at a time, one product at a time
+```
+
+**Turn providers on one at a time, and products on one at a time.** WhatsApp first, then the
+LLM, then Calendar. HubSpot stays deferred.
+
+---
+
+## Part 5 — Actions that need explicit approval
+
+- Running anything in `deploy/` — infrastructure, secrets, deploy, sweeps, alerts, smoke test.
+- Running the product configuration commands against staging or production databases.
+- Activating a product in staging or production.
+- Enabling any real provider (`WHATSAPP_PROVIDER=meta`, `LLM_PROVIDER=openrouter`,
+  `CALENDAR_PROVIDER=google`).
+- Subscribing the Meta webhook, submitting templates, or any Meta Business Manager change.
+- The Google OAuth consent, and any real calendar event.
+- Sending any real WhatsApp message.

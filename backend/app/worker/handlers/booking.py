@@ -26,7 +26,7 @@ from app.core.logging import get_logger
 from app.domain.enums import NotificationType
 from app.domain.retry import RetryPolicy, backoff_seconds, classify, should_retry
 from app.integrations.queue import TaskRequest
-from app.integrations.registry import build_whatsapp_provider
+from app.integrations.registry import WhatsAppNotConfiguredError, build_whatsapp_provider
 from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
 from app.persistence.models import Booking, Lead, Product
@@ -148,7 +148,16 @@ async def _send_confirmation(
         # link is SET NULL on delete, and losing it used to fall back to the platform
         # number, reaching the customer from one they had never seen.
         product = await session.get(Product, product_id)
+
+    try:
+        if product is None:  # pragma: no cover - bookings.product_id is a NOT NULL FK
+            raise WhatsAppNotConfiguredError(f"Product {product_id} no longer exists")
         whatsapp = build_whatsapp_provider(settings, product=product)
+    except WhatsAppNotConfiguredError as exc:
+        # Permanent until a number is configured, and no other number may stand in. The
+        # booking stands and the team has been notified, as for any failed confirmation.
+        logger.warning("booking_confirmation_failed", error=str(exc))
+        return False
 
     try:
         result = await whatsapp.send_text_message(

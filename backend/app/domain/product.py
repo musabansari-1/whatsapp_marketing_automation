@@ -23,6 +23,20 @@ Nothing here branches on which product it is. The rule reads one flag.
 
 from __future__ import annotations
 
+import re
+
+#: `products.slug` is `String(64)`, and the slug is a permanent route segment (Phase 26).
+SLUG_MAX_LENGTH = 64
+
+# Lowercase words joined by single hyphens: `academicae`, `life-herba`. The same shape a
+# segment slug takes. Nothing upper-case, nothing that needs escaping in a URL.
+_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def is_valid_slug(value: str) -> bool:
+    """Whether a product or segment slug is a clean, permanent URL segment."""
+    return len(value) <= SLUG_MAX_LENGTH and _SLUG.fullmatch(value) is not None
+
 
 class ProductInactiveError(Exception):
     """The product is inactive, so it cannot start new customer activity."""

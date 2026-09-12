@@ -83,9 +83,6 @@ class TestAppConfiguration:
         """§19: protect internal APIs."""
         monkeypatch.setenv("APP_ENV", "production")
         monkeypatch.setenv("APP_SECRET", "a-real-secret")
-        monkeypatch.setenv(
-            "AUDIENCE_COLUMN_SCHEMA", '[{"source": "Mobile", "field": "phone", "required": true}]'
-        )
         with TestClient(create_app(Settings())) as client:
             assert client.get("/openapi.json").status_code == 404
             assert client.get("/docs").status_code == 404

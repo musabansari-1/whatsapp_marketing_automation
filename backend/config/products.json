@@ -1,0 +1,32 @@
+{
+  "products": [
+    {
+      "slug": "academicae",
+      "id": "00000000-0000-4000-8000-000000000001",
+      "display_name": "Academicae",
+      "segments": []
+    },
+    {
+      "slug": "sustainx",
+      "display_name": "SustainX",
+      "segments": [
+        { "slug": "government", "display_name": "Government", "display_order": 10 },
+        { "slug": "industry", "display_name": "Industry", "display_order": 20 }
+      ]
+    },
+    {
+      "slug": "life-herba",
+      "display_name": "Life Herba",
+      "segments": [
+        {
+          "slug": "healthcare-professionals",
+          "display_name": "Healthcare Professionals",
+          "display_order": 10
+        },
+        { "slug": "wellness-centers", "display_name": "Wellness Centers", "display_order": 20 },
+        { "slug": "pharmacies", "display_name": "Pharmacies", "display_order": 30 },
+        { "slug": "consumers", "display_name": "Consumers", "display_order": 40 }
+      ]
+    }
+  ]
+}

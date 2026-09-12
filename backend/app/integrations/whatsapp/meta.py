@@ -52,7 +52,9 @@ class MetaWhatsAppProvider(WhatsAppProvider):
         self,
         *,
         access_token: str,
-        phone_number_id: str,
+        # None for a provider built only to read an account's templates: it has no number
+        # to send from, and refuses to send rather than guessing one.
+        phone_number_id: str | None,
         business_account_id: str,
         api_version: str = "v21.0",
         base_url: str = "https://graph.facebook.com",
@@ -142,6 +144,12 @@ class MetaWhatsAppProvider(WhatsAppProvider):
     # ---------------------------------------------------------------- internals
 
     async def _send(self, payload: dict[str, Any], *, to: str) -> SentMessage:
+        if self._phone_number_id is None:
+            # Built only to read an account's templates. Sending needs a product's number,
+            # and guessing one is exactly what per-product numbers exist to prevent.
+            raise NonRetryableProviderError(
+                "This WhatsApp provider has no phone number to send from", provider=self.name
+            )
         body = await self._request(
             "POST", f"{self._base_url}/{self._phone_number_id}/messages", json=payload
         )

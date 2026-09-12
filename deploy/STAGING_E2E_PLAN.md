@@ -48,7 +48,8 @@ Bootstrap the first ADMIN with the CLI command; log in through the Vercel fronte
 - **Negative:** an unauthenticated dashboard call returns 401, not a redirect loop.
 
 ### 2. Upload real Excel audience
-Upload the client's real file (D-46b mapping configured).
+Upload the client's real file, into the product it belongs to, with that product's
+`audience_column_schema` configured (D-46b).
 - **Expect:** the preview parses; the invalid-row report is *read*, not skipped.
 - **Watch for:** rows with a valid phone and no name — rejected today (D-06). If the real
   file contains them, that is a decision to take before production, not a bug to patch.
@@ -189,7 +190,7 @@ Ask a question answered by a real document.
   `alerts.sh`'s policy fires.
 
 ### 13. Qualification
-With `QUALIFICATION_REQUIRED_FIELDS` configured (D-19).
+With the product's `qualification_required_fields` configured (D-19).
 - **Expect:** the AI writes extracted facts to `qualification_data`; the **backend** sets
   `lead.status`. The model never decides ([D18]).
 - **Expect:** every status change follows the §10 transition table.
@@ -303,5 +304,6 @@ test failures:
   and likely.
 - **Nothing closes a conversation (D-14).** Conversations stay open indefinitely.
 - **Nothing purges message content (D-44).** No retention job exists.
-- **Pause is unreachable (D-01)** and there is no resume path.
-- **Any authenticated user may upload knowledge documents (D-07)** that the AI will quote.
+- **Pause is deferred (D-01, [D61]).** Cancellation is the only way to stop a campaign.
+- **Knowledge changes are ADMIN-only (D-07, [D61]).** Verify a salesperson can read but not
+  upload or archive.

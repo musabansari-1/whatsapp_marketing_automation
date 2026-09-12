@@ -202,10 +202,10 @@ preview can show what was rejected and why. Phone numbers are normalized to E.16
 using `AUDIENCE_PHONE_DEFAULT_REGION` (`IN` by default), and duplicates are detected
 after normalization, so two spellings of one number are caught.
 
-### The column schema is configuration
+### The column schema is each product's configuration
 
-`AUDIENCE_COLUMN_SCHEMA` maps the client's spreadsheet headers onto the canonical
-fields:
+Each product's `audience_column_schema` maps that product's spreadsheet headers onto the
+canonical fields ([D51], Phase 27):
 
 ```json
 [{ "source": "Full Name",     "field": "name",        "required": true },
@@ -216,10 +216,12 @@ fields:
  { "source": "Location",      "field": "city",        "required": false }]
 ```
 
-The value shipped in `.env.example` is a **development placeholder**, not a client
-format. Production refuses to start while it is still in place, so the pipeline could
-be built before the client confirmed their columns without inventing names ([D4],
-[D20]). Swapping in the real headers needs no code change.
+It is set per product with `python -m app.cli configure-products` (see
+`backend/config/README.md`). A product with no schema refuses uploads — there is no
+platform-wide mapping to fall back to, because products receive spreadsheets from different
+sources. A product still carrying the **development placeholder** (the canonical names used
+as headers) is refused in production ([D4], [D20]). Swapping in real headers needs no code
+change.
 
 `name` and `phone` must both be mapped and marked required. Unmapped columns are still
 preserved in each row's stored `raw_row`.
@@ -496,7 +498,8 @@ The AI extracts; the backend decides ([D9]). `update_lead` writes facts into
 `leads.qualification_data`, and `app/domain/qualification.py` applies the rules.
 
 **The criteria are configuration and are empty by default**, because [D37] has not
-decided them. With `QUALIFICATION_REQUIRED_FIELDS` unset, nothing ever reaches
+decided them. With a product's `qualification_required_fields` unset (its AI
+configuration, since Phase 27), nothing ever reaches
 `QUALIFIED` — the machinery is complete and inert rather than guessing at rules nobody
 has agreed. Supplying the fields switches it on without a code change.
 

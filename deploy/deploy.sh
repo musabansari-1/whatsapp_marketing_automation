@@ -90,10 +90,12 @@ common_env=(
 
 # These are applied with --update-env-vars, not --set-env-vars, and the difference is
 # load-bearing. --set replaces the service's entire environment, which would delete every
-# variable an operator set by hand — OPENROUTER_MODEL, AUDIENCE_COLUMN_SCHEMA,
-# QUALIFICATION_REQUIRED_FIELDS, the MSG_* copy. The runbook
-# instructs setting exactly those by hand, so the next deploy would silently undo the
-# configuration and, under APP_ENV=production, the service would refuse to start.
+# variable an operator set by hand — OPENROUTER_MODEL, DISPATCH_RATE_PER_SECOND, the MSG_*
+# copy. The runbook instructs setting exactly those by hand, so the next deploy would
+# silently undo the configuration, and a service whose provider needs OPENROUTER_MODEL would
+# refuse to start. (What belongs to one product — its number, calendar, spreadsheet format
+# and prompt — is not an environment variable at all since Phase 27. It lives on the
+# product's rows; see backend/config/README.md.)
 #
 # The cost of --update is that removing a variable from the list above no longer removes
 # it from the service; that needs an explicit --remove-env-vars. A deploy that forgets a

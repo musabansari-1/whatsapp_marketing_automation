@@ -59,6 +59,7 @@ from app.integrations.llm import Role
 from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import (
     CalendarNotConfiguredError,
+    WhatsAppNotConfiguredError,
     build_calendar_provider,
     build_embedding_provider,
     build_llm_provider,
@@ -217,9 +218,9 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
     try:
         ai_config = await _resolve_ai_config(settings, product_id, segment_id)
     except AIConfigurationError as exc:
-        # A product without policy of its own, and no legacy baseline available to it.
-        # Failing the turn is the honest outcome: replying would mean speaking in
-        # another product's voice.
+        # A product without policy of its own. There is no platform policy to borrow
+        # (Phase 27), and failing the turn is the honest outcome: replying would mean
+        # speaking in a voice nobody configured for this product.
         logger.warning(
             "conversation_ai_not_configured",
             conversation_id=str(conversation_id),
@@ -297,7 +298,19 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
     # customer from Academicae's number would look, to them, like a stranger replying to
     # a conversation they never started.
     async with factory() as session:
-        whatsapp = build_whatsapp_provider(settings, product=await session.get(Product, product_id))
+        product = await session.get(Product, product_id)
+    try:
+        if product is None:  # pragma: no cover - conversations.product_id is a NOT NULL FK
+            raise WhatsAppNotConfiguredError(f"Product {product_id} no longer exists")
+        whatsapp = build_whatsapp_provider(settings, product=product)
+    except WhatsAppNotConfiguredError as exc:
+        # The product lost its number after the message arrived. No other number may
+        # answer in its place, so the reply is not sent and the run records why.
+        await _record_failed_run(conversation_id, provider.model, str(exc))
+        logger.warning(
+            "conversation_reply_not_sent", reason="whatsapp_not_configured", error=str(exc)
+        )
+        return TurnOutcome("whatsapp_not_configured", str(conversation_id)).as_dict()
 
     try:
         result = await whatsapp.send_text_message(

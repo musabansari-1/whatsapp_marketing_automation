@@ -42,7 +42,7 @@ from app.persistence.models import (
 )
 from app.persistence.repositories import suppressions as suppression_repo
 from tests.integration.conftest import login
-from tests.integration.helpers import run_db, scoped_prefix
+from tests.integration.helpers import TEST_AUDIENCE_SCHEMA, run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -90,7 +90,13 @@ def admin(
 
 def make_product(slug: str) -> uuid.UUID:
     async def create(session: AsyncSession) -> uuid.UUID:
-        product = Product(slug=slug, display_name=slug.upper())
+        product = Product(
+            slug=slug,
+            display_name=slug.upper(),
+            # Uploads read the product's own mapping since Phase 27; there is no
+            # platform-wide one.
+            audience_column_schema=[dict(column) for column in TEST_AUDIENCE_SCHEMA],
+        )
         session.add(product)
         await session.flush()
         return product.id

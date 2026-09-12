@@ -77,9 +77,38 @@ class TestAuthentication:
     def test_a_salesperson_may_read_the_knowledge_base(
         self, client: TestClient, seeded_users: dict[str, str]
     ) -> None:
-        """Reading is not the restricted operation — §9 restricts broadcasting."""
+        """Reading is not the restricted operation. Changing knowledge is (D-07)."""
         login(client, email=SALES_EMAIL)
         assert client.get(base_path()).status_code == 200
+
+
+class TestOnlyAdministratorsChangeKnowledge:
+    """D-07, decided for launch in Phase 27: knowledge is what the assistant tells
+    customers, so creating, uploading and archiving are ADMIN-only. Reading stays open."""
+
+    def test_a_salesperson_cannot_create_a_knowledge_base(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        response = client.post(base_path(), json={"name": "Sales notes", "description": None})
+        assert response.status_code == 403
+
+    def test_a_salesperson_cannot_upload_or_archive_but_can_read(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client)
+        base_id = create_base(client)
+        uploaded = upload(client, base_id)
+        assert uploaded.status_code == 201, uploaded.text
+        document_id = uploaded.json()["id"]
+
+        login(client, email=SALES_EMAIL)
+
+        assert upload(client, base_id, content=b"A salesperson's addition.").status_code == 403
+        archive = client.post(f"{base_path()}/{base_id}/documents/{document_id}/archive")
+        assert archive.status_code == 403
+        assert client.get(f"{base_path()}/{base_id}/documents").status_code == 200
+        assert client.get(f"{base_path()}/{base_id}/documents/{document_id}").status_code == 200
 
 
 class TestKnowledgeBases:

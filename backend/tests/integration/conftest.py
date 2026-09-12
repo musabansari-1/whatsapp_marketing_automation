@@ -85,20 +85,21 @@ def seeded_product(engine: AsyncEngine) -> uuid.UUID:
     would make renaming the product a code change instead of a data change.
     """
     from app.persistence.models import Product
+    from tests.integration.helpers import configure_test_product, run_db
 
     async def ensure(session: AsyncSession) -> uuid.UUID:
         existing = (
             await session.execute(select(Product).order_by(Product.created_at).limit(1))
         ).scalar_one_or_none()
         if existing is not None:
+            await configure_test_product(session, existing.id)
             return existing.id
 
         product = Product(slug=f"seeded-{uuid.uuid4().hex[:8]}", display_name="Seeded product")
         session.add(product)
         await session.flush()
+        await configure_test_product(session, product.id)
         return product.id
-
-    from tests.integration.helpers import run_db
 
     return run_db(ensure)
 

@@ -195,12 +195,16 @@ class AudienceConfirmResponse(BaseModel):
 
 
 class AudienceSchemaResponse(BaseModel):
-    """The configured column schema, so the UI can tell the user what file to upload.
+    """A product's column schema, so the UI can tell the user what file to upload.
 
-    `is_placeholder` surfaces that the client's real schema has not been supplied yet
-    ([D4]/[D20]) rather than letting a development default look authoritative.
+    `configured` is false when the product's uploads would be refused — no schema, an
+    invalid one, or the placeholder in production — and `problem` says why. `is_placeholder`
+    surfaces that the real spreadsheet format has not been confirmed yet ([D4]/[D20]) rather
+    than letting a development default look authoritative.
     """
 
+    configured: bool
+    problem: str | None
     columns: list[dict[str, Any]]
     is_placeholder: bool
     phone_default_region: str

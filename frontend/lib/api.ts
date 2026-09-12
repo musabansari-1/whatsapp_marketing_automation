@@ -91,6 +91,9 @@ export interface AudienceContactPage {
 }
 
 export interface AudienceSchema {
+  /** False when this product's uploads would be refused; `problem` says why. */
+  configured: boolean;
+  problem: string | null;
   columns: { source: string; field: string; required: boolean }[];
   is_placeholder: boolean;
   phone_default_region: string;

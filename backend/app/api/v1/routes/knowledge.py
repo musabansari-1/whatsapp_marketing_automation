@@ -10,6 +10,10 @@ knows cannot be read, extended or archived from another product's address. A bas
 segment is shared across that product's segments ([D56]); a segment, when given, must be
 one of this product's.
 
+**Changing knowledge is ADMIN-only** (D-07, decided for launch in Phase 27). Knowledge is
+what the assistant quotes to customers, so creating a base, uploading a document and
+archiving one are administrative acts. Reading stays open to every internal user.
+
 Knowledge is configuration, so an inactive product may still build it. That is how a
 product is prepared before it goes live.
 
@@ -24,7 +28,7 @@ import uuid
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 
-from app.api.deps import CurrentUser, DbSession, Queue, SettingsDep
+from app.api.deps import AdminUser, DbSession, Queue, SettingsDep
 from app.api.rate_limit import enforce
 from app.api.schemas import (
     CreateKnowledgeBaseRequest,
@@ -47,11 +51,11 @@ logger = get_logger(__name__)
 @router.post("", response_model=KnowledgeBaseResponse, status_code=status.HTTP_201_CREATED)
 async def create_knowledge_base(
     payload: CreateKnowledgeBaseRequest,
-    user: CurrentUser,
+    user: AdminUser,
     product: ProductScope,
     session: DbSession,
 ) -> KnowledgeBaseResponse:
-    """Create a knowledge base owned by this product.
+    """Create a knowledge base owned by this product. ADMIN-only (D-07).
 
     Names are unique within a product, compared case-insensitively. Two products may each
     have a "Product FAQs".
@@ -104,7 +108,7 @@ async def get_knowledge_base(
 )
 async def upload_document(
     knowledge_base_id: uuid.UUID,
-    user: CurrentUser,
+    user: AdminUser,
     product: ProductScope,
     session: DbSession,
     settings: SettingsDep,
@@ -112,6 +116,8 @@ async def upload_document(
     file: UploadFile = File(...),
 ) -> KnowledgeDocumentResponse:
     """Accept a document into one of this product's knowledge bases and queue ingestion.
+
+    ADMIN-only (D-07): the document becomes something the assistant tells customers.
 
     Returns immediately with the document PENDING. Only a READY document is
     retrievable (§11), so the dashboard shows progress rather than pretending the
@@ -191,6 +197,7 @@ async def upload_document(
         "knowledge_document_uploaded",
         document_id=str(document.id),
         bytes=len(content),
+        by_user_id=str(user.id),
     )
     return KnowledgeDocumentResponse.model_validate(document)
 
@@ -229,10 +236,11 @@ async def get_document(
 async def archive_document(
     knowledge_base_id: uuid.UUID,
     document_id: uuid.UUID,
+    user: AdminUser,
     product: ProductScope,
     session: DbSession,
 ) -> KnowledgeDocumentResponse:
-    """Take a document out of circulation (§17).
+    """Take a document out of circulation (§17). ADMIN-only (D-07).
 
     Idempotent, and non-destructive: the chunks stay so that answers already given
     keep their citations, while retrieval stops returning them.
@@ -241,7 +249,11 @@ async def archive_document(
 
     if document.status is not DocumentStatus.ARCHIVED:
         await knowledge_repo.archive_document(session, document)
-        logger.info("knowledge_document_archived", document_id=str(document.id))
+        logger.info(
+            "knowledge_document_archived",
+            document_id=str(document.id),
+            by_user_id=str(user.id),
+        )
 
     return KnowledgeDocumentResponse.model_validate(document)
 
