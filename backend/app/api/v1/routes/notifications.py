@@ -1,30 +1,33 @@
-"""Notification and booking endpoints (specification §13, §16, §17, [D3]).
+"""Notification endpoints (specification §13, §16, §17, [D3], [D47]).
 
-Notifications are strictly per-user. Every route here resolves the user from the
-session and never takes a user ID: one salesperson must not be able to read or clear
-another's notifications by guessing an identifier.
+Notifications are strictly per-user. Every route here resolves the user from the session
+and never takes a user ID: one salesperson must not be able to read or clear another's
+notifications by guessing an identifier.
 
-Bookings are readable by any internal user. §9 restricts broadcasting, not reading, and
-a salesperson about to run a demo needs to see it.
+Global rather than product-scoped, because a person has one inbox. Every active internal
+user is still told about every booking ([D3]); what changed in Phase 26 is that each
+notification carries its product, so the inbox can say which product a demo is for and
+can be narrowed to one product when that helps.
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentUser, DbSession
 from app.api.schemas import (
-    BookingPage,
-    BookingResponse,
     MarkAllReadResponse,
     NotificationPage,
     NotificationResponse,
+    ProductRef,
 )
 from app.core.logging import get_logger
-from app.domain.enums import BookingStatus
+from app.persistence.models import Notification
 from app.persistence.repositories import bookings as booking_repo
+from app.persistence.repositories import products as product_repo
 
 router = APIRouter(tags=["notifications"])
 logger = get_logger(__name__)
@@ -37,23 +40,39 @@ async def list_notifications(
     user: CurrentUser,
     session: DbSession,
     unread_only: bool = Query(default=False),
+    product: str | None = Query(
+        default=None, max_length=64, description="A product slug. Omit for every product."
+    ),
     limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
 ) -> NotificationPage:
-    """This user's notifications.
+    """This user's notifications, each naming its product.
 
-    `unread` is returned alongside the page total because the bell badge shows it
-    regardless of which page is being read.
+    `product` narrows the page. `unread` is deliberately *not* narrowed: it drives the
+    bell badge, which counts everything waiting for this person whichever product view
+    they are in.
     """
+    product_id: uuid.UUID | None = None
+    if product:
+        found = await product_repo.get_by_slug(session, product)
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+        product_id = found.id
+
     total, unread, notifications = await booking_repo.list_notifications(
-        session, user_id=user.id, unread_only=unread_only, limit=limit, offset=offset
+        session,
+        user_id=user.id,
+        unread_only=unread_only,
+        product_id=product_id,
+        limit=limit,
+        offset=offset,
     )
     return NotificationPage(
         total=total,
         unread=unread,
         limit=limit,
         offset=offset,
-        items=[NotificationResponse.model_validate(row) for row in notifications],
+        items=await _with_products(session, notifications),
     )
 
 
@@ -71,44 +90,40 @@ async def mark_notification_read(
 
     await booking_repo.mark_read(session, notification)
     await session.commit()
-    return NotificationResponse.model_validate(notification)
+    [response] = await _with_products(session, [notification])
+    return response
 
 
 @router.post("/notifications/read-all", response_model=MarkAllReadResponse)
 async def mark_all_notifications_read(user: CurrentUser, session: DbSession) -> MarkAllReadResponse:
-    """Clear the badge. Only ever this user's own notifications."""
+    """Clear the badge. Only ever this user's own notifications, across every product."""
     updated = await booking_repo.mark_all_read(session, user.id)
     await session.commit()
     return MarkAllReadResponse(marked_read=updated)
 
 
-@router.get("/bookings", response_model=BookingPage)
-async def list_bookings(
-    user: CurrentUser,
-    session: DbSession,
-    booking_status: BookingStatus | None = Query(default=None, alias="status"),
-    limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
-    offset: int = Query(default=0, ge=0),
-) -> BookingPage:
-    total, bookings = await booking_repo.list_bookings(
-        session, status=booking_status, limit=limit, offset=offset
-    )
-    return BookingPage(
-        total=total,
-        limit=limit,
-        offset=offset,
-        items=[BookingResponse.model_validate(row) for row in bookings],
-    )
+async def _with_products(
+    session: DbSession, notifications: Sequence[Notification]
+) -> list[NotificationResponse]:
+    """Attach each notification's product, loaded once for the page rather than per row.
 
-
-@router.get("/bookings/{booking_id}", response_model=BookingResponse)
-async def get_booking(
-    booking_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> BookingResponse:
-    booking = await booking_repo.get_booking(session, booking_id)
-    if booking is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
-    return BookingResponse.model_validate(booking)
+    NULL stays NULL: a notification about no single product is valid by design ([D47]).
+    """
+    products = await product_repo.products_by_id(
+        session, {row.product_id for row in notifications if row.product_id is not None}
+    )
+    return [
+        NotificationResponse.model_validate(row).model_copy(
+            update={
+                "product": (
+                    ProductRef.model_validate(products[row.product_id])
+                    if row.product_id is not None and row.product_id in products
+                    else None
+                )
+            }
+        )
+        for row in notifications
+    ]
 
 
 __all__ = ["router"]

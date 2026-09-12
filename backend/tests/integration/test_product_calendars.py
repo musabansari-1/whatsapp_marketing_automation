@@ -624,3 +624,12 @@ def run_notify(booking_id: str) -> dict[str, Any]:
             await database.dispose_engine()
 
     return asyncio.run(run())
+
+
+class TestInactiveProduct:
+    def test_an_inactive_product_takes_no_bookings_even_with_a_calendar(self) -> None:
+        """Checked before the calendar: a deactivated product with a working calendar still
+        must not commit anyone's time (Phase 26)."""
+        product = load_product(make_product("k-retired", "retired@calendar.example", active=False))
+
+        assert resolve_booking_capability(Settings(), product) == (None, None)

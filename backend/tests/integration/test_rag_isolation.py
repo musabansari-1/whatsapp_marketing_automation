@@ -275,15 +275,21 @@ class TestSharedAndSegmentKnowledge:
 
 
 class TestIneligibleKnowledge:
-    def test_an_unattributed_knowledge_base_is_never_retrieved(self) -> None:
-        """During the Phase 18→26 transition `product_id` is nullable, and NULL means
-        **not safe to retrieve** — never *shared with everyone*.
+    def test_an_unowned_knowledge_base_can_no_longer_exist(self) -> None:
+        """During Phases 18 to 25 `product_id` was nullable, and NULL meant **not safe to
+        retrieve** — never *shared with everyone*.
 
-        Getting this backwards would turn a migration gap into a knowledge leak.
+        Phase 26 closed the column, so the case is gone at its source: the database
+        refuses an unowned knowledge base. Kept as a test because "unowned knowledge" was
+        a real state that retrieval was written against, and this is what says it ended.
         """
+        from sqlalchemy.exc import IntegrityError
+
         product = make_product("r-alpha")
         make_knowledge(product_id=product, name="owned", content="Owned knowledge.")
-        make_knowledge(product_id=None, name="orphan", content="Unattributed knowledge.")
+
+        with pytest.raises(IntegrityError):
+            make_knowledge(product_id=None, name="orphan", content="Unattributed knowledge.")
 
         assert search(product) == ["Owned knowledge."]
 

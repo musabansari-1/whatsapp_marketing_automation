@@ -31,7 +31,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.main import API_V1_PREFIX
 from app.domain.enums import LeadStatus, RecipientStatus, TemplateCategory
 from app.persistence.models import (
     Audience,
@@ -45,7 +44,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from tests.integration.conftest import login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -142,14 +141,14 @@ def upload(
     rows: list[Sequence[object]] = [["Name", "Phone"]]
     rows.extend([f"Person {phone}", phone] for phone in phones)
 
+    # The product is the address, not a form field (Phase 26). None means the test's
+    # default product.
     data: dict[str, str] = {"name": name}
-    if product_id is not None:
-        data["product_id"] = str(product_id)
     if segment_id is not None:
         data["segment_id"] = str(segment_id)
 
     response = client.post(
-        f"{API_V1_PREFIX}/audiences/upload",
+        f"{scoped_prefix(product_id)}/audiences/upload",
         files={"file": (f"{name}.xlsx", make_xlsx(rows), XLSX_TYPE)},
         data=data,
     )
@@ -157,7 +156,7 @@ def upload(
         return response.status_code, None
 
     audience_id = str(response.json()["audience"]["id"])
-    client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+    client.post(f"{scoped_prefix(product_id)}/audiences/{audience_id}/confirm")
     return response.status_code, audience_id
 
 
@@ -323,7 +322,7 @@ class TestGlobalSuppressionSurvives:
         for product_id, audience_id in ((alpha, alpha_audience), (beta, beta_audience)):
             assert audience_id is not None
             response = admin.post(
-                f"{API_V1_PREFIX}/campaigns",
+                f"{scoped_prefix(product_id)}/campaigns",
                 json={
                     "name": f"Campaign {audience_id[:8]}",
                     "audience_id": audience_id,
@@ -373,7 +372,7 @@ class TestCampaignScope:
         assert audience_id is not None
 
         response = admin.post(
-            f"{API_V1_PREFIX}/campaigns",
+            f"{scoped_prefix(product)}/campaigns",
             json={
                 "name": "Derived",
                 "audience_id": audience_id,

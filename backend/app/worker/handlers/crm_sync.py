@@ -35,6 +35,7 @@ from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import build_crm_provider, build_queue_provider
 from app.persistence.database import get_session_factory
 from app.persistence.models import Audience, Booking, Campaign, CampaignRecipient, Lead
+from app.persistence.repositories import products as product_repo
 from app.worker.handlers.campaign_send import RetryableSendError
 
 logger = get_logger(__name__)
@@ -82,6 +83,18 @@ async def sync_crm_contact(task: TaskRequest) -> dict[str, str | bool]:
             raise ValueError(f"Lead {lead_id} not found")
 
         bind_log_context(lead_id=str(lead.id))
+
+        # Deferred while more than one product exists. The CRM properties are flat, so
+        # one product's sync would overwrite another's state on the shared contact; the
+        # redesign that fixes that is deferred, and until it lands nothing is written —
+        # not to HubSpot, and not the lead's sync fields either.
+        product_count = await product_repo.count_products(session)
+        if not crm_domain.single_product_sync_is_safe(product_count=product_count):
+            logger.info(
+                "crm_sync_deferred", reason="more_than_one_product", product_count=product_count
+            )
+            return {"result": "deferred", "lead_id": str(lead_id), "synced": False}
+
         snapshot = await _build_snapshot(session, lead)
         contact_id = lead.crm_contact_id
 

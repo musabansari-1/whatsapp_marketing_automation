@@ -91,8 +91,17 @@ async def get_by_id(session: AsyncSession, audience_id: uuid.UUID) -> Audience |
     return await session.get(Audience, audience_id)
 
 
-async def list_audiences(session: AsyncSession) -> Sequence[Audience]:
-    result = await session.execute(select(Audience).order_by(Audience.created_at.desc()))
+async def list_audiences(
+    session: AsyncSession, *, product_id: uuid.UUID, segment_id: uuid.UUID | None = None
+) -> Sequence[Audience]:
+    """One product's audiences, newest first. There is no all-products audience list."""
+    from app.persistence.repositories.scoping import audience_scope
+
+    result = await session.execute(
+        select(Audience)
+        .where(*audience_scope(product_id=product_id, segment_id=segment_id))
+        .order_by(Audience.created_at.desc())
+    )
     return result.scalars().all()
 
 

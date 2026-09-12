@@ -84,6 +84,52 @@ class MessageResponse(BaseModel):
     detail: str
 
 
+# ---------------------------------------------------------------- products (§28)
+
+
+class SegmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    slug: str
+    display_name: str
+    display_order: int
+    is_active: bool
+
+
+class ProductResponse(BaseModel):
+    """A product as the switcher lists it. No channel identifier or secret is exposed."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    slug: str
+    display_name: str
+    is_active: bool
+
+
+class ProductDetailResponse(ProductResponse):
+    """One product, with what the dashboard needs to explain itself.
+
+    `has_calendar` and `has_whatsapp_number` are presence flags only, so an empty Demos
+    page can say "no calendar is configured" instead of showing an unexplained zero.
+    """
+
+    segments: list[SegmentResponse]
+    has_calendar: bool
+    has_whatsapp_number: bool
+
+
+class ProductRef(BaseModel):
+    """Enough to name a product and link to it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    slug: str
+    display_name: str
+
+
 # ---------------------------------------------------------------- audiences (§6)
 
 
@@ -93,6 +139,8 @@ class AudienceSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    product_id: uuid.UUID
+    segment_id: uuid.UUID | None
     name: str
     source_filename: str | None
     status: AudienceStatus
@@ -173,12 +221,24 @@ class WhatsAppTemplateResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    # NULL: an unassigned shared-WABA template, usable by no campaign ([D57]).
+    product_id: uuid.UUID | None
     name: str
     language: str
     category: TemplateCategory
     provider_status: str
     variable_count: int
     body_preview: str | None
+
+
+class ProductTemplateResponse(WhatsAppTemplateResponse):
+    """A template a product owns, and whether its campaigns could use it right now.
+
+    `usable_for_campaigns` applies the same rules campaign creation enforces — approved
+    by Meta, MARKETING, owned by this product — so the picker and the refusal agree.
+    """
+
+    usable_for_campaigns: bool
 
 
 class CreateCampaignRequest(BaseModel):
@@ -191,6 +251,8 @@ class CampaignResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    product_id: uuid.UUID
+    segment_id: uuid.UUID | None
     name: str
     status: CampaignStatus
     audience_id: uuid.UUID
@@ -258,6 +320,8 @@ class SendCampaignResponse(BaseModel):
 class CreateKnowledgeBaseRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=2000)
+    # Optional: NULL means shared across the product's segments ([D56]).
+    segment_id: uuid.UUID | None = None
 
     @field_validator("name")
     @classmethod
@@ -274,6 +338,8 @@ class KnowledgeBaseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    product_id: uuid.UUID
+    segment_id: uuid.UUID | None
     name: str
     description: str | None
     created_at: datetime
@@ -314,6 +380,7 @@ class LeadResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    product_id: uuid.UUID
     phone_e164: str
     full_name: str | None
     email: str | None
@@ -379,6 +446,9 @@ class ConversationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    # Snapshotted at creation and never re-derived (§28.5).
+    product_id: uuid.UUID
+    segment_id: uuid.UUID | None
     lead_id: uuid.UUID
     status: ConversationStatus
     last_inbound_at: datetime | None
@@ -422,6 +492,7 @@ class BookingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    product_id: uuid.UUID
     lead_id: uuid.UUID
     conversation_id: uuid.UUID | None
     calendar_event_id: str | None
@@ -448,9 +519,15 @@ class BookingPage(BaseModel):
 
 
 class NotificationResponse(BaseModel):
+    """One notification, naming its product ([D47]).
+
+    `product` is NULL only for a notification that is about no single product.
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    product_id: uuid.UUID | None
     type: NotificationType
     title: str
     message: str
@@ -459,6 +536,7 @@ class NotificationResponse(BaseModel):
     is_read: bool
     read_at: datetime | None
     created_at: datetime
+    product: ProductRef | None = None
 
 
 class NotificationPage(BaseModel):

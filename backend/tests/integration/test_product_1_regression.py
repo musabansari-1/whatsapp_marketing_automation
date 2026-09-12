@@ -5,11 +5,12 @@ marketing path end to end through the ordinary API, exactly as it worked before 
 existed, and records the outcome as a fingerprint: states, counts, statuses and stored
 content.
 
-**It deliberately touches nothing product-aware.** No product is passed, no segment is
-selected, no new table is read. That is the point — while the existing product is the
-only configured one, every one of these calls must keep behaving as it always did. A
-later phase that quietly requires a product parameter, or changes a status, or drops a
-recipient, turns this red.
+**It deliberately touches nothing product-aware.** No segment is selected and no new table
+is read. That is the point — while the existing product is the only configured one,
+every one of these calls must keep behaving as it always did. Since Phase 26 the product
+appears in the address, because every dashboard route lives under one; it is found by
+lookup, never by slug. A later phase that changes a status or drops a recipient turns
+this red.
 
 Written in Phase 17, when it necessarily passes, so that it is already in place and
 already meaningful before Phase 18 begins moving data. A guard written after the change
@@ -31,7 +32,6 @@ from openpyxl import Workbook
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.main import API_V1_PREFIX
 from app.domain.enums import (
     AudienceStatus,
     CampaignStatus,
@@ -50,7 +50,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from tests.integration.conftest import login
-from tests.integration.helpers import ensure_product_id, run_db
+from tests.integration.helpers import ensure_product_id, run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -148,7 +148,7 @@ class TestTheMarketingPathIsUnchanged:
 
         # ---- upload -------------------------------------------------------
         upload = admin.post(
-            f"{API_V1_PREFIX}/audiences/upload",
+            f"{scoped_prefix()}/audiences/upload",
             files={"file": ("regression.xlsx", make_xlsx(rows), XLSX_TYPE)},
             data={"name": "Regression audience"},
         )
@@ -166,7 +166,7 @@ class TestTheMarketingPathIsUnchanged:
         assert self._lead_count() == 0
 
         # ---- confirm ------------------------------------------------------
-        confirm = admin.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+        confirm = admin.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
         assert confirm.status_code == 200, confirm.text
         assert self._lead_count() == 2
 
@@ -177,7 +177,7 @@ class TestTheMarketingPathIsUnchanged:
 
         # ---- campaign -----------------------------------------------------
         created = admin.post(
-            f"{API_V1_PREFIX}/campaigns",
+            f"{scoped_prefix()}/campaigns",
             json={
                 "name": "Regression broadcast",
                 "audience_id": audience_id,
@@ -218,15 +218,15 @@ class TestTheMarketingPathIsUnchanged:
 
         rows: list[Sequence[object]] = [["Name", "Phone"], ["Asha", GOOD], ["Ben", SECOND]]
         upload = admin.post(
-            f"{API_V1_PREFIX}/audiences/upload",
+            f"{scoped_prefix()}/audiences/upload",
             files={"file": ("s.xlsx", make_xlsx(rows), XLSX_TYPE)},
             data={"name": "Suppressed"},
         )
         audience_id = str(upload.json()["audience"]["id"])
-        admin.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+        admin.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
 
         created = admin.post(
-            f"{API_V1_PREFIX}/campaigns",
+            f"{scoped_prefix()}/campaigns",
             json={
                 "name": "Suppression regression",
                 "audience_id": audience_id,
@@ -251,7 +251,7 @@ class TestTheMarketingPathIsUnchanged:
         login(client, seeded_users["sales"])
 
         created = client.post(
-            f"{API_V1_PREFIX}/campaigns",
+            f"{scoped_prefix()}/campaigns",
             json={
                 "name": "Should be refused",
                 "audience_id": str(uuid.uuid4()),
@@ -260,7 +260,7 @@ class TestTheMarketingPathIsUnchanged:
         )
         assert created.status_code == 403
 
-        assert client.get(f"{API_V1_PREFIX}/campaigns").status_code == 200
+        assert client.get(f"{scoped_prefix()}/campaigns").status_code == 200
 
     # ---------------------------------------------------------------- helpers
 
@@ -303,7 +303,7 @@ class TestTheAuditTrailIsUnchanged:
             ["Asha again", GOOD],
         ]
         upload = admin.post(
-            f"{API_V1_PREFIX}/audiences/upload",
+            f"{scoped_prefix()}/audiences/upload",
             files={"file": ("audit.xlsx", make_xlsx(rows), XLSX_TYPE)},
             data={"name": "Audit"},
         )

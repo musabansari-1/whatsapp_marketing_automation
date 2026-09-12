@@ -28,7 +28,6 @@ from openpyxl import Workbook
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.main import API_V1_PREFIX
 from app.domain.enums import LeadStatus, RecipientStatus, SuppressionReason, TemplateCategory
 from app.persistence.models import (
     Audience,
@@ -43,7 +42,7 @@ from app.persistence.models import (
 )
 from app.persistence.repositories import suppressions as suppression_repo
 from tests.integration.conftest import login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -142,7 +141,7 @@ def suppression_count(phone: str = E164) -> int:
 
 def upload_and_confirm(client: TestClient, name: str, product_id: uuid.UUID) -> str:
     response = client.post(
-        f"{API_V1_PREFIX}/audiences/upload",
+        f"{scoped_prefix(product_id)}/audiences/upload",
         files={
             "file": (
                 f"{name}.xlsx",
@@ -150,11 +149,11 @@ def upload_and_confirm(client: TestClient, name: str, product_id: uuid.UUID) -> 
                 XLSX_TYPE,
             )
         },
-        data={"name": name, "product_id": str(product_id)},
+        data={"name": name},
     )
     assert response.status_code == 201, response.text
     audience_id = str(response.json()["audience"]["id"])
-    client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+    client.post(f"{scoped_prefix(product_id)}/audiences/{audience_id}/confirm")
     return audience_id
 
 
@@ -326,7 +325,7 @@ class TestSendingStillChecksTheAuthoritativeTable:
 
         for product_id, audience_id in audiences:
             response = admin.post(
-                f"{API_V1_PREFIX}/campaigns",
+                f"{scoped_prefix(product_id)}/campaigns",
                 json={
                     "name": f"Campaign {audience_id[:8]}",
                     "audience_id": audience_id,
@@ -362,7 +361,7 @@ class TestSendingStillChecksTheAuthoritativeTable:
         assert mirrors()[0][1] is False, "mirror deliberately left stale"
 
         response = admin.post(
-            f"{API_V1_PREFIX}/campaigns",
+            f"{scoped_prefix(product)}/campaigns",
             json={
                 "name": "Stale mirror",
                 "audience_id": audience_id,
@@ -404,7 +403,7 @@ class TestSendingStillChecksTheAuthoritativeTable:
         assert rows[0][2] is LeadStatus.INVALID, "status is deliberately not OPTED_OUT here"
 
         response = admin.post(
-            f"{API_V1_PREFIX}/campaigns",
+            f"{scoped_prefix(product)}/campaigns",
             json={
                 "name": "Invalid and suppressed",
                 "audience_id": audience_id,

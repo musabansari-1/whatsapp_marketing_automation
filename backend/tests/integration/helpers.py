@@ -73,6 +73,26 @@ async def ensure_product_id(session: AsyncSession) -> uuid.UUID:
     return product.id
 
 
+def scoped_prefix(product_id: uuid.UUID | None = None) -> str:
+    """The dashboard API prefix for a product: `/api/v1/p/{slug}` (Phase 26).
+
+    Every product-scoped route lives under its product's slug. With no product given, this
+    is the test's default product — the one `ensure_product_id` creates or reuses — which
+    is what a single-product test means. The slug is looked up rather than assumed,
+    because slugs are data.
+    """
+    from app.api.main import API_V1_PREFIX
+    from app.persistence.models import Product
+
+    async def slug(session: AsyncSession) -> str:
+        chosen = product_id or await ensure_product_id(session)
+        product = await session.get(Product, chosen)
+        assert product is not None, f"no product {chosen}"
+        return product.slug
+
+    return f"{API_V1_PREFIX}/p/{run_db(slug)}"
+
+
 async def ensure_receiving_number(session: AsyncSession, phone_number_id: str) -> uuid.UUID:
     """A product that owns `phone_number_id`, so inbound routing can resolve it.
 

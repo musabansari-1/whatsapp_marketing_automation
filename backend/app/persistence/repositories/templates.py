@@ -76,6 +76,26 @@ async def assign_to_product(
     return template
 
 
+async def list_owned(session: AsyncSession, *, product_id: uuid.UUID) -> Sequence[WhatsAppTemplate]:
+    """Every template one product owns, whatever Meta's status."""
+    result = await session.execute(
+        select(WhatsAppTemplate)
+        .where(WhatsAppTemplate.product_id == product_id)
+        .order_by(WhatsAppTemplate.name, WhatsAppTemplate.language)
+    )
+    return result.scalars().all()
+
+
+async def list_unassigned(session: AsyncSession) -> Sequence[WhatsAppTemplate]:
+    """Shared-WABA templates no product owns yet ([D57])."""
+    result = await session.execute(
+        select(WhatsAppTemplate)
+        .where(WhatsAppTemplate.product_id.is_(None))
+        .order_by(WhatsAppTemplate.name, WhatsAppTemplate.language)
+    )
+    return result.scalars().all()
+
+
 async def upsert_many(session: AsyncSession, templates: Sequence[ApprovedTemplate]) -> int:
     """Store template metadata exactly as Meta reported it.
 

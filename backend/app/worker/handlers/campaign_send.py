@@ -38,6 +38,7 @@ from app.domain.enums import (
     MessageStatus,
     RecipientStatus,
 )
+from app.domain.product import ProductInactiveError, assert_accepts_new_activity
 from app.domain.retry import (
     FailureClass,
     RetryPolicy,
@@ -177,6 +178,21 @@ async def _process(
         logger.info("campaign_send_skipped", reason=f"campaign_{campaign.status.value.lower()}")
         return SendOutcome(f"skipped_campaign_{campaign.status.value.lower()}", str(recipient.id))
 
+    # A product deactivated after the broadcast was confirmed sends nothing further.
+    # Skipped rather than left pending, so the campaign settles, and a later reactivation
+    # cannot quietly resume a broadcast nobody re-confirmed.
+    product = await session.get(Product, campaign.product_id)
+    if product is None:
+        raise ValueError(f"Campaign {campaign.id} has no product")
+    try:
+        assert_accepts_new_activity(is_active=product.is_active, display_name=product.display_name)
+    except ProductInactiveError:
+        recipient.status = RecipientStatus.SKIPPED
+        await session.flush()
+        logger.info("campaign_send_skipped", reason="product_inactive")
+        await _complete_campaign_if_finished(session, campaign)
+        return SendOutcome("skipped_product_inactive", str(recipient.id))
+
     # [D16]: the customer may have opted out since the snapshot, or even since the
     # broadcast was confirmed.
     suppressed = (
@@ -217,10 +233,6 @@ async def _process(
     # The campaign's product selects the provider, and therefore the number this goes
     # out from ([D40]). A SustainX campaign cannot be sent through Academicae's number,
     # because no caller supplies a number — the domain object does.
-    product = await session.get(Product, campaign.product_id)
-    if product is None:
-        raise ValueError(f"Campaign {campaign.id} has no product")
-
     provider = build_whatsapp_provider(settings, product=product)
     try:
         sent = await provider.send_template_message(

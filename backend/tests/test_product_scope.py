@@ -39,7 +39,10 @@ NULLABLE_DEBT: dict[str, tuple[int, str]] = {
     # supply a product from the audience, but the **inbound** path cannot until routing
     # on `metadata.phone_number_id` arrives, and [D45] forbids guessing one. Phase 23
     # closes it, after attributing or refusing any transitional rows.
-    "knowledge_bases": (26, "POST /knowledge-bases takes no product"),
+    #
+    # Empty since Phase 26, which closed `knowledge_bases`: every creation path is now
+    # inside a product. A later table that genuinely cannot close yet is added here with
+    # its phase and reason — never left nullable without one.
 }
 
 #: Product-scoped, and nullable **by design** rather than as debt.
@@ -100,6 +103,7 @@ CLOSED: dict[str, str] = {
     "messages": "closed in Phase 23; from the campaign or the conversation",
     "ai_runs": "closed in Phase 23; from the conversation",
     "bookings": "closed in Phase 24; from the conversation, whose product's calendar confirmed it",
+    "knowledge_bases": "closed in Phase 26; created only inside a product ([D56])",
 }
 
 SCOPED = set(NULLABLE_DEBT) | set(NULLABLE_BY_DESIGN) | set(CLOSED)
@@ -154,20 +158,24 @@ class TestScopedTables:
 class TestNullabilityDebt:
     """Nullable today, and each one owned by a phase that closes it."""
 
-    @pytest.mark.parametrize("name", sorted(NULLABLE_DEBT))
-    def test_is_still_nullable(self, name: str) -> None:
-        """Fails when a phase tightens a column without updating this table.
+    def test_any_debt_is_still_nullable_and_owned_by_a_phase(self) -> None:
+        """Every debt entry names a real phase and a reason, and is genuinely nullable.
 
-        That is deliberate: the debt list is only honest if closing an entry is a
-        visible act rather than something noticed months later.
+        A loop rather than a parametrized test on purpose. The register is empty since
+        Phase 26, and an empty parameter set is *skipped* — which CI treats as a failure,
+        correctly, because a skipped guard proves nothing. The loop passes when there is
+        nothing to check and still checks anything added later.
         """
-        assert _table(name).columns["product_id"].nullable is True
+        for name, (phase, reason) in NULLABLE_DEBT.items():
+            assert _table(name).columns["product_id"].nullable is True, name
+            assert phase >= 27, f"{name}: closing phase {phase} is already past"
+            assert reason.strip(), f"{name}: no reason recorded"
 
-    @pytest.mark.parametrize(("name", "entry"), sorted(NULLABLE_DEBT.items()))
-    def test_names_a_closing_phase_and_a_reason(self, name: str, entry: tuple[int, str]) -> None:
-        phase, reason = entry
-        assert 19 <= phase <= 27, f"{name}: closing phase {phase} is not a real phase"
-        assert reason.strip(), f"{name}: no reason recorded"
+    def test_no_product_debt_remains(self) -> None:
+        """Phase 26 closed the last one. Every product-owned table now either has its
+        product NOT NULL or is nullable by design with the reason recorded."""
+        assert NULLABLE_DEBT == {}
+        assert "knowledge_bases" in CLOSED
 
     @pytest.mark.parametrize("name", sorted(CLOSED))
     def test_a_closed_column_is_not_null(self, name: str) -> None:

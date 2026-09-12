@@ -1,12 +1,20 @@
-"""Knowledge base endpoints (specification §11, §16, §17, §19).
+"""Knowledge base endpoints, per product (specification §11, §16, §17, §19, §28).
 
 Upload records the document and queues ingestion; parsing and embedding happen in the
 worker, because §4 forbids slow work in a request and embedding a large document takes
 seconds.
 
-There is no retrieval endpoint. Retrieval is not a dashboard feature — it is something
-the AI does through an authorized tool in Phase 10, and exposing it as an API now would
-invite use from places §9 does not permit.
+Every route is inside one product (Phase 26), so a knowledge base is always created with
+an owner: `knowledge_bases.product_id` is NOT NULL, and what one product's assistant
+knows cannot be read, extended or archived from another product's address. A base with no
+segment is shared across that product's segments ([D56]); a segment, when given, must be
+one of this product's.
+
+Knowledge is configuration, so an inactive product may still build it. That is how a
+product is prepared before it goes live.
+
+There is no retrieval endpoint. Retrieval is something the AI does inside a conversation,
+and exposing it here would invite use from places §9 does not permit.
 """
 
 from __future__ import annotations
@@ -23,50 +31,69 @@ from app.api.schemas import (
     KnowledgeBaseResponse,
     KnowledgeDocumentResponse,
 )
+from app.api.scope import PRODUCT_PREFIX, ProductScope, owned_by, segment_for_write
 from app.core.logging import get_logger
 from app.domain.documents import SUPPORTED_EXTENSIONS, UnsupportedFormatError, format_for_filename
 from app.domain.enums import DocumentStatus
 from app.domain.rate_limit import RateLimitScope
 from app.integrations.queue import TaskRequest, TaskType
-from app.persistence.models import KnowledgeBase, KnowledgeDocument
+from app.persistence.models import KnowledgeBase, KnowledgeDocument, Product
 from app.persistence.repositories import knowledge as knowledge_repo
 
-router = APIRouter(prefix="/knowledge-bases", tags=["knowledge"])
+router = APIRouter(prefix=f"{PRODUCT_PREFIX}/knowledge-bases", tags=["knowledge"])
 logger = get_logger(__name__)
 
 
 @router.post("", response_model=KnowledgeBaseResponse, status_code=status.HTTP_201_CREATED)
 async def create_knowledge_base(
-    payload: CreateKnowledgeBaseRequest, user: CurrentUser, session: DbSession
+    payload: CreateKnowledgeBaseRequest,
+    user: CurrentUser,
+    product: ProductScope,
+    session: DbSession,
 ) -> KnowledgeBaseResponse:
-    existing = [kb.name.casefold() for kb in await knowledge_repo.list_knowledge_bases(session)]
-    if payload.name.casefold() in existing:
+    """Create a knowledge base owned by this product.
+
+    Names are unique within a product, compared case-insensitively. Two products may each
+    have a "Product FAQs".
+    """
+    segment_id = await segment_for_write(session, product, payload.segment_id)
+
+    if await knowledge_repo.find_by_name(session, product_id=product.id, name=payload.name):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A knowledge base with that name already exists",
+            detail="A knowledge base with that name already exists in this product",
         )
 
     knowledge_base = await knowledge_repo.create_knowledge_base(
-        session, name=payload.name, description=payload.description
+        session,
+        name=payload.name,
+        description=payload.description,
+        product_id=product.id,
+        segment_id=segment_id,
     )
-    logger.info("knowledge_base_created", knowledge_base_id=str(knowledge_base.id))
+    logger.info(
+        "knowledge_base_created",
+        knowledge_base_id=str(knowledge_base.id),
+        product_id=str(product.id),
+        by_user_id=str(user.id),
+    )
     return KnowledgeBaseResponse.model_validate(knowledge_base)
 
 
 @router.get("", response_model=list[KnowledgeBaseResponse])
 async def list_knowledge_bases(
-    user: CurrentUser, session: DbSession
+    product: ProductScope, session: DbSession
 ) -> list[KnowledgeBaseResponse]:
-    bases = await knowledge_repo.list_knowledge_bases(session)
+    bases = await knowledge_repo.list_knowledge_bases(session, product_id=product.id)
     return [KnowledgeBaseResponse.model_validate(base) for base in bases]
 
 
 @router.get("/{knowledge_base_id}", response_model=KnowledgeBaseResponse)
 async def get_knowledge_base(
-    knowledge_base_id: uuid.UUID, user: CurrentUser, session: DbSession
+    knowledge_base_id: uuid.UUID, product: ProductScope, session: DbSession
 ) -> KnowledgeBaseResponse:
     return KnowledgeBaseResponse.model_validate(
-        await _require_knowledge_base(session, knowledge_base_id)
+        await _require_knowledge_base(session, product, knowledge_base_id)
     )
 
 
@@ -78,12 +105,13 @@ async def get_knowledge_base(
 async def upload_document(
     knowledge_base_id: uuid.UUID,
     user: CurrentUser,
+    product: ProductScope,
     session: DbSession,
     settings: SettingsDep,
     queue: Queue,
     file: UploadFile = File(...),
 ) -> KnowledgeDocumentResponse:
-    """Accept a document and queue it for ingestion.
+    """Accept a document into one of this product's knowledge bases and queue ingestion.
 
     Returns immediately with the document PENDING. Only a READY document is
     retrievable (§11), so the dashboard shows progress rather than pretending the
@@ -99,7 +127,7 @@ async def upload_document(
         identifier=str(user.id),
     )
 
-    knowledge_base = await _require_knowledge_base(session, knowledge_base_id)
+    knowledge_base = await _require_knowledge_base(session, product, knowledge_base_id)
 
     filename = file.filename or "untitled"
     try:
@@ -170,11 +198,11 @@ async def upload_document(
 @router.get("/{knowledge_base_id}/documents", response_model=list[KnowledgeDocumentResponse])
 async def list_documents(
     knowledge_base_id: uuid.UUID,
-    user: CurrentUser,
+    product: ProductScope,
     session: DbSession,
     include_archived: bool = Query(default=False),
 ) -> list[KnowledgeDocumentResponse]:
-    await _require_knowledge_base(session, knowledge_base_id)
+    await _require_knowledge_base(session, product, knowledge_base_id)
     documents = await knowledge_repo.list_documents(
         session, knowledge_base_id, include_archived=include_archived
     )
@@ -187,10 +215,10 @@ async def list_documents(
 async def get_document(
     knowledge_base_id: uuid.UUID,
     document_id: uuid.UUID,
-    user: CurrentUser,
+    product: ProductScope,
     session: DbSession,
 ) -> KnowledgeDocumentResponse:
-    document = await _require_document(session, knowledge_base_id, document_id)
+    document = await _require_document(session, product, knowledge_base_id, document_id)
     return KnowledgeDocumentResponse.model_validate(document)
 
 
@@ -201,7 +229,7 @@ async def get_document(
 async def archive_document(
     knowledge_base_id: uuid.UUID,
     document_id: uuid.UUID,
-    user: CurrentUser,
+    product: ProductScope,
     session: DbSession,
 ) -> KnowledgeDocumentResponse:
     """Take a document out of circulation (§17).
@@ -209,7 +237,7 @@ async def archive_document(
     Idempotent, and non-destructive: the chunks stay so that answers already given
     keep their citations, while retrieval stops returning them.
     """
-    document = await _require_document(session, knowledge_base_id, document_id)
+    document = await _require_document(session, product, knowledge_base_id, document_id)
 
     if document.status is not DocumentStatus.ARCHIVED:
         await knowledge_repo.archive_document(session, document)
@@ -219,20 +247,19 @@ async def archive_document(
 
 
 async def _require_knowledge_base(
-    session: DbSession, knowledge_base_id: uuid.UUID
+    session: DbSession, product: Product, knowledge_base_id: uuid.UUID
 ) -> KnowledgeBase:
-    knowledge_base = await knowledge_repo.get_knowledge_base(session, knowledge_base_id)
-    if knowledge_base is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge base not found"
-        )
-    return knowledge_base
+    return owned_by(
+        await knowledge_repo.get_knowledge_base(session, knowledge_base_id),
+        product,
+        not_found="Knowledge base not found",
+    )
 
 
 async def _require_document(
-    session: DbSession, knowledge_base_id: uuid.UUID, document_id: uuid.UUID
+    session: DbSession, product: Product, knowledge_base_id: uuid.UUID, document_id: uuid.UUID
 ) -> KnowledgeDocument:
-    await _require_knowledge_base(session, knowledge_base_id)
+    await _require_knowledge_base(session, product, knowledge_base_id)
     document = await knowledge_repo.get_document(session, document_id)
     if document is None or document.knowledge_base_id != knowledge_base_id:
         # Checked rather than assumed: a document ID from another knowledge base must

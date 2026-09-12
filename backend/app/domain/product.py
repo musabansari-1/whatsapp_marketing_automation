@@ -1,59 +1,45 @@
-"""Product context resolution (§28, Phase 19).
+"""Product lifecycle rules (§28, Phase 26).
 
-Which product a piece of internal authoring belongs to. Pure logic: the caller supplies
-what it knows and what products are active, and this decides — or refuses.
+Pure logic: the caller says what it knows about a product, and this decides.
 
-**This is for internal authoring only.** An admin uploading an audience is telling the
-platform something; resolving what they meant is legitimate. Inbound customer routing is
-the opposite situation — nobody is present to ask — and [D40]/[D45] require it to come
-from the receiving `phone_number_id` and to fail closed on an unknown one. Nothing here
-may be used for that.
+**An inactive product is readable and configurable, but starts nothing.** Deactivating a
+product never means deleting it: its leads, conversations, bookings and campaigns stay
+open to inspection. And a product has to be preparable before it goes live — templates
+assigned, knowledge uploaded, calendar recorded — so configuration stays allowed.
+
+What an inactive product may not do is begin activity that reaches customers or creates
+customer records:
+
+    audience upload and confirmation     creates the leads a campaign would message
+    campaign creation and sending        messages customers
+    booking a demo                       commits a salesperson's time to a customer
+    receiving an inbound message         routed only to active products since Phase 23
+
+Stopping activity already under way — cancelling a campaign, archiving a document —
+stays allowed. Refusing it would keep alive exactly what deactivation was meant to end.
+
+Nothing here branches on which product it is. The rule reads one flag.
 """
 
 from __future__ import annotations
 
-import uuid
-from collections.abc import Sequence
+
+class ProductInactiveError(Exception):
+    """The product is inactive, so it cannot start new customer activity."""
 
 
-class ProductContextError(Exception):
-    """The product for this operation cannot be determined."""
+def assert_accepts_new_activity(*, is_active: bool, display_name: str) -> None:
+    """Refuse new customer activity for an inactive product.
 
-
-def resolve_authoring_product(
-    *,
-    explicit: uuid.UUID | None,
-    active_product_ids: Sequence[uuid.UUID],
-) -> uuid.UUID:
-    """The product an authoring request applies to.
-
-    An explicit choice always wins. Without one, exactly one active product means there
-    is nothing to disambiguate and the request is unambiguous in fact even though it is
-    silent — which is what keeps Academicae's existing API working while it is the only
-    product ([D54]).
-
-    Zero or several active products make silence genuinely ambiguous, and it is refused.
-    The count is what decides, never which product came first: "no product means
-    Academicae" would be a default product by another name, and the moment a second
-    product exists it would start quietly mis-filing data.
-
-    This compatibility path is transitional. Phase 26 gives the dashboard explicit
-    product selection, after which it should be reconsidered.
+    One function, called from every place that starts such activity — the API routes
+    that create audiences and campaigns, the campaign send worker, and booking — so the
+    rule is stated once rather than re-implemented as a scattering of flag checks.
     """
-    if explicit is not None:
-        return explicit
-
-    if len(active_product_ids) == 1:
-        return active_product_ids[0]
-
-    if not active_product_ids:
-        raise ProductContextError(
-            "No active product is configured, so this request has no product to belong to."
+    if not is_active:
+        raise ProductInactiveError(
+            f"{display_name} is inactive, so it cannot start new customer activity. "
+            "Its existing records remain available."
         )
 
-    raise ProductContextError(
-        f"{len(active_product_ids)} active products exist, so this request must name one."
-    )
 
-
-__all__ = ["ProductContextError", "resolve_authoring_product"]
+__all__ = ["ProductInactiveError", "assert_accepts_new_activity"]

@@ -22,7 +22,7 @@ from app.domain import crm as crm_domain
 from app.domain.enums import BookingStatus, LeadStatus
 from app.integrations.crm import FakeCRMProvider
 from app.integrations.queue import TaskRequest, TaskType
-from app.persistence.models import Audience, Booking, Conversation, Lead, Message
+from app.persistence.models import Audience, Booking, Conversation, Lead, Message, Product
 from app.worker.handlers.campaign_send import RetryableSendError
 from app.worker.handlers.crm_sync import queue_crm_sync, sync_crm_contact
 from tests.integration.helpers import ensure_product_id, get_test_database_url, run_db
@@ -320,3 +320,56 @@ class TestTaskValidation:
     def test_an_unknown_lead_is_rejected(self, crm_env: FakeCRMProvider) -> None:
         with pytest.raises(ValueError, match="not found"):
             run_sync(str(uuid.uuid4()))
+
+
+class TestDeferredWhileMoreThanOneProductExists:
+    """The multi-product CRM design is deferred (Phase 25). Until it lands, a second product
+    turns synchronization off entirely, because the flat `wa_*` properties would let one
+    product overwrite another's state on the shared contact."""
+
+    @staticmethod
+    def _second_product(*, active: bool) -> uuid.UUID:
+        async def create(session: AsyncSession) -> uuid.UUID:
+            await ensure_product_id(session)
+            product = Product(
+                slug=f"crm-second-{uuid.uuid4().hex[:6]}", display_name="Second", is_active=active
+            )
+            session.add(product)
+            await session.flush()
+            return product.id
+
+        return run_db(create)
+
+    @staticmethod
+    def _remove(product_id: uuid.UUID) -> None:
+        async def remove(session: AsyncSession) -> None:
+            await session.execute(delete(Product).where(Product.id == product_id))
+
+        run_db(remove)
+
+    @pytest.mark.parametrize("active", [True, False])
+    def test_a_second_product_defers_sync_and_writes_nothing(
+        self, crm_env: FakeCRMProvider, active: bool
+    ) -> None:
+        """Inactive counts too: its leads still exist and would still sync."""
+        lead_id = seed_lead()
+        second = self._second_product(active=active)
+        try:
+            result = run_sync(lead_id)
+        finally:
+            self._remove(second)
+
+        assert result == {"result": "deferred", "lead_id": lead_id, "synced": False}
+        assert crm_env.upserts == [], "nothing may reach the CRM"
+
+        lead = lead_row(lead_id)
+        assert lead.crm_contact_id is None
+        assert lead.crm_synced_at is None
+        assert lead.crm_sync_error is None, "a deferral is not a failure"
+
+    def test_a_single_product_still_syncs(self, crm_env: FakeCRMProvider) -> None:
+        """The existing single-product integration keeps working."""
+        lead_id = seed_lead()
+
+        assert run_sync(lead_id)["synced"] is True
+        assert len(crm_env.upserts) == 1

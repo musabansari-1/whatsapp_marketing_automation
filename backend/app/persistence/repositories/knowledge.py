@@ -28,15 +28,14 @@ async def create_knowledge_base(
     *,
     name: str,
     description: str | None,
-    product_id: uuid.UUID | None = None,
+    product_id: uuid.UUID,
     segment_id: uuid.UUID | None = None,
 ) -> KnowledgeBase:
-    """Create a knowledge base, optionally owned by a product (§28.3).
+    """Create a knowledge base owned by a product (§28.3).
 
-    `product_id` is optional here because `POST /knowledge-bases` cannot supply one
-    until Phase 26 — the column stays nullable until then. A base created without a
-    product is **not retrievable**: [D56] treats an unattributed base as unsafe rather
-    than shared, so an unowned base is inert until someone attributes it.
+    `product_id` is required, and the column is NOT NULL since Phase 26: a knowledge base
+    without an owner could not be retrieved from safely ([D56]), so it can no longer be
+    created. `segment_id` NULL means shared across the product's segments.
     """
     knowledge_base = KnowledgeBase(
         name=name, description=description, product_id=product_id, segment_id=segment_id
@@ -52,9 +51,33 @@ async def get_knowledge_base(
     return await session.get(KnowledgeBase, knowledge_base_id)
 
 
-async def list_knowledge_bases(session: AsyncSession) -> Sequence[KnowledgeBase]:
-    result = await session.execute(select(KnowledgeBase).order_by(KnowledgeBase.name))
+async def list_knowledge_bases(
+    session: AsyncSession, *, product_id: uuid.UUID
+) -> Sequence[KnowledgeBase]:
+    """One product's knowledge bases, by name. There is no all-products list."""
+    result = await session.execute(
+        select(KnowledgeBase)
+        .where(KnowledgeBase.product_id == product_id)
+        .order_by(KnowledgeBase.name)
+    )
     return result.scalars().all()
+
+
+async def find_by_name(
+    session: AsyncSession, *, product_id: uuid.UUID, name: str
+) -> KnowledgeBase | None:
+    """A knowledge base with this name in this product, compared case-insensitively.
+
+    Stricter than the database, which compares exactly: "FAQs" and "faqs" side by side
+    would be two bases nobody could tell apart in the dashboard.
+    """
+    result = await session.execute(
+        select(KnowledgeBase).where(
+            KnowledgeBase.product_id == product_id,
+            func.lower(KnowledgeBase.name) == name.strip().lower(),
+        )
+    )
+    return result.scalars().first()
 
 
 # ---------------------------------------------------------------- documents

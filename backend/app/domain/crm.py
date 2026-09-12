@@ -200,3 +200,22 @@ __all__ = [
     "format_qualification",
     "split_name",
 ]
+
+
+def single_product_sync_is_safe(*, product_count: int) -> bool:
+    """Whether today's flat CRM properties can be written without corrupting another product.
+
+    The properties above — `wa_lead_status`, `wa_lead_source`, `wa_campaign`,
+    `wa_qualification`, `wa_demo_at`, `wa_demo_status`, `wa_last_synced_at` — carry no
+    product in their names. One HubSpot contact is one human ([D44]), and that human can
+    be a separate lead in several products ([D41]), each with its own status, campaign and
+    demo. Written flat, whichever product synced last would overwrite every other
+    product's state on the shared contact, with nothing to show it had happened.
+
+    With at most one product that cannot occur, so the existing integration stays usable
+    for a single-product deployment. With more, synchronization is **deferred**: the
+    multi-product CRM design (product-specific properties) is postponed, not cancelled,
+    and this is what keeps the postponement safe. Every product row counts, active or not,
+    because an inactive product's leads still exist and would still sync.
+    """
+    return product_count <= 1

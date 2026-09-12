@@ -47,6 +47,7 @@ from app.core.logging import get_logger
 from app.domain.ai_config import AIConfigurationError, ResolvedAIConfig
 from app.domain.conversation import LeadStateError, can_transition_conversation
 from app.domain.enums import ConversationStatus, LeadStatus, MessageStatus
+from app.domain.product import ProductInactiveError, assert_accepts_new_activity
 from app.domain.qualification import rules_from_settings
 from app.domain.rag import RetrievalPolicy, RetrievalResult, retrieve
 from app.domain.retry import RetryPolicy, backoff_seconds, classify, should_retry
@@ -683,16 +684,22 @@ def resolve_booking_capability(
     still answer questions, and nothing here reaches for a different calendar to avoid
     saying no.
 
-    Two reasons, logged differently. No calendar is a configuration choice and logged at
-    info. A slot policy that does not resolve — an override that is invalid, or valid
+    Three reasons, logged differently. An inactive product and a missing calendar are
+    states someone chose, logged at info. A slot policy that does not resolve — an override that is invalid, or valid
     alone but not in combination — is a mistake someone needs to fix, and logged as one.
     """
     if product is None:  # pragma: no cover - conversations.product_id is a NOT NULL FK
         return None, None
 
     try:
+        # Checked first: a deactivated product with a perfectly good calendar still must
+        # not commit anyone's time (Phase 26).
+        assert_accepts_new_activity(is_active=product.is_active, display_name=product.display_name)
         calendar = build_calendar_provider(settings, product=product)
         policy = resolve_slot_policy(settings, product)
+    except ProductInactiveError:
+        logger.info("booking_unavailable", reason="product_inactive", product_id=str(product.id))
+        return None, None
     except CalendarNotConfiguredError:
         logger.info(
             "booking_unavailable", reason="calendar_not_configured", product_id=str(product.id)

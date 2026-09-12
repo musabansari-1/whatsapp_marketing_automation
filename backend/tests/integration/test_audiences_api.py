@@ -17,10 +17,9 @@ from openpyxl import Workbook
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.main import API_V1_PREFIX
 from app.persistence.models import Audience, Lead
 from tests.integration.conftest import login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -42,7 +41,7 @@ def upload(
     client: TestClient, content: bytes, *, filename: str = "audience.xlsx", name: str = ""
 ) -> Response:
     response: Response = client.post(
-        f"{API_V1_PREFIX}/audiences/upload",
+        f"{scoped_prefix()}/audiences/upload",
         files={"file": (filename, content, XLSX_TYPE)},
         data={"name": name},
     )
@@ -79,7 +78,7 @@ class TestUploadRequiresAuthentication:
         assert upload(client, make_xlsx(SAMPLE)).status_code == 401
 
     def test_anonymous_list_is_rejected(self, client: TestClient) -> None:
-        assert client.get(f"{API_V1_PREFIX}/audiences").status_code == 401
+        assert client.get(f"{scoped_prefix()}/audiences").status_code == 401
 
     def test_a_salesperson_may_upload(self, client: TestClient) -> None:
         """Uploading is not admin-only: §3 gives audience upload to the internal user
@@ -163,7 +162,7 @@ class TestRejectedRowsArePreserved:
         audience_id = upload(client, content).json()["audience"]["id"]
 
         response = client.get(
-            f"{API_V1_PREFIX}/audiences/{audience_id}/contacts",
+            f"{scoped_prefix()}/audiences/{audience_id}/contacts",
             params={"validation_status": "INVALID"},
         )
         body = response.json()
@@ -176,7 +175,7 @@ class TestRejectedRowsArePreserved:
         content = make_xlsx([["Name", "Phone", "Region"], ["Rahul", "9876543210", "West"]])
         audience_id = upload(client, content).json()["audience"]["id"]
 
-        contacts = client.get(f"{API_V1_PREFIX}/audiences/{audience_id}/contacts").json()
+        contacts = client.get(f"{scoped_prefix()}/audiences/{audience_id}/contacts").json()
         assert contacts["items"][0]["raw_row"]["Region"] == "West"
 
     def test_contacts_are_paginated(self, client: TestClient) -> None:
@@ -185,7 +184,7 @@ class TestRejectedRowsArePreserved:
         audience_id = upload(client, content).json()["audience"]["id"]
 
         page = client.get(
-            f"{API_V1_PREFIX}/audiences/{audience_id}/contacts", params={"limit": 3, "offset": 0}
+            f"{scoped_prefix()}/audiences/{audience_id}/contacts", params={"limit": 3, "offset": 0}
         ).json()
         assert len(page["items"]) == 3
         assert page["total"] == 10
@@ -223,7 +222,7 @@ class TestFileValidation:
 class TestSchemaEndpoint:
     def test_reports_the_configured_columns(self, client: TestClient) -> None:
         login(client)
-        body = client.get(f"{API_V1_PREFIX}/audiences/schema").json()
+        body = client.get(f"{scoped_prefix()}/audiences/schema").json()
 
         assert any(column["field"] == "phone" and column["required"] for column in body["columns"])
         assert body["phone_default_region"] == "IN"
@@ -232,7 +231,7 @@ class TestSchemaEndpoint:
         """[D4]/[D20]: the client's real schema is still outstanding, and the UI must
         not present a development default as authoritative."""
         login(client)
-        assert client.get(f"{API_V1_PREFIX}/audiences/schema").json()["is_placeholder"] is True
+        assert client.get(f"{scoped_prefix()}/audiences/schema").json()["is_placeholder"] is True
 
 
 class TestConfirmation:
@@ -240,7 +239,7 @@ class TestConfirmation:
         login(client)
         audience_id = upload(client, make_xlsx(SAMPLE)).json()["audience"]["id"]
 
-        response = client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+        response = client.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
         assert response.status_code == 200
         assert response.json()["audience"]["status"] == "CONFIRMED"
         assert response.json()["leads_upserted"] == 2
@@ -258,7 +257,9 @@ class TestConfirmation:
         audience_id = upload(client, content).json()["audience"]["id"]
 
         assert (
-            client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm").json()["leads_upserted"]
+            client.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm").json()[
+                "leads_upserted"
+            ]
             == 1
         )
 
@@ -267,8 +268,8 @@ class TestConfirmation:
         login(client)
         audience_id = upload(client, make_xlsx(SAMPLE)).json()["audience"]["id"]
 
-        client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
-        client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+        client.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
+        client.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
 
         async def count(session: AsyncSession) -> int:
             return int((await session.execute(select(func.count()).select_from(Lead))).scalar_one())
@@ -279,10 +280,10 @@ class TestConfirmation:
         """[D11]: the normalized phone is the deduplication identity."""
         login(client)
         first = upload(client, make_xlsx([["Name", "Phone"], ["Rahul", "9876543210"]]))
-        client.post(f"{API_V1_PREFIX}/audiences/{first.json()['audience']['id']}/confirm")
+        client.post(f"{scoped_prefix()}/audiences/{first.json()['audience']['id']}/confirm")
 
         second = upload(client, make_xlsx([["Name", "Phone"], ["Rahul K", "+91 98765 43210"]]))
-        client.post(f"{API_V1_PREFIX}/audiences/{second.json()['audience']['id']}/confirm")
+        client.post(f"{scoped_prefix()}/audiences/{second.json()['audience']['id']}/confirm")
 
         async def leads(session: AsyncSession) -> list[tuple[str, str | None]]:
             rows = (await session.execute(select(Lead.phone_e164, Lead.full_name))).all()
@@ -297,7 +298,7 @@ class TestConfirmation:
         """[D25]: promotion must not discard company, designation or city."""
         login(client)
         audience_id = upload(client, make_xlsx(SAMPLE)).json()["audience"]["id"]
-        client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+        client.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
 
         async def lead(session: AsyncSession) -> tuple[str | None, str | None, str | None]:
             row = (
@@ -315,12 +316,12 @@ class TestConfirmation:
         """A sparser second file must not wipe what the first supplied."""
         login(client)
         first = upload(client, make_xlsx([["Name", "Phone"], ["Rahul", "9876543210"]]))
-        client.post(f"{API_V1_PREFIX}/audiences/{first.json()['audience']['id']}/confirm")
+        client.post(f"{scoped_prefix()}/audiences/{first.json()['audience']['id']}/confirm")
 
         second = upload(
             client, make_xlsx([["Name", "Phone", "Company"], ["Rahul", "9876543210", None]])
         )
-        client.post(f"{API_V1_PREFIX}/audiences/{second.json()['audience']['id']}/confirm")
+        client.post(f"{scoped_prefix()}/audiences/{second.json()['audience']['id']}/confirm")
 
         async def company(session: AsyncSession) -> str | None:
             return (await session.execute(select(Lead.company))).scalar_one()
@@ -334,14 +335,14 @@ class TestConfirmation:
         audience_id = upload(client, make_xlsx([["Name", "Phone"], ["A", "rubbish"]])).json()[
             "audience"
         ]["id"]
-        assert client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm").status_code == 422
+        assert client.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm").status_code == 422
 
     def test_confirming_sends_nothing(self, client: TestClient) -> None:
         """Confirmation makes the audience usable; §7 requires a separate, explicitly
         triggered campaign to send anything."""
         login(client)
         audience_id = upload(client, make_xlsx(SAMPLE)).json()["audience"]["id"]
-        response = client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+        response = client.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
 
         assert response.status_code == 200
         assert "message" not in response.json()
@@ -353,21 +354,21 @@ class TestRetrieval:
         upload(client, make_xlsx(SAMPLE), name="First")
         upload(client, make_xlsx(SAMPLE), name="Second")
 
-        names = {audience["name"] for audience in client.get(f"{API_V1_PREFIX}/audiences").json()}
+        names = {audience["name"] for audience in client.get(f"{scoped_prefix()}/audiences").json()}
         assert names == {"First", "Second"}
 
     def test_audience_detail(self, client: TestClient) -> None:
         login(client)
         audience_id = upload(client, make_xlsx(SAMPLE)).json()["audience"]["id"]
 
-        response = client.get(f"{API_V1_PREFIX}/audiences/{audience_id}")
+        response = client.get(f"{scoped_prefix()}/audiences/{audience_id}")
         assert response.status_code == 200
         assert response.json()["valid_rows"] == 2
 
     def test_unknown_audience_is_404(self, client: TestClient) -> None:
         login(client)
-        assert client.get(f"{API_V1_PREFIX}/audiences/{uuid.uuid4()}").status_code == 404
+        assert client.get(f"{scoped_prefix()}/audiences/{uuid.uuid4()}").status_code == 404
 
     def test_contacts_for_unknown_audience_is_404(self, client: TestClient) -> None:
         login(client)
-        assert client.get(f"{API_V1_PREFIX}/audiences/{uuid.uuid4()}/contacts").status_code == 404
+        assert client.get(f"{scoped_prefix()}/audiences/{uuid.uuid4()}/contacts").status_code == 404

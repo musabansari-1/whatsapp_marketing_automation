@@ -37,7 +37,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from tests.integration.conftest import ADMIN_EMAIL, SALES_EMAIL, login
-from tests.integration.helpers import ensure_product_id, run_db
+from tests.integration.helpers import ensure_product_id, run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -100,22 +100,22 @@ def seed_message(
 
 
 def overview(client: TestClient) -> dict[str, Any]:
-    response = client.get("/api/v1/analytics/overview")
+    response = client.get(f"{scoped_prefix()}/analytics/overview")
     assert response.status_code == 200, response.text
     return dict(response.json())
 
 
 class TestAuthentication:
     def test_a_session_is_required(self, client: TestClient) -> None:
-        assert client.get("/api/v1/analytics/overview").status_code == 401
-        assert client.get("/api/v1/analytics/leads-by-status").status_code == 401
+        assert client.get(f"{scoped_prefix()}/analytics/overview").status_code == 401
+        assert client.get(f"{scoped_prefix()}/analytics/leads-by-status").status_code == 401
 
     def test_a_salesperson_may_read_the_overview(
         self, client: TestClient, seeded_users: dict[str, str]
     ) -> None:
         """§17's dashboard is what a salesperson uses to monitor the lifecycle."""
         login(client, email=SALES_EMAIL)
-        assert client.get("/api/v1/analytics/overview").status_code == 200
+        assert client.get(f"{scoped_prefix()}/analytics/overview").status_code == 200
 
 
 class TestEmptyState:
@@ -291,6 +291,8 @@ class TestNotificationCount:
                     message="Asha booked a demo.",
                     related_entity_type="booking",
                     related_entity_id=uuid.UUID(lead_id),
+                    # The overview is per product, and so is its unread count.
+                    product_id=await ensure_product_id(session),
                 )
             )
 
@@ -313,7 +315,7 @@ class TestLeadFunnel:
         login(client)
         seed_lead("+919876500450", LeadStatus.QUALIFIED)
 
-        counts = client.get("/api/v1/analytics/leads-by-status").json()["counts"]
+        counts = client.get(f"{scoped_prefix()}/analytics/leads-by-status").json()["counts"]
 
         assert counts["QUALIFIED"] == 1
         assert counts["NEW"] == 0

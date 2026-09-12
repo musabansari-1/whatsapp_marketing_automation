@@ -125,12 +125,25 @@ async def mark_cancelled(session: AsyncSession, booking: Booking) -> None:
 async def list_bookings(
     session: AsyncSession,
     *,
+    product_id: uuid.UUID,
+    segment_id: uuid.UUID | None = None,
     status: BookingStatus | None = None,
+    lead_id: uuid.UUID | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[int, Sequence[Booking]]:
-    """A page of bookings, soonest first."""
-    conditions = [] if status is None else [Booking.status == status]
+    """A page of one product's bookings, latest start first.
+
+    `product_id` is required. Each product books into its own calendar ([D43]), and a
+    merged list across products is the confusion Phase 26 exists to remove.
+    """
+    from app.persistence.repositories.scoping import booking_scope
+
+    conditions = booking_scope(product_id=product_id, segment_id=segment_id)
+    if status is not None:
+        conditions.append(Booking.status == status)
+    if lead_id is not None:
+        conditions.append(Booking.lead_id == lead_id)
 
     total = await session.scalar(select(func.count()).select_from(Booking).where(*conditions))
     result = await session.execute(
@@ -223,6 +236,7 @@ async def list_notifications(
     *,
     user_id: uuid.UUID,
     unread_only: bool = False,
+    product_id: uuid.UUID | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[int, int, Sequence[Notification]]:
@@ -234,6 +248,9 @@ async def list_notifications(
     conditions = [Notification.user_id == user_id]
     if unread_only:
         conditions.append(Notification.is_read.is_(False))
+    if product_id is not None:
+        # Narrows the page only. The unread count below stays whole: it is the badge.
+        conditions.append(Notification.product_id == product_id)
 
     total = await session.scalar(select(func.count()).select_from(Notification).where(*conditions))
     unread = await session.scalar(

@@ -170,18 +170,19 @@ class TestUploadRateLimit:
 
         from app.core.config import get_settings
         from tests.integration.conftest import login
+        from tests.integration.helpers import scoped_prefix
 
         login(client)
         monkeypatch.setattr(get_settings(), "rate_limit_upload_requests", 2)
 
         base = client.post(
-            "/api/v1/knowledge-bases", json={"name": "Limits", "description": None}
+            f"{scoped_prefix()}/knowledge-bases", json={"name": "Limits", "description": None}
         ).json()["id"]
 
         codes = []
         for index in range(4):
             response = client.post(
-                f"/api/v1/knowledge-bases/{base}/documents",
+                f"{scoped_prefix()}/knowledge-bases/{base}/documents",
                 files={
                     "file": (
                         f"doc{index}.txt",

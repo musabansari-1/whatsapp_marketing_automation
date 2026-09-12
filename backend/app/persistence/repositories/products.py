@@ -1,14 +1,18 @@
-"""Product and segment queries (§28, Phase 19)."""
+"""Product and segment queries (§28).
+
+Products are rows ([D49]). Nothing here knows how many exist or what any is called, and
+there is no default product: every lookup is by an identifier the caller already holds —
+an ID, a route slug, or the WhatsApp number a message arrived on.
+"""
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.product import resolve_authoring_product
 from app.persistence.models import Product, Segment
 
 
@@ -16,38 +20,35 @@ async def get_product(session: AsyncSession, product_id: uuid.UUID) -> Product |
     return await session.get(Product, product_id)
 
 
+async def get_by_slug(session: AsyncSession, slug: str) -> Product | None:
+    """The product a dashboard route names.
+
+    The slug is a permanent route identifier (Phase 26). It locates a product; it never
+    decides behaviour.
+    """
+    result = await session.execute(select(Product).where(Product.slug == slug))
+    return result.scalars().first()
+
+
 async def list_products(session: AsyncSession) -> Sequence[Product]:
     result = await session.execute(select(Product).order_by(Product.display_name))
     return result.scalars().all()
 
 
-async def active_product_ids(session: AsyncSession) -> list[uuid.UUID]:
-    """Active products, oldest first.
-
-    Ordered so the result is stable, not so the first one can be picked as a default —
-    `resolve_authoring_product` refuses when there is more than one.
-    """
-    result = await session.execute(
-        select(Product.id).where(Product.is_active.is_(True)).order_by(Product.created_at)
-    )
-    return list(result.scalars().all())
+async def count_products(session: AsyncSession) -> int:
+    """Every product row, active or not."""
+    return int(await session.scalar(select(func.count()).select_from(Product)) or 0)
 
 
-async def resolve_product_for_authoring(
-    session: AsyncSession, explicit: uuid.UUID | None
-) -> uuid.UUID:
-    """The product an internal authoring request belongs to.
-
-    Queries the active products and applies the §28 rule. The count genuinely comes from
-    the database: hard-coding "one product exists" would make the compatibility path
-    outlive the condition that justifies it.
-
-    Never for inbound customer routing ([D40], [D45]).
-    """
-    return resolve_authoring_product(
-        explicit=explicit,
-        active_product_ids=await active_product_ids(session),
-    )
+async def products_by_id(
+    session: AsyncSession, product_ids: Iterable[uuid.UUID]
+) -> dict[uuid.UUID, Product]:
+    """Several products in one query, for attaching product context to a page of rows."""
+    ids = list(set(product_ids))
+    if not ids:
+        return {}
+    result = await session.execute(select(Product).where(Product.id.in_(ids)))
+    return {product.id: product for product in result.scalars().all()}
 
 
 class UnknownReceivingNumberError(Exception):
@@ -107,6 +108,20 @@ async def get_segment(session: AsyncSession, segment_id: uuid.UUID) -> Segment |
     return await session.get(Segment, segment_id)
 
 
+async def get_segment_by_slug(
+    session: AsyncSession, *, product_id: uuid.UUID, slug: str
+) -> Segment | None:
+    """A segment by its slug, looked up only within one product.
+
+    Segment slugs are unique per product, not globally ([D49]) — two products may both
+    have a "government" segment, and they are different things.
+    """
+    result = await session.execute(
+        select(Segment).where(Segment.product_id == product_id, Segment.slug == slug)
+    )
+    return result.scalars().first()
+
+
 async def list_segments(session: AsyncSession, product_id: uuid.UUID) -> Sequence[Segment]:
     result = await session.execute(
         select(Segment)
@@ -117,10 +132,14 @@ async def list_segments(session: AsyncSession, product_id: uuid.UUID) -> Sequenc
 
 
 __all__ = [
-    "active_product_ids",
+    "UnknownReceivingNumberError",
+    "count_products",
+    "get_by_slug",
     "get_product",
     "get_segment",
+    "get_segment_by_slug",
     "list_products",
     "list_segments",
-    "resolve_product_for_authoring",
+    "product_for_receiving_number",
+    "products_by_id",
 ]

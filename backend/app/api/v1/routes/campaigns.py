@@ -1,8 +1,14 @@
-"""Campaign endpoints (specification §7, §16, [D6], [D16]).
+"""Campaign endpoints, per product (specification §7, §16, §28, [D6], [D16], [D57]).
 
 A broadcast is human-initiated (§7): creating a campaign prepares it, and a separate
 explicit confirmation triggers the send. Sending itself is asynchronous — this module
 enqueues work and returns, because §4 forbids long-running work inside a request.
+
+Every route is inside one product (Phase 26). A campaign takes its product from its
+audience, which must belong to the product in the path; its template must be one that
+product owns. So the address, the audience and the template cannot disagree about which
+product is broadcasting — the failure that would send one product's message to another
+product's customers.
 """
 
 from __future__ import annotations
@@ -12,7 +18,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.api.deps import AdminUser, CurrentUser, DbSession, Queue
+from app.api.deps import AdminUser, DbSession, Queue
 from app.api.schemas import (
     CampaignDetailResponse,
     CampaignRecipientPage,
@@ -21,6 +27,13 @@ from app.api.schemas import (
     CreateCampaignRequest,
     SendCampaignResponse,
     WhatsAppTemplateResponse,
+)
+from app.api.scope import (
+    PRODUCT_PREFIX,
+    ActiveProductScope,
+    ProductScope,
+    SegmentFilter,
+    owned_by,
 )
 from app.core.logging import get_logger
 from app.domain.campaign import (
@@ -41,43 +54,37 @@ from app.domain.enums import (
     TemplateCategory,
 )
 from app.integrations.queue import TaskRequest, TaskType
-from app.persistence.models import Campaign
+from app.persistence.models import Campaign, Product
 from app.persistence.repositories import audiences as audience_repo
 from app.persistence.repositories import campaigns as campaign_repo
 
-router = APIRouter(tags=["campaigns"])
+router = APIRouter(prefix=f"{PRODUCT_PREFIX}/campaigns", tags=["campaigns"])
 logger = get_logger(__name__)
 
 
-@router.get("/whatsapp-templates", response_model=list[WhatsAppTemplateResponse])
-async def list_templates(user: CurrentUser, session: DbSession) -> list[WhatsAppTemplateResponse]:
-    """Approved marketing templates available to a campaign.
-
-    Read-only and derived: §16 lists no template route, but a campaign has to select
-    one and [D6] forbids the application creating or approving templates itself. Rows
-    appear here only once the Phase 6 synchronization has pulled them from Meta, so
-    this list is empty until then.
-    """
-    templates = await campaign_repo.list_approved_marketing_templates(session)
-    return [WhatsAppTemplateResponse.model_validate(template) for template in templates]
-
-
-@router.post(
-    "/campaigns", response_model=CampaignDetailResponse, status_code=status.HTTP_201_CREATED
-)
+@router.post("", response_model=CampaignDetailResponse, status_code=status.HTTP_201_CREATED)
 async def create_campaign(
-    payload: CreateCampaignRequest, user: AdminUser, session: DbSession
+    payload: CreateCampaignRequest,
+    user: AdminUser,
+    product: ActiveProductScope,
+    session: DbSession,
 ) -> CampaignDetailResponse:
-    """Create a campaign and freeze its recipients.
+    """Create a campaign in this product and freeze its recipients.
 
     ADMIN-only ([D33]).
+
+    The audience must belong to this product — another product's is 404, exactly as if
+    it did not exist. The template must be approved by Meta and owned by this product;
+    an unassigned template is refused ([D57]).
 
     The snapshot is taken now rather than at send time, so the preview the admin
     confirms against is exactly the set that will be messaged (§7). Nothing is sent.
     """
-    audience = await audience_repo.get_by_id(session, payload.audience_id)
-    if audience is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audience not found")
+    audience = owned_by(
+        await audience_repo.get_by_id(session, payload.audience_id),
+        product,
+        not_found="Audience not found",
+    )
     if audience.status is not AudienceStatus.CONFIRMED:
         # §6 puts admin confirmation before use; an unconfirmed audience has not been
         # reviewed and its leads do not exist yet.
@@ -97,19 +104,12 @@ async def create_campaign(
                 is_marketing=template.category is TemplateCategory.MARKETING,
             )
         )
-    except TemplateNotApprovedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
-        ) from exc
-
-    # A campaign may not reach across products (§28.8), and an unassigned template belongs
-    # to none ([D57]). The campaign's product is the audience's, since the repository
-    # derives it from there — so this is checked against the same value it will be given.
-    try:
+        # §28.8 and [D57]. The campaign's product is the audience's, which is this
+        # product — checked against the value it will be given.
         assert_template_owned_by(
-            template_product_id=template.product_id, campaign_product_id=audience.product_id
+            template_product_id=template.product_id, campaign_product_id=product.id
         )
-    except TemplateOwnershipError as exc:
+    except (TemplateNotApprovedError, TemplateOwnershipError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
@@ -135,6 +135,7 @@ async def create_campaign(
     logger.info(
         "campaign_created",
         campaign_id=str(campaign.id),
+        product_id=str(product.id),
         recipients=snapshot_size,
         pending=pending,
         status=campaign.status.value,
@@ -142,23 +143,27 @@ async def create_campaign(
     return await _detail(session, campaign)
 
 
-@router.get("/campaigns", response_model=list[CampaignResponse])
-async def list_campaigns(user: CurrentUser, session: DbSession) -> list[CampaignResponse]:
-    campaigns = await campaign_repo.list_campaigns(session)
+@router.get("", response_model=list[CampaignResponse])
+async def list_campaigns(
+    product: ProductScope, segment: SegmentFilter, session: DbSession
+) -> list[CampaignResponse]:
+    campaigns = await campaign_repo.list_campaigns(
+        session, product_id=product.id, segment_id=segment.id if segment is not None else None
+    )
     return [CampaignResponse.model_validate(campaign) for campaign in campaigns]
 
 
-@router.get("/campaigns/{campaign_id}", response_model=CampaignDetailResponse)
+@router.get("/{campaign_id}", response_model=CampaignDetailResponse)
 async def get_campaign(
-    campaign_id: uuid.UUID, user: CurrentUser, session: DbSession
+    campaign_id: uuid.UUID, product: ProductScope, session: DbSession
 ) -> CampaignDetailResponse:
-    return await _detail(session, await _require_campaign(session, campaign_id))
+    return await _detail(session, await _require_campaign(session, product, campaign_id))
 
 
-@router.get("/campaigns/{campaign_id}/recipients", response_model=CampaignRecipientPage)
+@router.get("/{campaign_id}/recipients", response_model=CampaignRecipientPage)
 async def list_recipients(
     campaign_id: uuid.UUID,
-    user: CurrentUser,
+    product: ProductScope,
     session: DbSession,
     recipient_status: RecipientStatus | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -169,7 +174,7 @@ async def list_recipients(
     Derived from §7's snapshot requirement: without a way to read it, an admin cannot
     see who a campaign will message or why someone was skipped.
     """
-    await _require_campaign(session, campaign_id)
+    await _require_campaign(session, product, campaign_id)
 
     recipients = await campaign_repo.list_recipients(
         session, campaign_id, status=recipient_status, limit=limit, offset=offset
@@ -184,14 +189,18 @@ async def list_recipients(
     )
 
 
-@router.post("/campaigns/{campaign_id}/send", response_model=SendCampaignResponse)
+@router.post("/{campaign_id}/send", response_model=SendCampaignResponse)
 async def send_campaign(
-    campaign_id: uuid.UUID, user: AdminUser, session: DbSession, queue: Queue
+    campaign_id: uuid.UUID,
+    user: AdminUser,
+    product: ActiveProductScope,
+    session: DbSession,
+    queue: Queue,
 ) -> SendCampaignResponse:
     """Confirm Send Broadcast (§7).
 
     ADMIN-only ([D33]): a salesperson must never be able to trigger a mass broadcast,
-    accidentally or otherwise.
+    accidentally or otherwise. Refused for an inactive product.
 
     This is the human-initiated moment the specification requires. It validates,
     re-checks suppression, enqueues one task per pending recipient and returns; the
@@ -201,7 +210,7 @@ async def send_campaign(
     cannot message anyone twice. Each task carries a deterministic ID derived from the
     recipient, so a redelivered task is recognizable as a repeat (§20).
     """
-    campaign = await _require_campaign(session, campaign_id)
+    campaign = await _require_campaign(session, product, campaign_id)
 
     # Checked again at the human moment, not only at creation ([D57]). A campaign created
     # before ownership was enforced may point at a template with no product, and this is
@@ -254,6 +263,7 @@ async def send_campaign(
     logger.info(
         "campaign_send_confirmed",
         campaign_id=str(campaign.id),
+        product_id=str(product.id),
         queued=len(pending),
         skipped_as_suppressed=newly_suppressed,
         by_user_id=str(user.id),
@@ -265,22 +275,23 @@ async def send_campaign(
     )
 
 
-@router.post("/campaigns/{campaign_id}/cancel", response_model=CampaignResponse)
+@router.post("/{campaign_id}/cancel", response_model=CampaignResponse)
 async def cancel_campaign(
-    campaign_id: uuid.UUID, user: AdminUser, session: DbSession
+    campaign_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession
 ) -> CampaignResponse:
     """Cancel a campaign ([D29]). ADMIN-only.
+
+    Allowed for an inactive product: cancelling stops activity, and refusing it would
+    keep alive exactly what deactivation was meant to end.
 
     Cancelling stops work that is already queued. Tasks dispatched before this point
     still arrive at the worker, which re-reads the campaign state and declines to
     send — so cancellation is effective without needing to purge the queue.
 
-    Idempotent: cancelling an already-cancelled campaign succeeds and changes nothing,
-    so a double click or a retried request is harmless.
-
+    Idempotent: cancelling an already-cancelled campaign succeeds and changes nothing.
     Messages already delivered cannot be recalled; only unsent recipients are stopped.
     """
-    campaign = await _require_campaign(session, campaign_id)
+    campaign = await _require_campaign(session, product, campaign_id)
 
     if campaign.status is CampaignStatus.CANCELLED:
         return CampaignResponse.model_validate(campaign)
@@ -304,11 +315,12 @@ async def cancel_campaign(
     return CampaignResponse.model_validate(campaign)
 
 
-async def _require_campaign(session: DbSession, campaign_id: uuid.UUID) -> Campaign:
-    campaign = await campaign_repo.get_by_id(session, campaign_id)
-    if campaign is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
-    return campaign
+async def _require_campaign(
+    session: DbSession, product: Product, campaign_id: uuid.UUID
+) -> Campaign:
+    return owned_by(
+        await campaign_repo.get_by_id(session, campaign_id), product, not_found="Campaign not found"
+    )
 
 
 async def _detail(session: DbSession, campaign: Campaign) -> CampaignDetailResponse:
@@ -324,3 +336,6 @@ async def _detail(session: DbSession, campaign: Campaign) -> CampaignDetailRespo
         template=WhatsAppTemplateResponse.model_validate(template),
         pending_recipients=pending,
     )
+
+
+__all__ = ["router"]

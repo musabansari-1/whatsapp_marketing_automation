@@ -45,12 +45,10 @@ class KnowledgeBase(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "knowledge_bases"
 
-    # §28 product scope. Nullable during the transition: `POST /knowledge-bases`
-    # takes no product until Phase 26. The global unique on `name` therefore
-    # stays in force until then: replacing it with a product-scoped unique now
-    # would let two NULL-product bases share a name, weakening today's rule.
-    product_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")
+    # §28 product scope, NOT NULL since Phase 26: every creation path is inside a
+    # product, and [D56] makes an unowned base unsafe to retrieve from anyway.
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
     # Nullable by design, permanently: §28 allows a product-wide entity, and a
     # product may have no segments at all. Never filled with a placeholder.
@@ -58,7 +56,7 @@ class KnowledgeBase(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("segments.id", ondelete="RESTRICT")
     )
 
-    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
 
     documents: Mapped[list[KnowledgeDocument]] = relationship(
@@ -66,11 +64,16 @@ class KnowledgeBase(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
+        # Names are unique within a product, not across the platform: two products may
+        # each keep a "Product FAQs". The global rule this replaced was deferred from
+        # Phase 18 until every writer supplied a product, because over a nullable column
+        # a composite unique would have let two unowned bases share a name.
+        UniqueConstraint("product_id", "name", name="uq_knowledge_bases_product_name"),
         Index("ix_knowledge_bases_product_id", "product_id"),
         Index("ix_knowledge_bases_segment_id", "segment_id"),
         # A segment must belong to this row's own product (§28.8). MATCH SIMPLE
         # skips the check when either column is NULL, so a product-wide row is
-        # unaffected, and so is one with no product yet during the transition.
+        # unaffected.
         ForeignKeyConstraint(
             ["product_id", "segment_id"],
             ["segments.product_id", "segments.id"],

@@ -26,7 +26,7 @@ from app.persistence.models import (
     WhatsAppSuppression,
 )
 from tests.integration.conftest import SALES_EMAIL, login
-from tests.integration.helpers import ensure_product_id, run_db
+from tests.integration.helpers import ensure_product_id, run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -100,11 +100,11 @@ def seed_conversation(
 class TestAuthentication:
     def test_every_endpoint_requires_a_session(self, client: TestClient) -> None:
         """§9: customer conversations are not public."""
-        assert client.get("/api/v1/leads").status_code == 401
-        assert client.get(f"/api/v1/leads/{uuid.uuid4()}").status_code == 401
-        assert client.get("/api/v1/conversations").status_code == 401
-        assert client.get(f"/api/v1/conversations/{uuid.uuid4()}").status_code == 401
-        assert client.patch(f"/api/v1/leads/{uuid.uuid4()}", json={}).status_code == 401
+        assert client.get(f"{scoped_prefix()}/leads").status_code == 401
+        assert client.get(f"{scoped_prefix()}/leads/{uuid.uuid4()}").status_code == 401
+        assert client.get(f"{scoped_prefix()}/conversations").status_code == 401
+        assert client.get(f"{scoped_prefix()}/conversations/{uuid.uuid4()}").status_code == 401
+        assert client.patch(f"{scoped_prefix()}/leads/{uuid.uuid4()}", json={}).status_code == 401
 
     def test_a_salesperson_may_read_leads_and_conversations(
         self, client: TestClient, seeded_users: dict[str, str]
@@ -113,8 +113,8 @@ class TestAuthentication:
         to see what was said."""
         login(client, email=SALES_EMAIL)
 
-        assert client.get("/api/v1/leads").status_code == 200
-        assert client.get("/api/v1/conversations").status_code == 200
+        assert client.get(f"{scoped_prefix()}/leads").status_code == 200
+        assert client.get(f"{scoped_prefix()}/conversations").status_code == 200
 
 
 class TestLeadListing:
@@ -125,7 +125,7 @@ class TestLeadListing:
         seed_lead(phone="+919876500011", name="One")
         seed_lead(phone="+919876500012", name="Two")
 
-        body = client.get("/api/v1/leads").json()
+        body = client.get(f"{scoped_prefix()}/leads").json()
 
         assert body["total"] == 2
         assert len(body["items"]) == 2
@@ -137,7 +137,7 @@ class TestLeadListing:
         seed_lead(phone="+919876500013", status=LeadStatus.QUALIFIED)
         seed_lead(phone="+919876500014", status=LeadStatus.NEW)
 
-        body = client.get("/api/v1/leads?status=QUALIFIED").json()
+        body = client.get(f"{scoped_prefix()}/leads?status=QUALIFIED").json()
 
         assert body["total"] == 1
         assert body["items"][0]["status"] == LeadStatus.QUALIFIED.value
@@ -152,7 +152,7 @@ class TestLeadListing:
         seed_lead(phone="+919876500015", name="Asha Rao", company="Northwind")
         seed_lead(phone="+919876500016", name="Other Person", company="Elsewhere")
 
-        body = client.get(f"/api/v1/leads?search={term}").json()
+        body = client.get(f"{scoped_prefix()}/leads?search={term}").json()
 
         assert body["total"] == 1
         assert body["items"][0]["phone_e164"] == "+919876500015"
@@ -162,14 +162,14 @@ class TestLeadListing:
         for index in range(5):
             seed_lead(phone=f"+91987650002{index}", name=f"Lead {index}")
 
-        body = client.get("/api/v1/leads?limit=2&offset=2").json()
+        body = client.get(f"{scoped_prefix()}/leads?limit=2&offset=2").json()
 
         assert body["total"] == 5
         assert len(body["items"]) == 2
 
     def test_a_missing_lead_is_404(self, client: TestClient, seeded_users: dict[str, str]) -> None:
         login(client)
-        assert client.get(f"/api/v1/leads/{uuid.uuid4()}").status_code == 404
+        assert client.get(f"{scoped_prefix()}/leads/{uuid.uuid4()}").status_code == 404
 
     def test_extracted_facts_are_visible(
         self, client: TestClient, seeded_users: dict[str, str]
@@ -178,7 +178,7 @@ class TestLeadListing:
         login(client)
         lead_id = seed_lead(phone="+919876500030")
 
-        body = client.get(f"/api/v1/leads/{lead_id}").json()
+        body = client.get(f"{scoped_prefix()}/leads/{lead_id}").json()
 
         assert body["qualification_data"] == {}
 
@@ -191,7 +191,7 @@ class TestLeadUpdate:
         lead_id = seed_lead(phone="+919876500031", name="Typo")
 
         response = client.patch(
-            f"/api/v1/leads/{lead_id}", json={"full_name": "Asha Rao", "city": "Pune"}
+            f"{scoped_prefix()}/leads/{lead_id}", json={"full_name": "Asha Rao", "city": "Pune"}
         )
 
         assert response.status_code == 200
@@ -204,7 +204,7 @@ class TestLeadUpdate:
         login(client)
         lead_id = seed_lead(phone="+919876500032", status=LeadStatus.RESPONDED)
 
-        response = client.patch(f"/api/v1/leads/{lead_id}", json={"status": "INTERESTED"})
+        response = client.patch(f"{scoped_prefix()}/leads/{lead_id}", json={"status": "INTERESTED"})
 
         assert response.status_code == 200
         assert response.json()["status"] == "INTERESTED"
@@ -217,7 +217,7 @@ class TestLeadUpdate:
         login(client)
         lead_id = seed_lead(phone="+919876500033", status=LeadStatus.NEW)
 
-        response = client.patch(f"/api/v1/leads/{lead_id}", json={"status": "QUALIFIED"})
+        response = client.patch(f"{scoped_prefix()}/leads/{lead_id}", json={"status": "QUALIFIED"})
 
         assert response.status_code == 409
 
@@ -230,7 +230,9 @@ class TestLeadUpdate:
         lead_id = seed_lead(phone="+919876500034", status=LeadStatus.OPTED_OUT)
 
         assert (
-            client.patch(f"/api/v1/leads/{lead_id}", json={"status": "RESPONDED"}).status_code
+            client.patch(
+                f"{scoped_prefix()}/leads/{lead_id}", json={"status": "RESPONDED"}
+            ).status_code
             == 409
         )
 
@@ -243,7 +245,7 @@ class TestLeadUpdate:
         lead_id = seed_lead(phone="+919876500035")
 
         response = client.patch(
-            f"/api/v1/leads/{lead_id}", json={"qualification_data": {"budget": "large"}}
+            f"{scoped_prefix()}/leads/{lead_id}", json={"qualification_data": {"budget": "large"}}
         )
 
         assert response.status_code == 200
@@ -255,7 +257,7 @@ class TestLeadUpdate:
         login(client)
         lead_id = seed_lead(phone="+919876500036", status=LeadStatus.RESPONDED)
 
-        response = client.patch(f"/api/v1/leads/{lead_id}", json={"opted_out": True})
+        response = client.patch(f"{scoped_prefix()}/leads/{lead_id}", json={"opted_out": True})
 
         assert response.status_code == 200
         assert response.json()["opted_out"] is False
@@ -266,7 +268,7 @@ class TestLeadUpdate:
         login(client)
         lead_id = seed_lead(phone="+919876500037", name="Asha Rao")
 
-        response = client.patch(f"/api/v1/leads/{lead_id}", json={})
+        response = client.patch(f"{scoped_prefix()}/leads/{lead_id}", json={})
 
         assert response.status_code == 200
         assert response.json()["full_name"] == "Asha Rao"
@@ -275,7 +277,7 @@ class TestLeadUpdate:
         self, client: TestClient, seeded_users: dict[str, str]
     ) -> None:
         login(client)
-        assert client.patch(f"/api/v1/leads/{uuid.uuid4()}", json={}).status_code == 404
+        assert client.patch(f"{scoped_prefix()}/leads/{uuid.uuid4()}", json={}).status_code == 404
 
 
 class TestConversationReading:
@@ -286,7 +288,7 @@ class TestConversationReading:
         lead_id = seed_lead(phone="+919876500040")
         conversation_id = seed_conversation(lead_id)
 
-        body = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        body = client.get(f"{scoped_prefix()}/conversations/{conversation_id}").json()
 
         assert body["total_turns"] == 2
         assert [turn["role"] for turn in body["turns"]] == ["user", "assistant"]
@@ -302,7 +304,7 @@ class TestConversationReading:
             turns=(("user", "first"), ("assistant", "second"), ("user", "third")),
         )
 
-        body = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        body = client.get(f"{scoped_prefix()}/conversations/{conversation_id}").json()
 
         assert [turn["content"] for turn in body["turns"]] == ["first", "second", "third"]
 
@@ -315,7 +317,7 @@ class TestConversationReading:
         lead_id = seed_lead(phone="+919876500042")
         conversation_id = seed_conversation(lead_id, last_inbound_age=timedelta(hours=1))
 
-        body = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        body = client.get(f"{scoped_prefix()}/conversations/{conversation_id}").json()
 
         assert body["within_service_window"] is True
 
@@ -326,7 +328,7 @@ class TestConversationReading:
         lead_id = seed_lead(phone="+919876500043")
         conversation_id = seed_conversation(lead_id, last_inbound_age=timedelta(hours=30))
 
-        body = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        body = client.get(f"{scoped_prefix()}/conversations/{conversation_id}").json()
 
         assert body["within_service_window"] is False
 
@@ -338,7 +340,7 @@ class TestConversationReading:
         lead_id = seed_lead(phone="+919876500044")
         conversation_id = seed_conversation(lead_id, last_inbound_age=None)
 
-        body = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        body = client.get(f"{scoped_prefix()}/conversations/{conversation_id}").json()
 
         assert body["within_service_window"] is False
 
@@ -346,7 +348,7 @@ class TestConversationReading:
         self, client: TestClient, seeded_users: dict[str, str]
     ) -> None:
         login(client)
-        assert client.get(f"/api/v1/conversations/{uuid.uuid4()}").status_code == 404
+        assert client.get(f"{scoped_prefix()}/conversations/{uuid.uuid4()}").status_code == 404
 
     def test_conversations_can_be_filtered_by_status(
         self, client: TestClient, seeded_users: dict[str, str]
@@ -357,7 +359,7 @@ class TestConversationReading:
         seed_conversation(first, status=ConversationStatus.ACTIVE)
         seed_conversation(second, status=ConversationStatus.CLOSED)
 
-        body = client.get("/api/v1/conversations?status=CLOSED").json()
+        body = client.get(f"{scoped_prefix()}/conversations?status=CLOSED").json()
 
         assert body["total"] == 1
         assert body["items"][0]["status"] == "CLOSED"
@@ -371,7 +373,7 @@ class TestLeadConversation:
         lead_id = seed_lead(phone="+919876500047")
         conversation_id = seed_conversation(lead_id)
 
-        body = client.get(f"/api/v1/leads/{lead_id}/conversation").json()
+        body = client.get(f"{scoped_prefix()}/leads/{lead_id}/conversation").json()
 
         assert body["conversation"]["id"] == conversation_id
 
@@ -387,7 +389,7 @@ class TestLeadConversation:
             lead_id, status=ConversationStatus.ACTIVE, turns=(("user", "new"),)
         )
 
-        body = client.get(f"/api/v1/leads/{lead_id}/conversation").json()
+        body = client.get(f"{scoped_prefix()}/leads/{lead_id}/conversation").json()
 
         assert body["conversation"]["id"] == newest
 
@@ -399,7 +401,7 @@ class TestLeadConversation:
         lead_id = seed_lead(phone="+919876500049")
         seed_conversation(lead_id, status=ConversationStatus.CLOSED)
 
-        body = client.get(f"/api/v1/leads/{lead_id}/conversation").json()
+        body = client.get(f"{scoped_prefix()}/leads/{lead_id}/conversation").json()
 
         assert body["conversation"]["status"] == "CLOSED"
         assert body["total_turns"] == 2
@@ -410,7 +412,7 @@ class TestLeadConversation:
         login(client)
         lead_id = seed_lead(phone="+919876500050")
 
-        assert client.get(f"/api/v1/leads/{lead_id}/conversation").status_code == 404
+        assert client.get(f"{scoped_prefix()}/leads/{lead_id}/conversation").status_code == 404
 
 
 class TestNoManualSending:
@@ -425,9 +427,9 @@ class TestNoManualSending:
         conversation_id = seed_conversation(lead_id)
 
         for path in (
-            f"/api/v1/conversations/{conversation_id}/messages",
-            f"/api/v1/conversations/{conversation_id}/reply",
-            f"/api/v1/leads/{lead_id}/messages",
+            f"{scoped_prefix()}/conversations/{conversation_id}/messages",
+            f"{scoped_prefix()}/conversations/{conversation_id}/reply",
+            f"{scoped_prefix()}/leads/{lead_id}/messages",
         ):
             assert client.post(path, json={"body": "hello"}).status_code == 404
 
@@ -451,7 +453,7 @@ class TestTranscriptOrdering:
             lead_id, turns=tuple(("user", content) for content in expected)
         )
 
-        body = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        body = client.get(f"{scoped_prefix()}/conversations/{conversation_id}").json()
 
         assert [turn["content"] for turn in body["turns"]] == expected
 
@@ -488,7 +490,7 @@ class TestTranscriptOrdering:
             lead_id, turns=tuple(("user", f"turn {index}") for index in range(10))
         )
 
-        body = client.get(f"/api/v1/conversations/{conversation_id}?limit=3").json()
+        body = client.get(f"{scoped_prefix()}/conversations/{conversation_id}?limit=3").json()
 
         assert [turn["content"] for turn in body["turns"]] == ["turn 7", "turn 8", "turn 9"]
         # The count reports the whole transcript, not the page.

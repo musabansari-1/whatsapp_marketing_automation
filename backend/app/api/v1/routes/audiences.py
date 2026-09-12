@@ -1,8 +1,12 @@
-"""Excel audience endpoints (specification §6, §16, [D4], [D20]).
+"""Excel audience endpoints, per product (specification §6, §16, §28, [D4], [D20]).
 
 Uploading validates and stores; it never sends a message and never invokes the AI.
 That is a hard rule in §6 and CLAUDE.md, and it is why this module imports no
 provider: there is nothing here that *could* send.
+
+Every route is inside one product, taken from the path (Phase 26). Not from a form
+field, and not from whichever product happens to be the only active one: the
+transitional sole-active-product rule this module relied on before is gone.
 """
 
 from __future__ import annotations
@@ -20,19 +24,26 @@ from app.api.schemas import (
     AudienceSummaryResponse,
     AudienceUploadResponse,
 )
+from app.api.scope import (
+    PRODUCT_PREFIX,
+    ActiveProductScope,
+    ProductScope,
+    SegmentFilter,
+    owned_by,
+    segment_for_write,
+)
 from app.core.logging import get_logger
 from app.domain.audience import MissingColumnsError, find_missing_columns, validate_rows
 from app.domain.enums import AudienceStatus, ContactValidationStatus
 from app.domain.excel import ExcelParseError, TooManyRowsError, parse_excel
-from app.domain.product import ProductContextError
+from app.persistence.models import Audience, Product
 from app.persistence.repositories import audiences as audience_repo
-from app.persistence.repositories import products as product_repo
 
-router = APIRouter(prefix="/audiences", tags=["audiences"])
+router = APIRouter(prefix=f"{PRODUCT_PREFIX}/audiences", tags=["audiences"])
 logger = get_logger(__name__)
 
 # Rows returned inline with the upload preview. The full set is paginated through
-# GET /audiences/{id}/contacts.
+# GET …/audiences/{id}/contacts.
 PREVIEW_SAMPLE_SIZE = 25
 
 XLSX_CONTENT_TYPES = {
@@ -43,11 +54,12 @@ XLSX_CONTENT_TYPES = {
 
 
 @router.get("/schema", response_model=AudienceSchemaResponse)
-async def get_schema(user: CurrentUser, settings: SettingsDep) -> AudienceSchemaResponse:
-    """The column schema uploads are validated against.
+async def get_schema(product: ProductScope, settings: SettingsDep) -> AudienceSchemaResponse:
+    """The column schema this product's uploads are validated against.
 
-    Exposed so the dashboard can state the expected format instead of the user
-    guessing, and so it can warn while the development placeholder is still in force.
+    Under the product because [D51] makes the column mapping per product. Until Phase 27
+    supplies product mappings every product reads the platform schema, and the dashboard
+    is already asking the question in the shape that will not change.
     """
     schema = settings.audience_schema()
     return AudienceSchemaResponse(
@@ -65,29 +77,22 @@ async def get_schema(user: CurrentUser, settings: SettingsDep) -> AudienceSchema
 @router.post("/upload", response_model=AudienceUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_audience(
     user: CurrentUser,
+    product: ActiveProductScope,
     session: DbSession,
     settings: SettingsDep,
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
-    product_id: uuid.UUID | None = Form(default=None),
     segment_id: uuid.UUID | None = Form(default=None),
 ) -> AudienceUploadResponse:
-    """Validate a spreadsheet and store it as an unconfirmed audience.
+    """Validate a spreadsheet and store it as an unconfirmed audience of this product.
 
     The response is the §6 preview. Nothing is sent and no AI runs; the audience is
     inert until an admin confirms it.
 
-    `product_id` says which product this audience belongs to (§28). It is optional only
-    for backward compatibility: while exactly one active product exists the request is
-    unambiguous without it, which is what keeps Academicae's existing behaviour working
-    ([D54]). With none or several active products, omitting it is an error rather than
-    a guess — see `resolve_authoring_product`.
-
-    `segment_id` is optional in its own right: a product-wide audience is valid, and a
-    product may have no segments at all.
+    `segment_id` is optional: a product-wide audience is valid, and a product may have no
+    segments at all. When given, it must be one of this product's segments.
     """
-    resolved_product = await _resolve_product(session, product_id)
-    await _validate_segment(session, product_id=resolved_product, segment_id=segment_id)
+    chosen_segment = await segment_for_write(session, product, segment_id)
     content = await _read_within_limit(file, settings.audience_max_file_bytes)
     schema = settings.audience_schema()
 
@@ -124,13 +129,14 @@ async def upload_audience(
         source_filename=file.filename,
         uploaded_by_id=user.id,
         summary=summary,
-        product_id=resolved_product,
-        segment_id=segment_id,
+        product_id=product.id,
+        segment_id=chosen_segment,
     )
 
     logger.info(
         "audience_uploaded",
         audience_id=str(audience.id),
+        product_id=str(product.id),
         total_rows=summary.total,
         valid_rows=summary.valid,
         invalid_rows=summary.invalid,
@@ -144,67 +150,28 @@ async def upload_audience(
     )
 
 
-async def _resolve_product(session: DbSession, explicit: uuid.UUID | None) -> uuid.UUID:
-    """The product this audience belongs to, or a 4xx explaining why it cannot be known."""
-    try:
-        product_id = await product_repo.resolve_product_for_authoring(session, explicit)
-    except ProductContextError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-    product = await product_repo.get_product(session, product_id)
-    if product is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="That product does not exist"
-        )
-    if not product.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="That product is not active",
-        )
-    return product.id
-
-
-async def _validate_segment(
-    session: DbSession, *, product_id: uuid.UUID, segment_id: uuid.UUID | None
-) -> None:
-    """A segment must belong to the audience's own product (§28.8).
-
-    The database refuses the pairing too, through a composite foreign key. This exists
-    so the caller gets an explanation rather than an integrity error.
-    """
-    if segment_id is None:
-        return
-
-    segment = await product_repo.get_segment(session, segment_id)
-    if segment is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="That segment does not exist"
-        )
-    if segment.product_id != product_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="That segment belongs to a different product",
-        )
-
-
 @router.get("", response_model=list[AudienceSummaryResponse])
-async def list_audiences(user: CurrentUser, session: DbSession) -> list[AudienceSummaryResponse]:
-    audiences = await audience_repo.list_audiences(session)
+async def list_audiences(
+    product: ProductScope, segment: SegmentFilter, session: DbSession
+) -> list[AudienceSummaryResponse]:
+    audiences = await audience_repo.list_audiences(
+        session, product_id=product.id, segment_id=segment.id if segment is not None else None
+    )
     return [AudienceSummaryResponse.model_validate(audience) for audience in audiences]
 
 
 @router.get("/{audience_id}", response_model=AudienceSummaryResponse)
 async def get_audience(
-    audience_id: uuid.UUID, user: CurrentUser, session: DbSession
+    audience_id: uuid.UUID, product: ProductScope, session: DbSession
 ) -> AudienceSummaryResponse:
-    audience = await _require_audience(session, audience_id)
+    audience = await _require_audience(session, product, audience_id)
     return AudienceSummaryResponse.model_validate(audience)
 
 
 @router.get("/{audience_id}/contacts", response_model=AudienceContactPage)
 async def list_contacts(
     audience_id: uuid.UUID,
-    user: CurrentUser,
+    product: ProductScope,
     session: DbSession,
     validation_status: ContactValidationStatus | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -215,7 +182,7 @@ async def list_contacts(
     The filter is what makes the preview useful: an admin reviewing a rejected upload
     wants the invalid rows, not the 9,000 that were fine.
     """
-    await _require_audience(session, audience_id)
+    await _require_audience(session, product, audience_id)
 
     contacts = await audience_repo.list_contacts(
         session, audience_id, status=validation_status, limit=limit, offset=offset
@@ -232,18 +199,15 @@ async def list_contacts(
 
 @router.post("/{audience_id}/confirm", response_model=AudienceConfirmResponse)
 async def confirm_audience(
-    audience_id: uuid.UUID, user: CurrentUser, session: DbSession
+    audience_id: uuid.UUID, user: CurrentUser, product: ActiveProductScope, session: DbSession
 ) -> AudienceConfirmResponse:
     """Confirm the audience after reviewing the preview (§6).
 
-    This endpoint is derived: §6 requires an admin confirmation step but §16 does not
-    list a route for it.
-
-    Confirming upserts the valid contacts into `leads`, deduplicated by normalized
-    phone ([D11]). Still no message is sent — a campaign is a separate, explicitly
-    triggered action (§7).
+    Confirming upserts the valid contacts into this product's leads, deduplicated by
+    normalized phone within the product ([D11], [D41]). Still no message is sent — a
+    campaign is a separate, explicitly triggered action (§7).
     """
-    audience = await _require_audience(session, audience_id)
+    audience = await _require_audience(session, product, audience_id)
 
     if audience.status is AudienceStatus.CONFIRMED:
         # Idempotent: re-confirming is a no-op rather than an error, so a double
@@ -275,11 +239,12 @@ async def confirm_audience(
     )
 
 
-async def _require_audience(session: DbSession, audience_id: uuid.UUID):  # type: ignore[no-untyped-def]
-    audience = await audience_repo.get_by_id(session, audience_id)
-    if audience is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audience not found")
-    return audience
+async def _require_audience(
+    session: DbSession, product: Product, audience_id: uuid.UUID
+) -> Audience:
+    return owned_by(
+        await audience_repo.get_by_id(session, audience_id), product, not_found="Audience not found"
+    )
 
 
 async def _read_within_limit(file: UploadFile, max_bytes: int) -> bytes:
@@ -308,3 +273,6 @@ async def _read_within_limit(file: UploadFile, max_bytes: int) -> bytes:
     if not content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The file is empty")
     return content
+
+
+__all__ = ["router"]

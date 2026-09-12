@@ -552,3 +552,38 @@ class TestFailureHandling:
 
         result = run_handler(recipient_id)
         assert result["result"] == "failed_permanent"
+
+
+class TestInactiveProduct:
+    """A product deactivated after its broadcast was confirmed sends nothing further."""
+
+    @staticmethod
+    def _set_default_product_active(active: bool) -> None:
+        from app.persistence.models import Product
+
+        async def update(session: AsyncSession) -> None:
+            product = await session.get(Product, await ensure_product_id(session))
+            assert product is not None
+            product.is_active = active
+
+        run_db(update)
+
+    def test_a_queued_message_is_skipped_not_sent(self, send_env: FakeWhatsAppProvider) -> None:
+        recipient_id = seed_campaign()
+        self._set_default_product_active(False)
+        try:
+            result = run_handler(recipient_id)
+        finally:
+            self._set_default_product_active(True)
+
+        assert "product_inactive" in str(result)
+
+        async def state(session: AsyncSession) -> tuple[RecipientStatus, int]:
+            recipient = await session.get(CampaignRecipient, uuid.UUID(recipient_id))
+            assert recipient is not None
+            sent = len(list((await session.execute(select(Message))).scalars().all()))
+            return recipient.status, sent
+
+        status, messages = run_db(state)
+        assert status is RecipientStatus.SKIPPED
+        assert messages == 0, "a deactivated product must not message anyone"

@@ -28,7 +28,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.main import API_V1_PREFIX
 from app.domain.campaign import TemplateAssignmentError
 from app.domain.enums import RecipientStatus, TemplateCategory
 from app.integrations.whatsapp import ApprovedTemplate
@@ -43,7 +42,7 @@ from app.persistence.models import (
 )
 from app.persistence.repositories import templates as template_repo
 from tests.integration.conftest import login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -104,13 +103,13 @@ def make_xlsx(rows: Sequence[Sequence[object]]) -> bytes:
 
 def upload_and_confirm(client: TestClient, product_id: uuid.UUID) -> str:
     response = client.post(
-        f"{API_V1_PREFIX}/audiences/upload",
+        f"{scoped_prefix(product_id)}/audiences/upload",
         files={"file": ("list.xlsx", make_xlsx([["Name", "Phone"], ["Person", PHONE]]), XLSX_TYPE)},
-        data={"name": f"list-{uuid.uuid4().hex[:6]}", "product_id": str(product_id)},
+        data={"name": f"list-{uuid.uuid4().hex[:6]}"},
     )
     assert response.status_code == 201, response.text
     audience_id = str(response.json()["audience"]["id"])
-    client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+    client.post(f"{scoped_prefix(product_id)}/audiences/{audience_id}/confirm")
     return audience_id
 
 
@@ -137,7 +136,7 @@ def seed_template(*, product_id: uuid.UUID | None, name: str = "welcome") -> str
 
 def create_campaign(client: TestClient, audience_id: str, template_id: str) -> tuple[int, str]:
     response = client.post(
-        f"{API_V1_PREFIX}/campaigns",
+        f"{scoped_prefix()}/campaigns",
         json={"name": "Broadcast", "audience_id": audience_id, "template_id": template_id},
     )
     return response.status_code, response.text
@@ -257,7 +256,7 @@ class TestCampaignsRequireOwnership:
         audience_id = upload_and_confirm(admin, seeded_product)
         template_id = seed_template(product_id=seeded_product)
         created = admin.post(
-            f"{API_V1_PREFIX}/campaigns",
+            f"{scoped_prefix()}/campaigns",
             json={"name": "Broadcast", "audience_id": audience_id, "template_id": template_id},
         )
         assert created.status_code == 201, created.text
@@ -270,7 +269,7 @@ class TestCampaignsRequireOwnership:
 
         run_db(as_before_the_rule)
 
-        response = admin.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        response = admin.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
 
         assert response.status_code == 409, response.text
         assert "not been assigned" in response.text
@@ -293,7 +292,7 @@ class TestCampaignsRequireOwnership:
         seed_template(product_id=seeded_product, name="assigned_one")
         seed_template(product_id=None, name="unassigned_one")
 
-        names = {t["name"] for t in admin.get(f"{API_V1_PREFIX}/whatsapp-templates").json()}
+        names = {t["name"] for t in admin.get(f"{scoped_prefix()}/whatsapp-templates").json()}
 
         assert names == {"assigned_one"}
 

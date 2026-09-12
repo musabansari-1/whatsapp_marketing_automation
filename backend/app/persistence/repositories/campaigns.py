@@ -12,12 +12,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.campaign import META_STATUS_APPROVED, recipient_status_for
+from app.domain.campaign import recipient_status_for
 from app.domain.enums import (
     CampaignStatus,
     ContactValidationStatus,
     RecipientStatus,
-    TemplateCategory,
 )
 from app.persistence.models import (
     Audience,
@@ -28,38 +27,13 @@ from app.persistence.models import (
     WhatsAppSuppression,
     WhatsAppTemplate,
 )
+from app.persistence.repositories.scoping import campaign_scope
 
 # ---------------------------------------------------------------- templates
 
 
 async def get_template(session: AsyncSession, template_id: uuid.UUID) -> WhatsAppTemplate | None:
     return await session.get(WhatsAppTemplate, template_id)
-
-
-async def list_approved_marketing_templates(
-    session: AsyncSession,
-) -> Sequence[WhatsAppTemplate]:
-    """Templates a broadcast may use ([D6], [D57]).
-
-    Filters on the status Meta reported. Nothing here can mark a template approved;
-    rows arrive only from the Phase 6 synchronization.
-
-    Unassigned templates are left out. A template the shared-WABA sync discovered but
-    nobody has given to a product is usable by no campaign, so offering it would only
-    produce a refusal after the admin chose it. Narrowing this list to one product is
-    Phase 26's product selector; until then it shows every assigned template, and
-    campaign creation rejects one owned by a different product.
-    """
-    result = await session.execute(
-        select(WhatsAppTemplate)
-        .where(
-            WhatsAppTemplate.provider_status == META_STATUS_APPROVED,
-            WhatsAppTemplate.category == TemplateCategory.MARKETING,
-            WhatsAppTemplate.product_id.is_not(None),
-        )
-        .order_by(WhatsAppTemplate.name)
-    )
-    return result.scalars().all()
 
 
 # ---------------------------------------------------------------- campaigns
@@ -98,8 +72,15 @@ async def get_by_id(session: AsyncSession, campaign_id: uuid.UUID) -> Campaign |
     return await session.get(Campaign, campaign_id)
 
 
-async def list_campaigns(session: AsyncSession) -> Sequence[Campaign]:
-    result = await session.execute(select(Campaign).order_by(Campaign.created_at.desc()))
+async def list_campaigns(
+    session: AsyncSession, *, product_id: uuid.UUID, segment_id: uuid.UUID | None = None
+) -> Sequence[Campaign]:
+    """One product's campaigns, newest first. There is no all-products campaign list."""
+    result = await session.execute(
+        select(Campaign)
+        .where(*campaign_scope(product_id=product_id, segment_id=segment_id))
+        .order_by(Campaign.created_at.desc())
+    )
     return result.scalars().all()
 
 

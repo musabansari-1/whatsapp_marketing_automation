@@ -24,7 +24,6 @@ from openpyxl import Workbook
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.main import API_V1_PREFIX
 from app.domain.enums import ContactValidationStatus, RecipientStatus, TemplateCategory
 from app.persistence.models import (
     Audience,
@@ -36,7 +35,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from tests.integration.conftest import login
-from tests.integration.helpers import ensure_product_id, run_db
+from tests.integration.helpers import ensure_product_id, run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -110,14 +109,14 @@ def upload_and_confirm(client: TestClient, name: str, phones: Sequence[str]) -> 
     rows.extend([f"Person {phone}", phone] for phone in phones)
 
     response = client.post(
-        f"{API_V1_PREFIX}/audiences/upload",
+        f"{scoped_prefix()}/audiences/upload",
         files={"file": (f"{name}.xlsx", make_xlsx(rows), XLSX_TYPE)},
         data={"name": name},
     )
     assert response.status_code == 201, response.text
     audience_id = str(response.json()["audience"]["id"])
 
-    confirmed = client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+    confirmed = client.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
     assert confirmed.status_code == 200, confirmed.text
     return audience_id
 
@@ -125,7 +124,7 @@ def upload_and_confirm(client: TestClient, name: str, phones: Sequence[str]) -> 
 def campaign_phones(client: TestClient, audience_id: str, template_id: str) -> set[str]:
     """Create a campaign and return the phone numbers actually snapshotted."""
     response = client.post(
-        f"{API_V1_PREFIX}/campaigns",
+        f"{scoped_prefix()}/campaigns",
         json={
             "name": f"Campaign for {audience_id[:8]}",
             "audience_id": audience_id,
@@ -214,12 +213,12 @@ class TestMembershipLinking:
         """An INVALID row never became a lead, so it has no membership."""
         rows: list[Sequence[object]] = [["Name", "Phone"], ["No phone", ""]]
         response = admin.post(
-            f"{API_V1_PREFIX}/audiences/upload",
+            f"{scoped_prefix()}/audiences/upload",
             files={"file": ("bad.xlsx", make_xlsx(rows), XLSX_TYPE)},
             data={"name": "bad"},
         )
         audience_id = str(response.json()["audience"]["id"])
-        admin.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+        admin.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
 
         async def read(session: AsyncSession) -> list[tuple[ContactValidationStatus, object]]:
             result = await session.execute(
@@ -247,12 +246,12 @@ class TestMembershipLinking:
             ["Again", SHARED],
         ]
         response = admin.post(
-            f"{API_V1_PREFIX}/audiences/upload",
+            f"{scoped_prefix()}/audiences/upload",
             files={"file": ("dupe.xlsx", make_xlsx(rows), XLSX_TYPE)},
             data={"name": "dupe"},
         )
         audience_id = str(response.json()["audience"]["id"])
-        admin.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+        admin.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
 
         async def read(session: AsyncSession) -> dict[str, int]:
             result = await session.execute(
@@ -270,7 +269,7 @@ class TestMembershipLinking:
     def test_confirming_twice_links_the_same_rows(self, admin: TestClient) -> None:
         """Idempotent, as §20 requires of confirmation."""
         audience_id = upload_and_confirm(admin, "twice", [SHARED, ONLY_FIRST])
-        admin.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+        admin.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
 
         async def read(session: AsyncSession) -> int:
             result = await session.execute(
@@ -296,7 +295,7 @@ class TestSnapshotBehaviourIsOtherwiseUnchanged:
 
         audience_id = upload_and_confirm(admin, "suppressed", [SHARED, ONLY_FIRST])
         response = admin.post(
-            f"{API_V1_PREFIX}/campaigns",
+            f"{scoped_prefix()}/campaigns",
             json={
                 "name": "Suppression check",
                 "audience_id": audience_id,
@@ -323,14 +322,14 @@ class TestSnapshotBehaviourIsOtherwiseUnchanged:
 
         rows: list[Sequence[object]] = [["Name", "Phone"], ["Person", SHARED]]
         response = admin.post(
-            f"{API_V1_PREFIX}/audiences/upload",
+            f"{scoped_prefix()}/audiences/upload",
             files={"file": ("pending.xlsx", make_xlsx(rows), XLSX_TYPE)},
             data={"name": "pending"},
         )
         audience_id = str(response.json()["audience"]["id"])
 
         created = admin.post(
-            f"{API_V1_PREFIX}/campaigns",
+            f"{scoped_prefix()}/campaigns",
             json={
                 "name": "Too early",
                 "audience_id": audience_id,

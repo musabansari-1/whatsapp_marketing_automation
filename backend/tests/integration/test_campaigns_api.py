@@ -29,7 +29,7 @@ from app.persistence.models import (
     WhatsAppTemplate,
 )
 from tests.integration.conftest import login
-from tests.integration.helpers import ensure_product_id, run_db
+from tests.integration.helpers import ensure_product_id, run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -106,18 +106,18 @@ def seed_audience(client: TestClient, phones: Sequence[str]) -> str:
     rows.extend([f"Person {index}", phone] for index, phone in enumerate(phones))
 
     response = client.post(
-        f"{API_V1_PREFIX}/audiences/upload",
+        f"{scoped_prefix()}/audiences/upload",
         files={"file": ("list.xlsx", make_xlsx(rows), XLSX_TYPE)},
         data={"name": "Campaign audience"},
     )
     audience_id = str(response.json()["audience"]["id"])
-    client.post(f"{API_V1_PREFIX}/audiences/{audience_id}/confirm")
+    client.post(f"{scoped_prefix()}/audiences/{audience_id}/confirm")
     return audience_id
 
 
 def create_campaign(client: TestClient, audience_id: str, template_id: str) -> Response:
     response: Response = client.post(
-        f"{API_V1_PREFIX}/campaigns",
+        f"{scoped_prefix()}/campaigns",
         json={"name": "Q3 broadcast", "audience_id": audience_id, "template_id": template_id},
     )
     return response
@@ -143,7 +143,7 @@ class TestPermissions:
         client.post(f"{API_V1_PREFIX}/auth/logout")
 
         login(client, "sales@example.com")
-        assert client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send").status_code == 403
+        assert client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send").status_code == 403
 
     def test_a_salesperson_cannot_cancel(self, client: TestClient) -> None:
         login(client)
@@ -152,7 +152,7 @@ class TestPermissions:
         client.post(f"{API_V1_PREFIX}/auth/logout")
 
         login(client, "sales@example.com")
-        assert client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel").status_code == 403
+        assert client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/cancel").status_code == 403
 
     def test_a_salesperson_may_still_view_campaigns(self, client: TestClient) -> None:
         """[D33] restricts sending, not visibility."""
@@ -162,9 +162,11 @@ class TestPermissions:
         client.post(f"{API_V1_PREFIX}/auth/logout")
 
         login(client, "sales@example.com")
-        assert client.get(f"{API_V1_PREFIX}/campaigns").status_code == 200
-        assert client.get(f"{API_V1_PREFIX}/campaigns/{campaign_id}").status_code == 200
-        assert client.get(f"{API_V1_PREFIX}/campaigns/{campaign_id}/recipients").status_code == 200
+        assert client.get(f"{scoped_prefix()}/campaigns").status_code == 200
+        assert client.get(f"{scoped_prefix()}/campaigns/{campaign_id}").status_code == 200
+        assert (
+            client.get(f"{scoped_prefix()}/campaigns/{campaign_id}/recipients").status_code == 200
+        )
 
 
 class TestCancellation:
@@ -177,9 +179,9 @@ class TestCancellation:
     def test_a_running_campaign_can_be_cancelled(self, client: TestClient) -> None:
         login(client)
         campaign_id = self._ready(client)
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
 
-        response = client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+        response = client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/cancel")
         assert response.status_code == 200
         assert response.json()["status"] == "CANCELLED"
 
@@ -188,46 +190,46 @@ class TestCancellation:
         for every queued task to drain."""
         login(client)
         campaign_id = self._ready(client)
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/cancel")
 
-        page = client.get(f"{API_V1_PREFIX}/campaigns/{campaign_id}/recipients").json()
+        page = client.get(f"{scoped_prefix()}/campaigns/{campaign_id}/recipients").json()
         assert {r["status"] for r in page["items"]} == {"SKIPPED"}
 
     def test_a_ready_campaign_can_be_cancelled_before_sending(self, client: TestClient) -> None:
         login(client)
         campaign_id = self._ready(client)
-        assert client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel").status_code == 200
+        assert client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/cancel").status_code == 200
 
     def test_cancellation_is_idempotent(self, client: TestClient) -> None:
         """A double click or a retried request must not fail."""
         login(client)
         campaign_id = self._ready(client)
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/cancel")
 
-        second = client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+        second = client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/cancel")
         assert second.status_code == 200
         assert second.json()["status"] == "CANCELLED"
 
     def test_a_cancelled_campaign_cannot_be_sent(self, client: TestClient) -> None:
         login(client)
         campaign_id = self._ready(client)
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/cancel")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/cancel")
 
-        assert client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send").status_code == 409
+        assert client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send").status_code == 409
 
     def test_an_unknown_campaign_is_404(self, client: TestClient) -> None:
         login(client)
-        assert client.post(f"{API_V1_PREFIX}/campaigns/{uuid.uuid4()}/cancel").status_code == 404
+        assert client.post(f"{scoped_prefix()}/campaigns/{uuid.uuid4()}/cancel").status_code == 404
 
 
 class TestAuthentication:
     def test_every_route_requires_a_session(self, client: TestClient) -> None:
-        assert client.get(f"{API_V1_PREFIX}/campaigns").status_code == 401
-        assert client.post(f"{API_V1_PREFIX}/campaigns", json={}).status_code == 401
-        assert client.post(f"{API_V1_PREFIX}/campaigns/{uuid.uuid4()}/send").status_code == 401
-        assert client.post(f"{API_V1_PREFIX}/campaigns/{uuid.uuid4()}/cancel").status_code == 401
-        assert client.get(f"{API_V1_PREFIX}/whatsapp-templates").status_code == 401
+        assert client.get(f"{scoped_prefix()}/campaigns").status_code == 401
+        assert client.post(f"{scoped_prefix()}/campaigns", json={}).status_code == 401
+        assert client.post(f"{scoped_prefix()}/campaigns/{uuid.uuid4()}/send").status_code == 401
+        assert client.post(f"{scoped_prefix()}/campaigns/{uuid.uuid4()}/cancel").status_code == 401
+        assert client.get(f"{scoped_prefix()}/whatsapp-templates").status_code == 401
 
 
 class TestTemplateApproval:
@@ -238,18 +240,22 @@ class TestTemplateApproval:
         seed_template(name="pending_one", provider_status="PENDING")
         seed_template(name="utility_one", category=TemplateCategory.UTILITY)
 
-        names = {t["name"] for t in client.get(f"{API_V1_PREFIX}/whatsapp-templates").json()}
+        names = {
+            t["name"]
+            for t in client.get(f"{scoped_prefix()}/whatsapp-templates").json()
+            if t["usable_for_campaigns"]
+        }
         assert names == {"approved_marketing"}
 
     def test_no_endpoint_creates_a_template(self, client: TestClient) -> None:
         """[D6] forbids the application inventing approval, so there is no way in."""
         login(client)
-        assert client.post(f"{API_V1_PREFIX}/whatsapp-templates", json={}).status_code == 405
+        assert client.post(f"{scoped_prefix()}/whatsapp-templates", json={}).status_code == 405
 
     def test_the_list_is_empty_before_the_meta_sync(self, client: TestClient) -> None:
         """Phase 6 populates it; until then a campaign cannot be created at all."""
         login(client)
-        assert client.get(f"{API_V1_PREFIX}/whatsapp-templates").json() == []
+        assert client.get(f"{scoped_prefix()}/whatsapp-templates").json() == []
 
     def test_an_unapproved_template_cannot_be_used(self, client: TestClient) -> None:
         login(client)
@@ -310,7 +316,7 @@ class TestCampaignCreation:
         """§6 puts admin confirmation before use, and its leads do not exist yet."""
         login(client)
         upload = client.post(
-            f"{API_V1_PREFIX}/audiences/upload",
+            f"{scoped_prefix()}/audiences/upload",
             files={
                 "file": ("l.xlsx", make_xlsx([["Name", "Phone"], ["A", "9876543210"]]), XLSX_TYPE)
             },
@@ -338,7 +344,7 @@ class TestCampaignCreation:
 
         seed_audience(client, ["9876500001", "9876500002"])
 
-        detail = client.get(f"{API_V1_PREFIX}/campaigns/{campaign_id}").json()
+        detail = client.get(f"{scoped_prefix()}/campaigns/{campaign_id}").json()
         assert detail["campaign"]["total_recipients"] == 3
 
 
@@ -386,7 +392,7 @@ class TestSendBroadcast:
         login(client)
         campaign_id = self._ready_campaign(client)
 
-        response = client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        response = client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
         assert response.status_code == 200
         assert response.json()["queued"] == 3
         assert response.json()["campaign"]["status"] == "PROCESSING"
@@ -406,7 +412,7 @@ class TestSendBroadcast:
 
         login(client)
         campaign_id = self._ready_campaign(client)
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
 
         queue = get_queue_provider(Settings())
         assert queue.executed == []  # type: ignore[attr-defined]
@@ -414,9 +420,9 @@ class TestSendBroadcast:
     def test_recipients_move_to_queued(self, client: TestClient) -> None:
         login(client)
         campaign_id = self._ready_campaign(client)
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
 
-        page = client.get(f"{API_V1_PREFIX}/campaigns/{campaign_id}/recipients").json()
+        page = client.get(f"{scoped_prefix()}/campaigns/{campaign_id}/recipients").json()
         assert {r["status"] for r in page["items"]} == {"QUEUED"}
 
     def test_resending_does_not_enqueue_anyone_twice(self, client: TestClient) -> None:
@@ -426,9 +432,9 @@ class TestSendBroadcast:
 
         login(client)
         campaign_id = self._ready_campaign(client)
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
 
-        second = client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        second = client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
         # Already PROCESSING, so the second confirmation is refused outright.
         assert second.status_code == 409
 
@@ -442,7 +448,7 @@ class TestSendBroadcast:
 
         login(client)
         campaign_id = self._ready_campaign(client)
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
 
         queue = get_queue_provider(Settings())
         ids = [task.task_id for task in queue.enqueued]  # type: ignore[attr-defined]
@@ -460,12 +466,12 @@ class TestSendBroadcast:
         run_db(wipe_leads)
 
         campaign_id = create_campaign(client, audience_id, seed_template()).json()["campaign"]["id"]
-        response = client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        response = client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
         assert response.status_code == 409
 
     def test_unknown_campaign_is_404(self, client: TestClient) -> None:
         login(client)
-        assert client.post(f"{API_V1_PREFIX}/campaigns/{uuid.uuid4()}/send").status_code == 404
+        assert client.post(f"{scoped_prefix()}/campaigns/{uuid.uuid4()}/send").status_code == 404
 
 
 class TestSuppressionRecheckBeforeSending:
@@ -484,7 +490,7 @@ class TestSuppressionRecheckBeforeSending:
 
         run_db(suppress)
 
-        response = client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        response = client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
         body = response.json()
 
         assert body["skipped_as_suppressed"] == 1
@@ -502,10 +508,10 @@ class TestSuppressionRecheckBeforeSending:
             session.add(WhatsAppSuppression(phone_e164="+919876543212"))
 
         run_db(suppress)
-        client.post(f"{API_V1_PREFIX}/campaigns/{campaign_id}/send")
+        client.post(f"{scoped_prefix()}/campaigns/{campaign_id}/send")
 
         page = client.get(
-            f"{API_V1_PREFIX}/campaigns/{campaign_id}/recipients",
+            f"{scoped_prefix()}/campaigns/{campaign_id}/recipients",
             params={"recipient_status": "SKIPPED"},
         ).json()
         assert page["total"] == 1
@@ -518,7 +524,7 @@ class TestRetrieval:
         audience_id = seed_audience(client, PHONES)
         create_campaign(client, audience_id, seed_template())
 
-        campaigns = client.get(f"{API_V1_PREFIX}/campaigns").json()
+        campaigns = client.get(f"{scoped_prefix()}/campaigns").json()
         assert len(campaigns) == 1
         assert campaigns[0]["name"] == "Q3 broadcast"
 
@@ -528,20 +534,20 @@ class TestRetrieval:
         campaign_id = create_campaign(client, audience_id, seed_template()).json()["campaign"]["id"]
 
         page = client.get(
-            f"{API_V1_PREFIX}/campaigns/{campaign_id}/recipients", params={"limit": 2}
+            f"{scoped_prefix()}/campaigns/{campaign_id}/recipients", params={"limit": 2}
         ).json()
         assert len(page["items"]) == 2
         assert page["total"] == 3
 
         pending = client.get(
-            f"{API_V1_PREFIX}/campaigns/{campaign_id}/recipients",
+            f"{scoped_prefix()}/campaigns/{campaign_id}/recipients",
             params={"recipient_status": "PENDING"},
         ).json()
         assert pending["total"] == 3
 
     def test_unknown_campaign_detail_is_404(self, client: TestClient) -> None:
         login(client)
-        assert client.get(f"{API_V1_PREFIX}/campaigns/{uuid.uuid4()}").status_code == 404
+        assert client.get(f"{scoped_prefix()}/campaigns/{uuid.uuid4()}").status_code == 404
 
 
 class TestSnapshotIntegrity:
@@ -564,5 +570,5 @@ class TestSnapshotIntegrity:
         body = create_campaign(client, audience_id, seed_template()).json()
 
         assert body["campaign"]["status"] in {s.value for s in CampaignStatus}
-        page = client.get(f"{API_V1_PREFIX}/campaigns/{body['campaign']['id']}/recipients").json()
+        page = client.get(f"{scoped_prefix()}/campaigns/{body['campaign']['id']}/recipients").json()
         assert all(r["status"] in {s.value for s in RecipientStatus} for r in page["items"])

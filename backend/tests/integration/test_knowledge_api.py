@@ -24,11 +24,14 @@ from app.persistence.models import (
     KnowledgeIngestionJob,
 )
 from tests.integration.conftest import SALES_EMAIL, login
-from tests.integration.helpers import run_db
+from tests.integration.helpers import run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
-BASE = "/api/v1/knowledge-bases"
+
+def base_path() -> str:
+    """This test's product's knowledge bases. Knowledge exists only inside a product."""
+    return f"{scoped_prefix()}/knowledge-bases"
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +48,7 @@ def clean_knowledge(engine: Any) -> Iterator[None]:
 
 
 def create_base(client: TestClient, name: str = "Company Handbook") -> str:
-    response = client.post(BASE, json={"name": name, "description": "Internal reference"})
+    response = client.post(base_path(), json={"name": name, "description": "Internal reference"})
     assert response.status_code == 201, response.text
     return str(response.json()["id"])
 
@@ -59,7 +62,7 @@ def upload(
     content_type: str = "text/plain",
 ) -> Any:
     return client.post(
-        f"{BASE}/{base_id}/documents",
+        f"{base_path()}/{base_id}/documents",
         files={"file": (filename, io.BytesIO(content), content_type)},
     )
 
@@ -67,8 +70,8 @@ def upload(
 class TestAuthentication:
     def test_every_endpoint_requires_a_session(self, client: TestClient) -> None:
         """§9: company documents are not public."""
-        assert client.get(BASE).status_code == 401
-        assert client.post(BASE, json={"name": "x", "description": None}).status_code == 401
+        assert client.get(base_path()).status_code == 401
+        assert client.post(base_path(), json={"name": "x", "description": None}).status_code == 401
         assert upload(client, str(uuid.uuid4())).status_code == 401
 
     def test_a_salesperson_may_read_the_knowledge_base(
@@ -76,7 +79,7 @@ class TestAuthentication:
     ) -> None:
         """Reading is not the restricted operation — §9 restricts broadcasting."""
         login(client, email=SALES_EMAIL)
-        assert client.get(BASE).status_code == 200
+        assert client.get(base_path()).status_code == 200
 
 
 class TestKnowledgeBases:
@@ -86,7 +89,7 @@ class TestKnowledgeBases:
         login(client)
         base_id = create_base(client)
 
-        listed = client.get(BASE)
+        listed = client.get(base_path())
         assert listed.status_code == 200
         assert [item["id"] for item in listed.json()] == [base_id]
 
@@ -98,19 +101,22 @@ class TestKnowledgeBases:
         login(client)
         create_base(client, "Handbook")
 
-        assert client.post(BASE, json={"name": "handbook", "description": None}).status_code == 409
+        assert (
+            client.post(base_path(), json={"name": "handbook", "description": None}).status_code
+            == 409
+        )
 
     def test_a_missing_knowledge_base_is_404(
         self, client: TestClient, seeded_users: dict[str, str]
     ) -> None:
         login(client)
-        assert client.get(f"{BASE}/{uuid.uuid4()}").status_code == 404
+        assert client.get(f"{base_path()}/{uuid.uuid4()}").status_code == 404
 
     def test_an_empty_name_is_rejected(
         self, client: TestClient, seeded_users: dict[str, str]
     ) -> None:
         login(client)
-        assert client.post(BASE, json={"name": "  ", "description": None}).status_code == 422
+        assert client.post(base_path(), json={"name": "  ", "description": None}).status_code == 422
 
 
 class TestUpload:
@@ -229,11 +235,11 @@ class TestDocuments:
         base_id = create_base(client)
         document_id = upload(client, base_id).json()["id"]
 
-        listed = client.get(f"{BASE}/{base_id}/documents")
+        listed = client.get(f"{base_path()}/{base_id}/documents")
         assert listed.status_code == 200
         assert [item["id"] for item in listed.json()] == [document_id]
 
-        fetched = client.get(f"{BASE}/{base_id}/documents/{document_id}")
+        fetched = client.get(f"{base_path()}/{base_id}/documents/{document_id}")
         assert fetched.status_code == 200
         assert fetched.json()["id"] == document_id
 
@@ -247,7 +253,7 @@ class TestDocuments:
         second = create_base(client, "Support")
         document_id = upload(client, first).json()["id"]
 
-        assert client.get(f"{BASE}/{second}/documents/{document_id}").status_code == 404
+        assert client.get(f"{base_path()}/{second}/documents/{document_id}").status_code == 404
 
     def test_archiving_removes_a_document_from_the_default_listing(
         self, client: TestClient, seeded_users: dict[str, str]
@@ -256,12 +262,12 @@ class TestDocuments:
         base_id = create_base(client)
         document_id = upload(client, base_id).json()["id"]
 
-        archived = client.post(f"{BASE}/{base_id}/documents/{document_id}/archive")
+        archived = client.post(f"{base_path()}/{base_id}/documents/{document_id}/archive")
         assert archived.status_code == 200
         assert archived.json()["status"] == DocumentStatus.ARCHIVED.value
 
-        assert client.get(f"{BASE}/{base_id}/documents").json() == []
-        included = client.get(f"{BASE}/{base_id}/documents?include_archived=true")
+        assert client.get(f"{base_path()}/{base_id}/documents").json() == []
+        included = client.get(f"{base_path()}/{base_id}/documents?include_archived=true")
         assert [item["id"] for item in included.json()] == [document_id]
 
     def test_archiving_twice_is_harmless(
@@ -272,8 +278,8 @@ class TestDocuments:
         base_id = create_base(client)
         document_id = upload(client, base_id).json()["id"]
 
-        client.post(f"{BASE}/{base_id}/documents/{document_id}/archive")
-        second = client.post(f"{BASE}/{base_id}/documents/{document_id}/archive")
+        client.post(f"{base_path()}/{base_id}/documents/{document_id}/archive")
+        second = client.post(f"{base_path()}/{base_id}/documents/{document_id}/archive")
 
         assert second.status_code == 200
         assert second.json()["status"] == DocumentStatus.ARCHIVED.value
@@ -286,7 +292,7 @@ class TestDocuments:
         login(client)
         base_id = create_base(client)
         document_id = upload(client, base_id).json()["id"]
-        client.post(f"{BASE}/{base_id}/documents/{document_id}/archive")
+        client.post(f"{base_path()}/{base_id}/documents/{document_id}/archive")
 
         assert upload(client, base_id).status_code == 201
 
@@ -295,7 +301,7 @@ class TestDocuments:
     ) -> None:
         login(client)
         base_id = create_base(client)
-        assert client.get(f"{BASE}/{base_id}/documents/{uuid.uuid4()}").status_code == 404
+        assert client.get(f"{base_path()}/{base_id}/documents/{uuid.uuid4()}").status_code == 404
 
 
 class TestNoRetrievalEndpoint:
@@ -307,5 +313,5 @@ class TestNoRetrievalEndpoint:
         login(client)
         base_id = create_base(client)
 
-        for path in (f"{BASE}/{base_id}/search", f"{BASE}/{base_id}/retrieve"):
+        for path in (f"{base_path()}/{base_id}/search", f"{base_path()}/{base_id}/retrieve"):
             assert client.post(path, json={"query": "refunds"}).status_code == 404

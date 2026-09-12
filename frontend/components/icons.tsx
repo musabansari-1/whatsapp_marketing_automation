@@ -182,13 +182,16 @@ export function IconMark(props: IconProps) {
   );
 }
 
+/** Section icons, keyed by `NavSection.key` rather than path, since paths are per product. */
 export const NAV_ICONS: Record<string, ComponentType<IconProps>> = {
-  '/': IconOverview,
-  '/audiences': IconAudiences,
-  '/campaigns': IconCampaigns,
-  '/leads': IconLeads,
-  '/conversations': IconConversations,
-  '/bookings': IconBookings,
-  '/knowledge': IconKnowledge,
-  '/notifications': IconNotifications,
+  overview: IconOverview,
+  audiences: IconAudiences,
+  campaigns: IconCampaigns,
+  templates: IconSparkles,
+  leads: IconLeads,
+  conversations: IconConversations,
+  bookings: IconBookings,
+  knowledge: IconKnowledge,
+  notifications: IconNotifications,
+  products: IconOverview,
 };

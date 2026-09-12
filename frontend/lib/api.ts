@@ -4,6 +4,14 @@
  * Every call goes to the frontend origin, where the BFF proxy forwards it ([D13]).
  * Nothing here knows the API's real address, which is the point: that value is
  * server-side only and must never reach the browser bundle.
+ *
+ * Two halves, mirroring the API (§28, Phase 26):
+ *
+ * - `api` holds what belongs to the whole organisation: the session, the product list,
+ *   notifications, unassigned templates and combined analytics.
+ * - `productApi(slug)` holds everything scoped to one product. None of its functions takes
+ *   a product argument that could be forgotten or mixed up: the product is fixed when the
+ *   client is created, from the URL the operator is looking at.
  */
 
 export type AudienceStatus = 'PENDING_CONFIRMATION' | 'CONFIRMED';
@@ -13,8 +21,43 @@ export type RecipientStatus =
   'PENDING' | 'QUEUED' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED' | 'SKIPPED';
 export type ValidationStatus = 'VALID' | 'INVALID' | 'DUPLICATE';
 
+// ---------------------------------------------------------------- products (§28)
+
+export interface Segment {
+  id: string;
+  slug: string;
+  display_name: string;
+  display_order: number;
+  is_active: boolean;
+}
+
+export interface Product {
+  id: string;
+  /** The permanent route identifier. Never a reason to behave differently. */
+  slug: string;
+  display_name: string;
+  is_active: boolean;
+}
+
+export interface ProductDetail extends Product {
+  segments: Segment[];
+  /** Presence only, so an empty page can explain itself. */
+  has_calendar: boolean;
+  has_whatsapp_number: boolean;
+}
+
+export interface ProductRef {
+  id: string;
+  slug: string;
+  display_name: string;
+}
+
+// ---------------------------------------------------------------- audiences
+
 export interface AudienceSummary {
   id: string;
+  product_id: string;
+  segment_id: string | null;
   name: string;
   source_filename: string | null;
   status: AudienceStatus;
@@ -55,6 +98,8 @@ export interface AudienceSchema {
   max_rows: number;
 }
 
+// ---------------------------------------------------------------- leads and conversations
+
 export type LeadStatus =
   | 'NEW'
   | 'CONTACTED'
@@ -75,6 +120,7 @@ export type DocumentStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED' | 'AR
 
 export interface Lead {
   id: string;
+  product_id: string;
   phone_e164: string;
   full_name: string | null;
   email: string | null;
@@ -99,6 +145,9 @@ export interface LeadPage {
 
 export interface Conversation {
   id: string;
+  /** Snapshotted when the conversation began, and never re-derived (§28.5). */
+  product_id: string;
+  segment_id: string | null;
   lead_id: string;
   status: ConversationStatus;
   last_inbound_at: string | null;
@@ -132,8 +181,13 @@ export interface ConversationPage {
   items: Conversation[];
 }
 
+// ---------------------------------------------------------------- knowledge
+
 export interface KnowledgeBase {
   id: string;
+  product_id: string;
+  /** Null means shared across every segment of the product ([D56]). */
+  segment_id: string | null;
   name: string;
   description: string | null;
   created_at: string;
@@ -153,6 +207,8 @@ export interface KnowledgeDocument {
   created_at: string;
   archived_at: string | null;
 }
+
+// ---------------------------------------------------------------- session and analytics
 
 export interface SessionUser {
   id: string;
@@ -182,10 +238,13 @@ export interface LeadFunnel {
   counts: Record<string, number>;
 }
 
+// ---------------------------------------------------------------- bookings and notifications
+
 export type BookingStatus = 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'FAILED';
 
 export interface Booking {
   id: string;
+  product_id: string;
   lead_id: string;
   conversation_id: string | null;
   calendar_event_id: string | null;
@@ -212,6 +271,9 @@ export interface BookingPage {
 
 export interface Notification {
   id: string;
+  product_id: string | null;
+  /** The product this notification is about, or null when it concerns none ([D47]). */
+  product: ProductRef | null;
   type: 'DEMO_BOOKED';
   title: string;
   message: string;
@@ -231,8 +293,12 @@ export interface NotificationPage {
   items: Notification[];
 }
 
+// ---------------------------------------------------------------- templates and campaigns
+
 export interface WhatsAppTemplate {
   id: string;
+  /** Null: an unassigned shared-WABA template, usable by no campaign ([D57]). */
+  product_id: string | null;
   name: string;
   language: string;
   category: string;
@@ -241,8 +307,15 @@ export interface WhatsAppTemplate {
   body_preview: string | null;
 }
 
+export interface ProductTemplate extends WhatsAppTemplate {
+  /** Approved by Meta, MARKETING, and owned by this product — as campaign creation checks. */
+  usable_for_campaigns: boolean;
+}
+
 export interface Campaign {
   id: string;
+  product_id: string;
+  segment_id: string | null;
   name: string;
   status: CampaignStatus;
   audience_id: string;
@@ -279,6 +352,8 @@ export interface CampaignRecipientPage {
   items: CampaignRecipient[];
 }
 
+// ---------------------------------------------------------------- transport
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -313,79 +388,51 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+type QueryValue = string | number | boolean | null | undefined;
+
+/** A query string from the values that are set. `false`, empty and missing are omitted. */
+export function queryString(params: Record<string, QueryValue>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '' || value === false) {
+      continue;
+    }
+    search.set(key, String(value));
+  }
+  const text = search.toString();
+  return text ? `?${text}` : '';
+}
+
+function postJson(body: unknown): RequestInit {
+  return {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  };
+}
+
+// ---------------------------------------------------------------- organisation-wide
+
 export const api = {
   getMe: () => request<SessionUser>('/auth/me'),
 
-  audienceSchema: () => request<AudienceSchema>('/audiences/schema'),
-
-  listAudiences: () => request<AudienceSummary[]>('/audiences'),
-
-  getAudience: (id: string) => request<AudienceSummary>(`/audiences/${id}`),
-
-  listContacts: (id: string, status?: ValidationStatus, limit = 50, offset = 0) => {
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (status) {
-      params.set('validation_status', status);
-    }
-    return request<AudienceContactPage>(`/audiences/${id}/contacts?${params}`);
-  },
-
-  uploadAudience: (file: File, name: string) => {
-    const form = new FormData();
-    form.append('file', file);
-    form.append('name', name);
-    // No Content-Type header: the browser must set the multipart boundary itself.
-    return request<{ audience: AudienceSummary; sample: AudienceContact[] }>('/audiences/upload', {
-      method: 'POST',
-      body: form,
-    });
-  },
-
-  confirmAudience: (id: string) =>
-    request<{ audience: AudienceSummary; leads_upserted: number }>(`/audiences/${id}/confirm`, {
-      method: 'POST',
-    }),
-
-  // Templates are read-only: [D6] puts approval with Meta, and the sync arrives in
-  // Phase 6. Until then this list is empty and no campaign can be created.
-  listTemplates: () => request<WhatsAppTemplate[]>('/whatsapp-templates'),
-
-  listCampaigns: () => request<Campaign[]>('/campaigns'),
-
-  getCampaign: (id: string) => request<CampaignDetail>(`/campaigns/${id}`),
-
-  createCampaign: (name: string, audienceId: string, templateId: string) =>
-    request<CampaignDetail>('/campaigns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, audience_id: audienceId, template_id: templateId }),
-    }),
-
-  listCampaignRecipients: (id: string, status?: RecipientStatus, limit = 50, offset = 0) => {
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (status) {
-      params.set('recipient_status', status);
-    }
-    return request<CampaignRecipientPage>(`/campaigns/${id}/recipients?${params}`);
-  },
-
-  cancelCampaign: (id: string) => request<Campaign>(`/campaigns/${id}/cancel`, { method: 'POST' }),
-
-  sendCampaign: (id: string) =>
-    request<{ campaign: Campaign; queued: number; skipped_as_suppressed: number }>(
-      `/campaigns/${id}/send`,
-      { method: 'POST' },
-    ),
+  /** Every product, active or not. The switcher offers the active ones. */
+  listProducts: () => request<Product[]>('/products'),
 
   // Notifications are always the current user's: no route takes a user ID, so one
-  // salesperson cannot read or clear another's ([D3], section 13).
-  listNotifications: (unreadOnly = false, limit = 50, offset = 0) => {
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (unreadOnly) {
-      params.set('unread_only', 'true');
-    }
-    return request<NotificationPage>(`/notifications?${params}`);
-  },
+  // salesperson cannot read or clear another's ([D3], section 13). `product` narrows the
+  // page; the unread count stays whole because it is the badge.
+  listNotifications: (
+    options: { unreadOnly?: boolean; product?: string; limit?: number; offset?: number } = {},
+  ) =>
+    request<NotificationPage>(
+      `/notifications${queryString({
+        unread_only: options.unreadOnly,
+        product: options.product,
+        limit: options.limit ?? 50,
+        offset: options.offset ?? 0,
+      })}`,
+    ),
 
   markNotificationRead: (id: string) =>
     request<Notification>(`/notifications/${id}/read`, { method: 'POST' }),
@@ -393,75 +440,190 @@ export const api = {
   markAllNotificationsRead: () =>
     request<{ marked_read: number }>('/notifications/read-all', { method: 'POST' }),
 
-  listBookings: (status?: BookingStatus, limit = 50, offset = 0) => {
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (status) {
-      params.set('status', status);
-    }
-    return request<BookingPage>(`/bookings?${params}`);
-  },
+  /** Shared-WABA templates no product owns yet ([D57]). */
+  listUnassignedTemplates: () => request<WhatsAppTemplate[]>('/whatsapp-templates/unassigned'),
 
-  getBooking: (id: string) => request<Booking>(`/bookings/${id}`),
+  /** Every product combined, asked for explicitly ([D53]). */
+  getCombinedOverview: () => request<Overview>('/analytics/overview'),
 
-  listLeads: (status?: LeadStatus, search?: string, limit = 50, offset = 0) => {
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (status) {
-      params.set('status', status);
-    }
-    if (search) {
-      params.set('search', search);
-    }
-    return request<LeadPage>(`/leads?${params}`);
-  },
-
-  getLead: (id: string) => request<Lead>(`/leads/${id}`),
-
-  getLeadConversation: (id: string) => request<ConversationDetail>(`/leads/${id}/conversation`),
-
-  listConversations: (status?: ConversationStatus, limit = 50, offset = 0) => {
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (status) {
-      params.set('status', status);
-    }
-    return request<ConversationPage>(`/conversations?${params}`);
-  },
-
-  getConversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
-
-  listKnowledgeBases: () => request<KnowledgeBase[]>('/knowledge-bases'),
-
-  createKnowledgeBase: (name: string, description: string | null) =>
-    request<KnowledgeBase>('/knowledge-bases', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, description }),
-    }),
-
-  listDocuments: (knowledgeBaseId: string, includeArchived = false) => {
-    const params = new URLSearchParams();
-    if (includeArchived) {
-      params.set('include_archived', 'true');
-    }
-    return request<KnowledgeDocument[]>(`/knowledge-bases/${knowledgeBaseId}/documents?${params}`);
-  },
-
-  uploadDocument: (knowledgeBaseId: string, file: File) => {
-    const form = new FormData();
-    form.append('file', file);
-    // No Content-Type header: the browser must set the multipart boundary itself.
-    return request<KnowledgeDocument>(`/knowledge-bases/${knowledgeBaseId}/documents`, {
-      method: 'POST',
-      body: form,
-    });
-  },
-
-  archiveDocument: (knowledgeBaseId: string, documentId: string) =>
-    request<KnowledgeDocument>(
-      `/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/archive`,
-      { method: 'POST' },
-    ),
-
-  getOverview: () => request<Overview>('/analytics/overview'),
-
-  getLeadFunnel: () => request<LeadFunnel>('/analytics/leads-by-status'),
+  getCombinedLeadFunnel: () => request<LeadFunnel>('/analytics/leads-by-status'),
 };
+
+// ---------------------------------------------------------------- one product
+
+export function productApi(slug: string) {
+  const base = `/p/${encodeURIComponent(slug)}`;
+
+  return {
+    getProduct: () => request<ProductDetail>(base),
+
+    audienceSchema: () => request<AudienceSchema>(`${base}/audiences/schema`),
+
+    listAudiences: (segment?: string) =>
+      request<AudienceSummary[]>(`${base}/audiences${queryString({ segment })}`),
+
+    getAudience: (id: string) => request<AudienceSummary>(`${base}/audiences/${id}`),
+
+    listContacts: (id: string, status?: ValidationStatus, limit = 50, offset = 0) =>
+      request<AudienceContactPage>(
+        `${base}/audiences/${id}/contacts${queryString({ validation_status: status, limit, offset })}`,
+      ),
+
+    uploadAudience: (file: File, name: string, segmentId?: string) => {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('name', name);
+      if (segmentId) {
+        form.append('segment_id', segmentId);
+      }
+      // No Content-Type header: the browser must set the multipart boundary itself.
+      return request<{ audience: AudienceSummary; sample: AudienceContact[] }>(
+        `${base}/audiences/upload`,
+        { method: 'POST', body: form },
+      );
+    },
+
+    confirmAudience: (id: string) =>
+      request<{ audience: AudienceSummary; leads_upserted: number }>(
+        `${base}/audiences/${id}/confirm`,
+        { method: 'POST' },
+      ),
+
+    // Every template this product owns, with whether its campaigns could use it.
+    listTemplates: () => request<ProductTemplate[]>(`${base}/whatsapp-templates`),
+
+    /** ADMIN-only. Gives an unassigned template to this product; never moves an owned one. */
+    assignTemplate: (templateId: string) =>
+      request<ProductTemplate>(`${base}/whatsapp-templates/${templateId}/assign`, {
+        method: 'POST',
+      }),
+
+    listCampaigns: (segment?: string) =>
+      request<Campaign[]>(`${base}/campaigns${queryString({ segment })}`),
+
+    getCampaign: (id: string) => request<CampaignDetail>(`${base}/campaigns/${id}`),
+
+    createCampaign: (name: string, audienceId: string, templateId: string) =>
+      request<CampaignDetail>(
+        `${base}/campaigns`,
+        postJson({ name, audience_id: audienceId, template_id: templateId }),
+      ),
+
+    listCampaignRecipients: (id: string, status?: RecipientStatus, limit = 50, offset = 0) =>
+      request<CampaignRecipientPage>(
+        `${base}/campaigns/${id}/recipients${queryString({ recipient_status: status, limit, offset })}`,
+      ),
+
+    cancelCampaign: (id: string) =>
+      request<Campaign>(`${base}/campaigns/${id}/cancel`, { method: 'POST' }),
+
+    sendCampaign: (id: string) =>
+      request<{ campaign: Campaign; queued: number; skipped_as_suppressed: number }>(
+        `${base}/campaigns/${id}/send`,
+        { method: 'POST' },
+      ),
+
+    listBookings: (
+      options: {
+        status?: BookingStatus;
+        segment?: string;
+        leadId?: string;
+        limit?: number;
+        offset?: number;
+      } = {},
+    ) =>
+      request<BookingPage>(
+        `${base}/bookings${queryString({
+          status: options.status,
+          segment: options.segment,
+          lead_id: options.leadId,
+          limit: options.limit ?? 50,
+          offset: options.offset ?? 0,
+        })}`,
+      ),
+
+    getBooking: (id: string) => request<Booking>(`${base}/bookings/${id}`),
+
+    listLeads: (
+      options: {
+        status?: LeadStatus;
+        search?: string;
+        segment?: string;
+        limit?: number;
+        offset?: number;
+      } = {},
+    ) =>
+      request<LeadPage>(
+        `${base}/leads${queryString({
+          status: options.status,
+          search: options.search,
+          segment: options.segment,
+          limit: options.limit ?? 50,
+          offset: options.offset ?? 0,
+        })}`,
+      ),
+
+    getLead: (id: string) => request<Lead>(`${base}/leads/${id}`),
+
+    getLeadConversation: (id: string) =>
+      request<ConversationDetail>(`${base}/leads/${id}/conversation`),
+
+    listConversations: (
+      options: {
+        status?: ConversationStatus;
+        segment?: string;
+        limit?: number;
+        offset?: number;
+      } = {},
+    ) =>
+      request<ConversationPage>(
+        `${base}/conversations${queryString({
+          status: options.status,
+          segment: options.segment,
+          limit: options.limit ?? 50,
+          offset: options.offset ?? 0,
+        })}`,
+      ),
+
+    getConversation: (id: string) => request<ConversationDetail>(`${base}/conversations/${id}`),
+
+    listKnowledgeBases: () => request<KnowledgeBase[]>(`${base}/knowledge-bases`),
+
+    createKnowledgeBase: (name: string, description: string | null, segmentId: string | null) =>
+      request<KnowledgeBase>(
+        `${base}/knowledge-bases`,
+        postJson({ name, description, segment_id: segmentId }),
+      ),
+
+    listDocuments: (knowledgeBaseId: string, includeArchived = false) =>
+      request<KnowledgeDocument[]>(
+        `${base}/knowledge-bases/${knowledgeBaseId}/documents${queryString({
+          include_archived: includeArchived,
+        })}`,
+      ),
+
+    uploadDocument: (knowledgeBaseId: string, file: File) => {
+      const form = new FormData();
+      form.append('file', file);
+      // No Content-Type header: the browser must set the multipart boundary itself.
+      return request<KnowledgeDocument>(`${base}/knowledge-bases/${knowledgeBaseId}/documents`, {
+        method: 'POST',
+        body: form,
+      });
+    },
+
+    archiveDocument: (knowledgeBaseId: string, documentId: string) =>
+      request<KnowledgeDocument>(
+        `${base}/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/archive`,
+        { method: 'POST' },
+      ),
+
+    getOverview: (segment?: string) =>
+      request<Overview>(`${base}/analytics/overview${queryString({ segment })}`),
+
+    getLeadFunnel: (segment?: string) =>
+      request<LeadFunnel>(`${base}/analytics/leads-by-status${queryString({ segment })}`),
+  };
+}
+
+export type ProductApi = ReturnType<typeof productApi>;

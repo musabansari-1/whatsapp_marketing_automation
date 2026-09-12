@@ -416,7 +416,9 @@ class TestVectorStorageAndSearch:
     ) -> KnowledgeChunk:
         existing = (await session.execute(select(KnowledgeDocument).limit(1))).scalar_one_or_none()
         if existing is None:
-            knowledge_base = KnowledgeBase(name="Product docs")
+            knowledge_base = KnowledgeBase(
+                name="Product docs", product_id=await ensure_product_id(session)
+            )
             session.add(knowledge_base)
             await session.flush()
             existing = KnowledgeDocument(knowledge_base_id=knowledge_base.id, title="Pricing")

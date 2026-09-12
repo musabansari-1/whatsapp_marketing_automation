@@ -82,12 +82,18 @@ async def get_latest_conversation_for_lead(
 async def list_conversations(
     session: AsyncSession,
     *,
+    product_id: uuid.UUID,
+    segment_id: uuid.UUID | None = None,
     status: ConversationStatus | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[int, Sequence[Conversation]]:
-    """A page of conversations, newest activity first, with the total."""
-    conditions = [] if status is None else [Conversation.status == status]
+    """A page of one product's conversations, newest activity first, with the total."""
+    from app.persistence.repositories.scoping import conversation_scope
+
+    conditions = conversation_scope(product_id=product_id, segment_id=segment_id)
+    if status is not None:
+        conditions.append(Conversation.status == status)
 
     total = await session.scalar(select(func.count()).select_from(Conversation).where(*conditions))
 
@@ -301,17 +307,23 @@ async def get_lead(session: AsyncSession, lead_id: uuid.UUID) -> Lead | None:
 async def list_leads(
     session: AsyncSession,
     *,
+    product_id: uuid.UUID,
+    segment_id: uuid.UUID | None = None,
     status: LeadStatus | None = None,
     search: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[int, Sequence[Lead]]:
-    """A page of leads, newest first, with the total.
+    """A page of one product's leads, newest first, with the total.
 
     `search` matches name, phone, email or company. Phone is included because it is
-    the identity a salesperson actually has in front of them ([D11]).
+    the identity a salesperson actually has in front of them ([D11]) — and searching a
+    phone finds only this product's lead for it, never the same person's lead in another
+    product ([D41]).
     """
-    conditions = []
+    from app.persistence.repositories.scoping import lead_scope
+
+    conditions = lead_scope(product_id=product_id, segment_id=segment_id)
     if status is not None:
         conditions.append(Lead.status == status)
     if search:

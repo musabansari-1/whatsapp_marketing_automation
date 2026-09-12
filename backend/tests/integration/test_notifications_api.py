@@ -20,7 +20,7 @@ from app.domain.enums import BookingStatus, NotificationType
 from app.persistence.models import Booking, Conversation, Lead, Notification, User
 from app.persistence.repositories import bookings as booking_repo
 from tests.integration.conftest import ADMIN_EMAIL, SALES_EMAIL, login
-from tests.integration.helpers import ensure_product_id, run_db
+from tests.integration.helpers import ensure_product_id, run_db, scoped_prefix
 
 pytestmark = pytest.mark.integration
 
@@ -114,8 +114,8 @@ class TestAuthentication:
     def test_every_endpoint_requires_a_session(self, client: TestClient) -> None:
         assert client.get("/api/v1/notifications").status_code == 401
         assert client.post("/api/v1/notifications/read-all").status_code == 401
-        assert client.get("/api/v1/bookings").status_code == 401
-        assert client.get(f"/api/v1/bookings/{uuid.uuid4()}").status_code == 401
+        assert client.get(f"{scoped_prefix()}/bookings").status_code == 401
+        assert client.get(f"{scoped_prefix()}/bookings/{uuid.uuid4()}").status_code == 401
 
     def test_a_salesperson_may_read_bookings(
         self, client: TestClient, seeded_users: dict[str, str]
@@ -123,7 +123,7 @@ class TestAuthentication:
         """§9 restricts broadcasting, not reading — and a salesperson about to run a
         demo needs to see it."""
         login(client, email=SALES_EMAIL)
-        assert client.get("/api/v1/bookings").status_code == 200
+        assert client.get(f"{scoped_prefix()}/bookings").status_code == 200
 
 
 class TestNotificationListing:
@@ -265,7 +265,7 @@ class TestBookings:
         login(client)
         booking_id = seed_booking(seed_lead())
 
-        body = client.get("/api/v1/bookings").json()
+        body = client.get(f"{scoped_prefix()}/bookings").json()
 
         assert body["total"] == 1
         assert body["items"][0]["id"] == booking_id
@@ -278,7 +278,7 @@ class TestBookings:
         seed_booking(lead_id, status=BookingStatus.CONFIRMED)
         seed_booking(lead_id, status=BookingStatus.CANCELLED)
 
-        body = client.get("/api/v1/bookings?status=CANCELLED").json()
+        body = client.get(f"{scoped_prefix()}/bookings?status=CANCELLED").json()
 
         assert body["total"] == 1
         assert body["items"][0]["status"] == "CANCELLED"
@@ -290,14 +290,14 @@ class TestBookings:
         login(client)
         booking_id = seed_booking(seed_lead())
 
-        body = client.get(f"/api/v1/bookings/{booking_id}").json()
+        body = client.get(f"{scoped_prefix()}/bookings/{booking_id}").json()
         assert body["timezone"] == "Asia/Kolkata"
 
     def test_a_missing_booking_is_404(
         self, client: TestClient, seeded_users: dict[str, str]
     ) -> None:
         login(client)
-        assert client.get(f"/api/v1/bookings/{uuid.uuid4()}").status_code == 404
+        assert client.get(f"{scoped_prefix()}/bookings/{uuid.uuid4()}").status_code == 404
 
 
 class TestNoManualBooking:
@@ -310,7 +310,7 @@ class TestNoManualBooking:
         login(client)
 
         response = client.post(
-            "/api/v1/bookings",
+            f"{scoped_prefix()}/bookings",
             json={"lead_id": str(uuid.uuid4()), "start_time": START.isoformat()},
         )
         assert response.status_code in (404, 405)

@@ -745,3 +745,111 @@ class TestPhase24BookingOwnership:
             autocommit=False,
         )
         _alembic(scratch_database, PHASE_24, direction="up")
+
+
+# ---------------------------------------------------------------- Phase 26
+
+PHASE_26 = "e8a3c5d2f1b7"
+
+KNOWLEDGE_NULLABLE_SQL = (
+    "SELECT is_nullable FROM information_schema.columns"
+    " WHERE table_name = 'knowledge_bases' AND column_name = 'product_id'"
+)
+
+
+class TestPhase26KnowledgeOwnership:
+    """Knowledge bases gain a mandatory owner, and names become unique per product.
+    Continues from the state the Phase 24 class leaves: at Phase 24, with a second product."""
+
+    def test_an_unowned_knowledge_base_stops_the_upgrade(self, scratch_database: str) -> None:
+        """A knowledge base has no parent to take a product from, so an unowned one is
+        named and refused — which product's assistant answers from it is not something
+        the data can say."""
+        _exec(
+            scratch_database,
+            [
+                (
+                    "INSERT INTO knowledge_bases (name, description)"
+                    " VALUES ('Unowned notes', 'created before Phase 26')",
+                    {},
+                )
+            ],
+            autocommit=False,
+        )
+
+        with pytest.raises(RuntimeError, match="have no product"):
+            _alembic(scratch_database, PHASE_26, direction="up")
+
+        # Nothing was attributed in the attempt.
+        assert (
+            _scalar(
+                scratch_database, "SELECT count(*) FROM knowledge_bases WHERE product_id IS NULL"
+            )
+            == 1
+        )
+
+        _exec(
+            scratch_database,
+            [("DELETE FROM knowledge_bases WHERE name = 'Unowned notes'", {})],
+            autocommit=False,
+        )
+        _alembic(scratch_database, PHASE_26, direction="up")
+        assert _scalar(scratch_database, KNOWLEDGE_NULLABLE_SQL) == "NO"
+
+    def test_two_products_may_share_a_knowledge_base_name(self, scratch_database: str) -> None:
+        """'Legacy knowledge' is Academicae's from the Phase 18 backfill. Another product
+        may keep one of the same name; the same product may not keep two."""
+        _exec(
+            scratch_database,
+            [
+                (
+                    "INSERT INTO knowledge_bases (name, description, product_id)"
+                    " VALUES ('Legacy knowledge', 'the other product''s', :product)",
+                    {"product": OTHER_PRODUCT},
+                )
+            ],
+            autocommit=False,
+        )
+
+        with pytest.raises(IntegrityError):
+            _exec(
+                scratch_database,
+                [
+                    (
+                        "INSERT INTO knowledge_bases (name, description, product_id)"
+                        " VALUES ('Legacy knowledge', 'a second one', :product)",
+                        {"product": ACADEMICAE_ID},
+                    )
+                ],
+                autocommit=False,
+            )
+
+    def test_the_downgrade_refuses_while_two_products_share_a_name(
+        self, scratch_database: str
+    ) -> None:
+        """The global name rule cannot represent what this phase allows. Nothing is renamed
+        or deleted to make room, because either would change what an assistant knows."""
+        with pytest.raises(IntegrityError):
+            _alembic(scratch_database, PHASE_24, direction="down")
+
+        assert (
+            _scalar(
+                scratch_database,
+                "SELECT count(*) FROM knowledge_bases WHERE name = 'Legacy knowledge'",
+            )
+            == 2
+        )
+
+        _exec(
+            scratch_database,
+            [
+                (
+                    "DELETE FROM knowledge_bases WHERE name = 'Legacy knowledge' AND product_id = :p",
+                    {"p": OTHER_PRODUCT},
+                )
+            ],
+            autocommit=False,
+        )
+        _alembic(scratch_database, PHASE_24, direction="down")
+        assert _scalar(scratch_database, KNOWLEDGE_NULLABLE_SQL) == "YES"
+        _alembic(scratch_database, PHASE_26, direction="up")
