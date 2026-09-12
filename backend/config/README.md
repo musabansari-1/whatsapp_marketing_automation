@@ -30,6 +30,13 @@ being added deliberately.
 Slugs are permanent route identifiers (`/p/<slug>`). They are data: nothing in the code
 branches on them.
 
+**No product is active until it is ready and approved** (product owner, 2026-09-12). The
+migration seeds Academicae active, so deactivate it first in each environment
+(`deactivate-product academicae`). Activate a product only after its real WhatsApp,
+calendar, audience schema, AI configuration, templates and READY knowledge are in place,
+`product-readiness` passes, and activation is explicitly approved. `--accept-gaps` is not a
+way around missing templates or knowledge.
+
 ## Rules
 
 - **Idempotent.** Products and segments are matched by slug and updated in place. Re-running

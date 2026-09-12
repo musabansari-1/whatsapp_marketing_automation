@@ -143,6 +143,11 @@ carries `config/products.json`. **Not executed; each run against staging or prod
 needs explicit approval (§23).** The commands send nothing and call no provider.
 
 ```bash
+# 0. First: the migration seeds Academicae active, and no product is active until it is
+#    ready and its activation is approved (product owner, 2026-09-12).
+gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
+  --args "run,python,-m,app.cli,deactivate-product,academicae"
+
 # 1. Create or update the products and segments the catalog names. Idempotent.
 gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
   --args "run,python,-m,app.cli,configure-products,--file,config/products.json"
@@ -156,7 +161,7 @@ gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --
 gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
   --args "run,python,-m,app.cli,product-readiness"
 
-# 4. Only when a product is READY, and only deliberately.
+# 4. Only when a product is READY and its activation has been explicitly approved.
 gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
   --args "run,python,-m,app.cli,activate-product,sustainx"
 ```

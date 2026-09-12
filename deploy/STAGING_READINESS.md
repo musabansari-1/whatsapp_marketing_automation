@@ -115,18 +115,20 @@ In order, after `deploy.sh` has migrated (commands in `deploy/README.md`, *Produ
 configuration*; each needs approval):
 
 ```text
+deactivate-product academicae                    first: its migration seeds it active
 configure-products --file config/products.json   products and segments; idempotent
 import-legacy-config academicae                  once; Academicae's pre-Phase-27 environment values
 configure-products (with real values added)      as each product's inputs arrive
 product-readiness                                must exit 0 before any real provider is enabled
-activate-product <slug>                          per product, only when READY
+activate-product <slug>                          per product, when READY and approved
 ```
 
-Academicae's row is **active** from its migration. Until its configuration is imported and its
-real WhatsApp number and calendar are set, `product-readiness` reports it active but NOT READY
-and exits non-zero. On a fake-provider staging that is harmless; before any real provider is
-enabled it must be resolved — by configuring Academicae, or by deliberately deactivating it
-until it is configured.
+**No product is active until it is ready and its activation is approved** (product owner,
+2026-09-12). Academicae's migration seeds its row active, so the first onboarding step in each
+environment is `deactivate-product academicae`. It then stays inactive, alongside SustainX and
+Life Herba, until its real configuration passes `product-readiness` and activation is
+explicitly approved. An inactive product receives no routed messages and starts no campaign,
+reply or booking.
 
 ---
 
@@ -156,7 +158,7 @@ does not book, without its own number it does not send, an unassigned template i
 | Item | Academicae | SustainX | Life Herba |
 |---|---|---|---|
 | Row, slug, display name | ☑ `academicae` — existing row, fixed ID | ◐ `sustainx` — in the catalog, created on first apply | ◐ `life-herba` — in the catalog, created on first apply |
-| Active | **active** (migration) | inactive | inactive |
+| Active | **inactive (intended)** — seeded active; deactivate first | inactive | inactive |
 | Segments | none — valid | ☑ `government`, `industry` (more later, as data) | ☑ `healthcare-professionals`, `wellness-centers`, `pharmacies`, `consumers` |
 | Audience column schema | ☐ import from its environment, then confirm the real headers (D-46b) | ☐ not supplied | ☐ not supplied |
 | AI system prompt | ☐ import from its environment, then review | ☐ not supplied — one product-level prompt | ☐ not supplied — product default |
@@ -198,6 +200,20 @@ READY document answers factual questions only with the fallback (`knowledge.none
 READY WITH GAPS — typically no template or no knowledge yet — is activated only with
 `--accept-gaps`. `deactivate-product <slug>` stops new customer activity; records stay
 readable.
+
+**Activation gate (product owner, 2026-09-12).** No product is activated until all of these
+hold, and then only with explicit approval:
+
+- its real WhatsApp phone number ID and business account are configured
+- its Google Calendar is configured
+- its audience column schema is confirmed
+- its AI configuration is present
+- its templates are synced and assigned
+- its knowledge is uploaded and READY
+- `product-readiness` passes for it
+
+Templates and knowledge are part of the gate, so `--accept-gaps` is not a way around them for
+these products.
 
 ---
 
@@ -250,6 +266,7 @@ LLM, then Calendar. HubSpot stays deferred.
 - Running anything in `deploy/` — infrastructure, secrets, deploy, sweeps, alerts, smoke test.
 - Running the product configuration commands against staging or production databases.
 - Activating a product in staging or production.
+- Deactivating Academicae there: it is a configuration command, run at onboarding.
 - Enabling any real provider (`WHATSAPP_PROVIDER=meta`, `LLM_PROVIDER=openrouter`,
   `CALENDAR_PROVIDER=google`).
 - Subscribing the Meta webhook, submitting templates, or any Meta Business Manager change.
