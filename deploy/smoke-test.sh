@@ -62,6 +62,8 @@ check "reaches the database (/readiness)" \
 # production checks because nobody exported APP_ENV would be worse than useless.
 DEPLOYED_ENV="$(gcloud run services describe "$API_SERVICE" --region "$REGION" --project "$PROJECT_ID" \
   --format 'value(spec.template.spec.containers[0].env.filter("name:APP_ENV").extract("value"))' 2>/dev/null || true)"
+# Peel the YAML-list brackets --format returns (e.g. ['staging']).
+DEPLOYED_ENV="$(printf '%s' "$DEPLOYED_ENV" | tr -d "[]\"'")"
 echo "  APP_ENV: ${DEPLOYED_ENV:-unknown}"
 
 # §19: docs are disabled in production. A 200 here means APP_ENV is not what you think.
@@ -77,7 +79,11 @@ fi
 
 log "Worker"
 
-TOKEN="$(gcloud auth print-identity-token --audiences "$WORKER_URL" 2>/dev/null || true)"
+# Minted as the operator's identity, without --audiences: that flag only works when
+# authenticated as a service account. The worker does not check the audience claim, so
+# an untargeted token is accepted — the point of this check is the IAM policy, which is
+# what a real Cloud Tasks call also proves.
+TOKEN="$(gcloud auth print-identity-token 2>/dev/null || true)"
 
 check "is NOT publicly reachable" \
   bash -c "! curl -fsS --max-time 10 '${WORKER_URL}/health'"
@@ -139,18 +145,22 @@ check "rejects an unsigned webhook delivery" \
 
 log "Authentication (§19)"
 
+# /users/me, not /leads: list routes are product-scoped (Phase 26), so a bare /leads
+# does not exist and answers 404. An ownerless route is what proves session refusal.
 check "an unauthenticated dashboard call is refused" \
-  bash -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 '${API_URL}/api/v1/leads')\" = '401' ]"
+  bash -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 '${API_URL}/api/v1/users/me')\" = '401' ]"
 
 # Rate limiting: deliberately over-attempt a login with a nonsense account. It creates
 # no session and reveals nothing; it proves §19's limiter is active in this deployment.
 log "Rate limiting (§19, D-42)"
 SAW_429=0
+# A domain EmailStr accepts: reserved TLDs like .local are rejected at validation
+# with 422 before the request ever reaches the limiter.
 for _ in $(seq 1 25); do
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
     -X POST "${API_URL}/api/v1/auth/login" \
     -H 'Content-Type: application/json' \
-    -d '{"email":"smoke-test@invalid.local","password":"not-a-real-password"}')"
+    -d '{"email":"smoke-test@smoke.invalid-example.com","password":"not-a-real-password"}')"
   if [ "$code" = "429" ]; then SAW_429=1; break; fi
 done
 check "refuses repeated failed logins" bash -c "[ '$SAW_429' = '1' ]"
@@ -160,8 +170,10 @@ check "refuses repeated failed logins" bash -c "[ '$SAW_429' = '1' ]"
 log "Configuration"
 
 for var in WHATSAPP_PROVIDER LLM_PROVIDER CALENDAR_PROVIDER CRM_PROVIDER; do
+  # --format returns a YAML list (e.g. ['fake']); peel the brackets for comparison.
   value="$(gcloud run services describe "$API_SERVICE" --region "$REGION" --project "$PROJECT_ID" \
     --format "value(spec.template.spec.containers[0].env.filter(\"name:${var}\").extract(\"value\"))" 2>/dev/null || true)"
+  value="$(printf '%s' "$value" | tr -d "[]\"'")"
   echo "  $var = ${value:-unset}"
   if [ "$value" != "fake" ] && [ -n "$value" ]; then
     printf '    \033[33m! real provider — a broadcast from this deployment reaches real people\033[0m\n'
