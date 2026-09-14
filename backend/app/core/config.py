@@ -225,6 +225,9 @@ class Settings(BaseSettings):
     demo_working_hours_start: str = "10:00"
     demo_working_hours_end: str = "18:00"
     demo_booking_horizon_days: int = 14
+    # 0 = same calendar day still offerable; 1 = earliest tomorrow. Product overrides
+    # may raise this (Academicae uses 1). Never a scattered literal in slot logic.
+    demo_min_lead_days: int = 0
     demo_timezone: str = "Asia/Kolkata"
 
     # ---------------------------------------------------------------- conversations §9 §10

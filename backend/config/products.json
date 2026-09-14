@@ -4,7 +4,29 @@
       "slug": "academicae",
       "id": "00000000-0000-4000-8000-000000000001",
       "display_name": "Academicae",
-      "segments": []
+      "segments": [],
+      "whatsapp_phone_number_id": "1334068749786023",
+      "whatsapp_business_account_id": "1055996760528305",
+      "google_calendar_id": "947d2eaa29ce474e8e05bf391018bccd4327900948effa367c1b319200339af8@group.calendar.google.com",
+      "audience_column_schema": [
+        { "source": "School Name", "field": "name", "required": true },
+        { "source": "Phone", "field": "phone", "required": true },
+        { "source": "Email", "field": "email", "required": false }
+      ],
+      "demo_duration_minutes": 60,
+      "demo_buffer_minutes": 15,
+      "demo_working_days": ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"],
+      "demo_working_hours_start": "08:00",
+      "demo_working_hours_end": "18:00",
+      "demo_booking_horizon_days": "unbounded",
+      "demo_min_lead_days": 1,
+      "demo_timezone": "Asia/Kolkata",
+      "ai_configuration": {
+        "system_prompt_file": "prompts/academicae.md",
+        "qualification_mode": "ai_judgement",
+        "qualification_required_fields": [],
+        "fallback_message": "I don't have verified information on that yet. The Academicae team can cover it in a demo if you'd like me to arrange one."
+      }
     },
     {
       "slug": "sustainx",

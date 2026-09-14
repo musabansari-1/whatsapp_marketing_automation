@@ -259,7 +259,8 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
                 # Life Herba pharmacist can be qualified on different facts from a
                 # consumer while SustainX's segments all share one rule (§28.4).
                 qualification_rules=rules_from_settings(
-                    list(ai_config.qualification_required_fields)
+                    list(ai_config.qualification_required_fields),
+                    mode=ai_config.qualification_mode,
                 ),
             )
 

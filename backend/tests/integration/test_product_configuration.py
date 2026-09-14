@@ -240,11 +240,15 @@ class TestTheShippedCatalog:
             assert row.google_calendar_id is None
             assert row.audience_column_schema is None
 
-    async def test_keeps_the_existing_academicae_row_its_id_and_its_state(
+    async def test_keeps_the_existing_academicae_row_its_id_and_does_not_flip_activation(
         self, cli_env: None, db: async_sessionmaker[AsyncSession]
     ) -> None:
-        """A real database holds Academicae from the migration: active, with the fixed ID.
-        The catalog updates it in place and never creates a second one."""
+        """The catalog updates Academicae in place and never creates a second row.
+
+        Activation is not configuration: an already-active row stays active, and the
+        catalog has no `is_active` key that could flip it. (Fresh installs are inactive
+        after migration `a1b2c3d4e5f6`; this case only proves the catalog itself.)
+        """
         async with db() as session:
             session.add(
                 Product(
@@ -262,6 +266,51 @@ class TestTheShippedCatalog:
                 ).scalars()
             )
         assert [(row.id, row.is_active) for row in rows] == [(ACADEMICAE_ID, True)]
+
+    async def test_shipped_catalog_does_not_activate_academicae(
+        self, cli_env: None, db: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Migrate → configure must leave Academicae inactive until activate-product.
+
+        Starts from the post-`a1b2c3d4e5f6` state (fixed ID, inactive), applies the full
+        launch catalog, and checks configuration landed without turning the product on.
+        """
+        async with db() as session:
+            session.add(
+                Product(
+                    id=ACADEMICAE_ID,
+                    slug="academicae",
+                    display_name="Academicae",
+                    is_active=False,
+                )
+            )
+            await session.commit()
+
+        assert await configure_products(Settings(), SHIPPED_CATALOG, out=io.StringIO()) == EXIT_OK
+
+        async with db() as session:
+            row = (
+                await session.execute(select(Product).where(Product.id == ACADEMICAE_ID))
+            ).scalar_one()
+
+        assert row.is_active is False
+        assert row.whatsapp_phone_number_id is not None
+        assert row.google_calendar_id is not None
+        assert row.audience_column_schema is not None
+        assert row.demo_min_lead_days == 1
+        assert row.demo_booking_horizon_days == -1
+
+        async with db() as session:
+            ai = (
+                await session.execute(
+                    select(AIConfiguration).where(
+                        AIConfiguration.product_id == ACADEMICAE_ID,
+                        AIConfiguration.segment_id.is_(None),
+                    )
+                )
+            ).scalar_one()
+        assert ai.qualification_mode == "ai_judgement"
+        assert ai.system_prompt is not None
 
     async def test_a_second_run_changes_nothing(
         self, cli_env: None, db: async_sessionmaker[AsyncSession]

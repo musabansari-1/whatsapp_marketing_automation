@@ -62,16 +62,29 @@ class TestTheShippedCatalog:
         ]
 
     def test_it_invents_no_provider_ids_prompts_schemas_or_overrides(self) -> None:
-        """Phone numbers, accounts, calendars, prompts, criteria and spreadsheet formats have
-        not been supplied. The catalog must not contain a placeholder for any of them —
-        not even a null, which would clear a value an operator had set by other means."""
-        for product in load_catalog(SHIPPED_CATALOG).products:
+        """SustainX and Life Herba still have no confirmed provider IDs, prompts or schemas.
+        Academicae may carry confirmed launch configuration — asserted separately."""
+        products = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}
+        for slug in ("sustainx", "life-herba"):
+            product = products[slug]
             configured = product.model_fields_set & {
                 *PRODUCT_FIELDS,
                 "ai_configuration",
                 "segment_ai_overrides",
             }
-            assert configured == set(), product.slug
+            assert configured == set(), slug
+
+    def test_academicae_has_confirmed_launch_configuration(self) -> None:
+        academicae = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["academicae"]
+
+        assert academicae.whatsapp_phone_number_id
+        assert academicae.google_calendar_id
+        assert academicae.audience_column_schema
+        assert academicae.ai_configuration is not None
+        assert academicae.ai_configuration.qualification_mode == "ai_judgement"
+        assert academicae.demo_booking_horizon_days == -1
+        assert academicae.demo_min_lead_days == 1
+        assert academicae.demo_duration_minutes == 60
 
     def test_it_cannot_activate_anything(self) -> None:
         raw = json.loads(SHIPPED_CATALOG.read_text(encoding="utf-8"))
@@ -154,6 +167,17 @@ class TestMistakesAreRefused:
     def test_a_blank_prompt_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="blank"):
             ProductEntry.model_validate(entry(ai_configuration={"system_prompt": "  "}))
+
+    def test_unbounded_horizon_is_stored_as_minus_one(self) -> None:
+        product = ProductEntry.model_validate(entry(demo_booking_horizon_days="unbounded"))
+        assert product.demo_booking_horizon_days == -1
+
+    def test_qualification_mode_ai_judgement_is_accepted(self) -> None:
+        product = ProductEntry.model_validate(
+            entry(ai_configuration={"qualification_mode": "ai_judgement"})
+        )
+        assert product.ai_configuration is not None
+        assert product.ai_configuration.qualification_mode == "ai_judgement"
 
 
 class TestAbsentIsNotNull:

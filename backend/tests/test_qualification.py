@@ -13,7 +13,12 @@ from app.domain.enums import LeadStatus
 from app.domain.qualification import (
     FIELD_DEMO_INTENT,
     FIELD_INTERESTED,
+    FIELD_JUDGEMENT,
     FIELD_NOT_INTERESTED,
+    JUDGEMENT_NEEDS_MORE_CONTEXT,
+    JUDGEMENT_NOT_QUALIFIED,
+    JUDGEMENT_QUALIFIED,
+    QualificationMode,
     QualificationRules,
     evaluate,
     missing_required_fields,
@@ -184,3 +189,48 @@ class TestLooseBooleans:
             evaluate(current=LeadStatus.QUALIFYING, data=data, rules=CONFIGURED).status
             is not LeadStatus.QUALIFIED
         )
+
+
+class TestAIJudgementMode:
+    """[D37] ai_judgement: no field checklist; interest / demo intent / judgement map."""
+
+    AI = QualificationRules(mode=QualificationMode.AI_JUDGEMENT)
+
+    def test_empty_required_fields_are_still_configured(self) -> None:
+        assert self.AI.is_configured
+        assert rules_from_settings([], mode="ai_judgement").is_configured
+        assert rules_from_settings([], mode="ai_judgement").mode is QualificationMode.AI_JUDGEMENT
+
+    def test_interested_and_demo_intent_qualify(self) -> None:
+        data = {FIELD_INTERESTED: True, FIELD_DEMO_INTENT: True}
+        result = evaluate(current=LeadStatus.QUALIFYING, data=data, rules=self.AI)
+        assert result.status is LeadStatus.QUALIFIED
+
+    def test_judgement_qualified_qualifies(self) -> None:
+        data = {FIELD_JUDGEMENT: JUDGEMENT_QUALIFIED}
+        result = evaluate(current=LeadStatus.QUALIFYING, data=data, rules=self.AI)
+        assert result.status is LeadStatus.QUALIFIED
+
+    def test_needs_more_context_stays_in_qualifying_or_interested(self) -> None:
+        data = {FIELD_JUDGEMENT: JUDGEMENT_NEEDS_MORE_CONTEXT}
+
+        from_responded = evaluate(current=LeadStatus.RESPONDED, data=data, rules=self.AI)
+        assert from_responded.status is LeadStatus.QUALIFYING
+
+        from_qualifying = evaluate(current=LeadStatus.QUALIFYING, data=data, rules=self.AI)
+        assert from_qualifying.status is LeadStatus.INTERESTED
+
+    def test_not_qualified_maps_to_not_interested(self) -> None:
+        data = {FIELD_JUDGEMENT: JUDGEMENT_NOT_QUALIFIED}
+        result = evaluate(current=LeadStatus.QUALIFYING, data=data, rules=self.AI)
+        assert result.status is LeadStatus.NOT_INTERESTED
+
+    def test_empty_required_fields_without_ai_judgement_still_do_not_qualify(self) -> None:
+        data = {FIELD_INTERESTED: True, FIELD_DEMO_INTENT: True}
+        result = evaluate(
+            current=LeadStatus.QUALIFYING,
+            data=data,
+            rules=QualificationRules(),
+        )
+        assert result.status is not LeadStatus.QUALIFIED
+        assert not rules_from_settings([]).is_configured

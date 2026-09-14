@@ -115,8 +115,8 @@ In order, after `deploy.sh` has migrated (commands in `deploy/README.md`, *Produ
 configuration*; each needs approval):
 
 ```text
-deactivate-product academicae                    first: its migration seeds it active
-configure-products --file config/products.json   products and segments; idempotent
+# migrate through a1b2c3d4e5f6 first — deactivates Academicae's Phase-17 active seed
+configure-products --file config/products.json   products and segments; idempotent; never activates
 import-legacy-config academicae                  once; Academicae's pre-Phase-27 environment values
 configure-products (with real values added)      as each product's inputs arrive
 product-readiness                                must exit 0 before any real provider is enabled
@@ -124,11 +124,11 @@ activate-product <slug>                          per product, when READY and app
 ```
 
 **No product is active until it is ready and its activation is approved** (product owner,
-2026-09-12). Academicae's migration seeds its row active, so the first onboarding step in each
-environment is `deactivate-product academicae`. It then stays inactive, alongside SustainX and
-Life Herba, until its real configuration passes `product-readiness` and activation is
-explicitly approved. An inactive product receives no routed messages and starts no campaign,
-reply or booking.
+2026-09-12). Migration `a1b2c3d4e5f6` sets Academicae inactive by fixed ID (the Phase-17 seed
+had left it active); `configure-products` never flips `is_active`. Academicae stays inactive,
+alongside SustainX and Life Herba, until its real configuration passes `product-readiness`
+and activation is explicitly approved. An inactive product receives no routed messages and
+starts no campaign, reply or booking.
 
 ---
 

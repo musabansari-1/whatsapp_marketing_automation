@@ -107,7 +107,11 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     demo_working_days: Mapped[list[str] | None] = mapped_column(JSONB(none_as_null=True))
     demo_working_hours_start: Mapped[str | None] = mapped_column(String(5))
     demo_working_hours_end: Mapped[str | None] = mapped_column(String(5))
+    # NULL inherits the platform horizon. `-1` (`UNBOUNDED_BOOKING_HORIZON`) means no
+    # artificial latest bookable day — distinct from NULL, which must keep inheriting.
     demo_booking_horizon_days: Mapped[int | None] = mapped_column(Integer)
+    # NULL inherits. 0 = same day still offerable; 1 = earliest tomorrow.
+    demo_min_lead_days: Mapped[int | None] = mapped_column(Integer)
     demo_timezone: Mapped[str | None] = mapped_column(String(64))
 
     # ---------------------------------------------------------------- audience ([D51], Phase 27)
@@ -230,6 +234,8 @@ class AIConfiguration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     qualification_required_fields: Mapped[list[Any] | None] = mapped_column(
         JSONB(none_as_null=True)
     )
+    # NULL inherits. `required_fields` (default when unset everywhere) or `ai_judgement`.
+    qualification_mode: Mapped[str | None] = mapped_column(String(32))
     model: Mapped[str | None] = mapped_column(String(255))
 
     rag_top_k: Mapped[int | None] = mapped_column(Integer)

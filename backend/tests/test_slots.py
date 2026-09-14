@@ -35,7 +35,8 @@ def a_policy(
     days: frozenset[int] | None = None,
     start: time = time(10, 0),
     end: time = time(18, 0),
-    horizon: int = 14,
+    horizon: int | None = 14,
+    min_lead: int = 0,
     timezone: str = "Asia/Kolkata",
 ) -> SlotPolicy:
     return SlotPolicy(
@@ -45,6 +46,7 @@ def a_policy(
         working_start=start,
         working_end=end,
         horizon_days=horizon,
+        min_lead_days=min_lead,
         timezone=timezone,
     )
 
@@ -304,6 +306,7 @@ class Overrides:
     demo_working_hours_start: str | None = None
     demo_working_hours_end: str | None = None
     demo_booking_horizon_days: int | None = None
+    demo_min_lead_days: int | None = None
     demo_timezone: str | None = None
 
 
@@ -328,6 +331,7 @@ class TestProductOverrides:
         assert resolved.working_start == platform.working_start
         assert resolved.working_end == platform.working_end
         assert resolved.horizon_days == platform.horizon_days
+        assert resolved.min_lead_days == platform.min_lead_days
 
     def test_a_zero_buffer_is_a_real_override(self) -> None:
         """Resolved with `is None`, not truthiness: `0 or 15` would restore the platform's
@@ -348,6 +352,7 @@ class TestProductOverrides:
                 demo_working_hours_start="09:00",
                 demo_working_hours_end="13:00",
                 demo_booking_horizon_days=7,
+                demo_min_lead_days=1,
                 demo_timezone="Asia/Dubai",
             ),
         )
@@ -359,8 +364,22 @@ class TestProductOverrides:
             working_start=time(9, 0),
             working_end=time(13, 0),
             horizon_days=7,
+            min_lead_days=1,
             timezone="Asia/Dubai",
         )
+
+    def test_unbounded_horizon_override_maps_to_none(self) -> None:
+        from app.core.config import Settings
+
+        resolved = resolve_slot_policy(Settings(), Overrides(demo_booking_horizon_days=-1))
+        assert resolved.horizon_days is None
+        assert resolved.is_horizon_unbounded
+
+    def test_min_lead_days_override_is_applied(self) -> None:
+        from app.core.config import Settings
+
+        resolved = resolve_slot_policy(Settings(), Overrides(demo_min_lead_days=1))
+        assert resolved.min_lead_days == 1
 
     def test_a_combination_that_cannot_fit_is_refused(self) -> None:
         """Valid alone, invalid together: a 30-minute demo in a 15-minute day. Refused,
@@ -386,3 +405,54 @@ class TestProductOverrides:
 
         with pytest.raises(SlotPolicyError, match="timezone"):
             resolve_slot_policy(Settings(), Overrides(demo_timezone="Mars/Olympus_Mons"))
+
+
+class TestMinLeadAndUnboundedHorizon:
+    def test_min_lead_skips_today_and_offers_tomorrow(self) -> None:
+        policy = a_policy(min_lead=1, days=frozenset({0, 1, 2, 3, 4, 5, 6}))
+        slots = available_slots(policy=policy, busy=[], now=WEDNESDAY_9AM, limit=5)
+
+        assert slots
+        first_day = slots[0].start.astimezone(IST).date()
+        assert first_day == (WEDNESDAY_9AM.date() + timedelta(days=1))
+        assert all(slot.start.astimezone(IST).date() >= first_day for slot in slots)
+
+        today_slot = busy(local(2026, 9, 2, 11, 0), 30)
+        tomorrow_slot = busy(local(2026, 9, 3, 11, 0), 30)
+        assert not is_slot_available(policy=policy, slot=today_slot, busy=[], now=WEDNESDAY_9AM)
+        assert is_slot_available(policy=policy, slot=tomorrow_slot, busy=[], now=WEDNESDAY_9AM)
+
+    def test_unbounded_horizon_can_search_far_ahead(self) -> None:
+        policy = a_policy(horizon=None, days=frozenset({0, 1, 2, 3, 4, 5, 6}))
+        search_from = (WEDNESDAY_9AM + timedelta(days=60)).date()
+
+        slots = available_slots(
+            policy=policy,
+            busy=[],
+            now=WEDNESDAY_9AM,
+            search_from=search_from,
+            search_days=7,
+            limit=3,
+        )
+        assert slots
+        assert all(slot.start.astimezone(IST).date() >= search_from for slot in slots)
+
+        far_slot = busy(local(2026, 11, 1, 11, 0), 30)
+        assert is_slot_available(policy=policy, slot=far_slot, busy=[], now=WEDNESDAY_9AM)
+
+    def test_academicae_like_hours_still_offer_slots(self) -> None:
+        """60-minute demos, 15-minute buffer, 08:00–18:00 every day."""
+        policy = a_policy(
+            duration=60,
+            buffer=15,
+            start=time(8, 0),
+            end=time(18, 0),
+            days=frozenset({0, 1, 2, 3, 4, 5, 6}),
+            min_lead=1,
+            horizon=None,
+        )
+        slots = available_slots(policy=policy, busy=[], now=WEDNESDAY_9AM, limit=5)
+        assert slots
+        assert all(slot.end - slot.start == timedelta(minutes=60) for slot in slots)
+        assert all(slot.start.astimezone(IST).time() >= time(8, 0) for slot in slots)
+        assert all(slot.end.astimezone(IST).time() <= time(18, 0) for slot in slots)

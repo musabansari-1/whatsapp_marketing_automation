@@ -2,29 +2,32 @@
 
 **The LLM does not decide qualification.** It extracts structured facts into
 `leads.qualification_data`; this module applies explicit rules to those facts, and the
-backend alone sets `lead.status`. That division is settled by [D9]; what is *not*
-settled is the criteria.
+backend alone sets `lead.status`. That division is settled by [D9].
 
-[D37] leaves the `QUALIFYING → QUALIFIED` rules to a decision that has not been made,
-and SPECIFICATION.md says they must not be invented earlier. So this module implements
-the **mechanism** and takes the criteria from configuration:
+Two modes are configured per product ([D37]):
 
-    QUALIFICATION_REQUIRED_FIELDS   which extracted fields must be present
+    required_fields   which extracted fields must be present (legacy checklist)
+    ai_judgement      no fixed checklist; the model records a judgement fact and the
+                      interest / demo-intent signals, and this module maps them
 
-With that list empty — the default — `evaluate` never returns QUALIFIED. That is the
-correct behaviour for an undecided rule: the machinery is complete and inert, and no
-lead is qualified by accident. Supplying the fields turns it on without a code change.
+With `required_fields` mode and an empty field list — the default — `evaluate` never
+returns QUALIFIED. That keeps an undecided product inert. `ai_judgement` is an explicit
+configuration that turns qualification on without inventing a field checklist.
 
-§10's initial rule *concept* names three conditions: genuine interest, required
-information collected, and demo intent or acceptance. The first and third are
-judgements the extraction reports; the second is the configured field list. All three
-are required here, so switching the rule on is one configuration change rather than a
-new implementation.
+Conceptual judgements the model may record (`qualification_judgement`) map onto the
+existing §10 lead statuses — the platform does not add parallel status values:
+
+    QUALIFIED            → QUALIFIED (via QUALIFYING when required by the table)
+    NEEDS_MORE_CONTEXT   → QUALIFYING / INTERESTED
+    NOT_QUALIFIED        → NOT_INTERESTED
+
+Qualification never blocks booking: `book_demo` does not read these rules.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from app.domain.conversation import can_transition_lead
@@ -35,25 +38,41 @@ from app.domain.enums import LeadStatus
 FIELD_INTERESTED = "interested"
 FIELD_DEMO_INTENT = "demo_intent"
 FIELD_NOT_INTERESTED = "not_interested"
+FIELD_JUDGEMENT = "qualification_judgement"
+
+JUDGEMENT_QUALIFIED = "QUALIFIED"
+JUDGEMENT_NEEDS_MORE_CONTEXT = "NEEDS_MORE_CONTEXT"
+JUDGEMENT_NOT_QUALIFIED = "NOT_QUALIFIED"
+
+
+class QualificationMode(StrEnum):
+    """How a product decides QUALIFYING → QUALIFIED ([D37])."""
+
+    REQUIRED_FIELDS = "required_fields"
+    AI_JUDGEMENT = "ai_judgement"
 
 
 @dataclass(frozen=True, slots=True)
 class QualificationRules:
-    """The configured criteria ([D37] pending).
+    """The configured criteria ([D37]).
 
-    `required_fields` is empty by default, which makes qualification impossible on
-    purpose — see the module docstring.
+    In `required_fields` mode, an empty `required_fields` set makes qualification
+    impossible on purpose. In `ai_judgement` mode the checklist is unused: interest,
+    demo intent and an optional judgement fact drive the outcome.
     """
 
     required_fields: frozenset[str] = frozenset()
+    mode: QualificationMode = QualificationMode.REQUIRED_FIELDS
 
     @property
     def is_configured(self) -> bool:
-        """Whether the client's criteria have been supplied.
+        """Whether criteria exist that can produce QUALIFIED.
 
         Callers use this to explain why a lead is not qualifying, rather than
         reporting a rule failure that is really a missing decision.
         """
+        if self.mode is QualificationMode.AI_JUDGEMENT:
+            return True
         return bool(self.required_fields)
 
 
@@ -75,10 +94,23 @@ class QualificationResult:
         return self.status is not None
 
 
-def rules_from_settings(required_fields: list[str]) -> QualificationRules:
+def rules_from_settings(
+    required_fields: list[str],
+    mode: str | QualificationMode | None = None,
+) -> QualificationRules:
     """Build the rules from configuration."""
+    resolved_mode = QualificationMode.REQUIRED_FIELDS
+    if mode is not None and str(mode).strip():
+        try:
+            resolved_mode = QualificationMode(str(mode).strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown qualification mode {mode!r}; use {[m.value for m in QualificationMode]}"
+            ) from exc
+
     return QualificationRules(
-        required_fields=frozenset(field.strip() for field in required_fields if field.strip())
+        required_fields=frozenset(field.strip() for field in required_fields if field.strip()),
+        mode=resolved_mode,
     )
 
 
@@ -88,7 +120,11 @@ def missing_required_fields(data: dict[str, Any], rules: QualificationRules) -> 
     A field counts as present only when it holds a meaningful value: the model
     frequently emits `null` or `""` for something it did not learn, and treating that
     as collected would qualify a lead on absent information.
+
+    AI-judgement mode has no checklist, so nothing is missing by this rule.
     """
+    if rules.mode is QualificationMode.AI_JUDGEMENT:
+        return frozenset()
     return frozenset(field for field in rules.required_fields if not _has_value(data.get(field)))
 
 
@@ -112,13 +148,16 @@ def evaluate(
 
     # An explicit "no" is the strongest signal in the conversation and outranks
     # everything else the extraction reports.
-    if _is_true(data.get(FIELD_NOT_INTERESTED)):
+    if _is_true(data.get(FIELD_NOT_INTERESTED)) or _judgement(data) == JUDGEMENT_NOT_QUALIFIED:
         if can_transition_lead(current, LeadStatus.NOT_INTERESTED):
             return QualificationResult(
                 status=LeadStatus.NOT_INTERESTED,
-                reasons=("the customer said they are not interested",),
+                reasons=("the customer is not a fit or said they are not interested",),
             )
         return QualificationResult(status=None, reasons=("already past NOT_INTERESTED",))
+
+    if rules.mode is QualificationMode.AI_JUDGEMENT:
+        return _evaluate_ai_judgement(current=current, data=data)
 
     missing = missing_required_fields(data, rules)
 
@@ -171,6 +210,61 @@ def evaluate(
     return QualificationResult(status=None, missing_fields=missing, reasons=tuple(reasons))
 
 
+def _evaluate_ai_judgement(*, current: LeadStatus, data: dict[str, Any]) -> QualificationResult:
+    """Map AI-extracted judgement / interest signals onto §10 statuses.
+
+    A direct demo request (`demo_intent`) with interest is enough to qualify — booking
+    must not wait on a rigid field checklist. An explicit QUALIFIED judgement does the
+    same. Unclear intent stays in QUALIFYING / INTERESTED rather than being forced out.
+    """
+    judgement = _judgement(data)
+    qualifies = judgement == JUDGEMENT_QUALIFIED or (
+        _is_true(data.get(FIELD_INTERESTED)) and _is_true(data.get(FIELD_DEMO_INTENT))
+    )
+
+    if qualifies and can_transition_lead(current, LeadStatus.QUALIFIED):
+        return QualificationResult(
+            status=LeadStatus.QUALIFIED,
+            reasons=("AI judgement mode: meaningful interest and demo intent",),
+        )
+    if qualifies and can_transition_lead(current, LeadStatus.QUALIFYING):
+        return QualificationResult(
+            status=LeadStatus.QUALIFYING,
+            reasons=("criteria met, but the lead must pass through QUALIFYING first",),
+        )
+
+    needs_context = judgement == JUDGEMENT_NEEDS_MORE_CONTEXT or _is_true(
+        data.get(FIELD_INTERESTED)
+    )
+    if needs_context and can_transition_lead(current, LeadStatus.QUALIFYING):
+        return QualificationResult(
+            status=LeadStatus.QUALIFYING,
+            reasons=(
+                "AI judgement mode: more context needed, or interest without demo intent",
+            ),
+        )
+    if needs_context and can_transition_lead(current, LeadStatus.INTERESTED):
+        return QualificationResult(
+            status=LeadStatus.INTERESTED,
+            reasons=("AI judgement mode: the customer expressed interest",),
+        )
+
+    return QualificationResult(
+        status=None,
+        reasons=("AI judgement mode: no status change from the extracted facts",),
+    )
+
+
+def _judgement(data: dict[str, Any]) -> str | None:
+    raw = data.get(FIELD_JUDGEMENT)
+    if raw is None:
+        return None
+    text = str(raw).strip().upper().replace(" ", "_")
+    if text in {JUDGEMENT_QUALIFIED, JUDGEMENT_NEEDS_MORE_CONTEXT, JUDGEMENT_NOT_QUALIFIED}:
+        return text
+    return None
+
+
 def _has_value(value: Any) -> bool:
     if value is None:
         return False
@@ -198,7 +292,12 @@ def _is_true(value: Any) -> bool:
 __all__ = [
     "FIELD_DEMO_INTENT",
     "FIELD_INTERESTED",
+    "FIELD_JUDGEMENT",
     "FIELD_NOT_INTERESTED",
+    "JUDGEMENT_NEEDS_MORE_CONTEXT",
+    "JUDGEMENT_NOT_QUALIFIED",
+    "JUDGEMENT_QUALIFIED",
+    "QualificationMode",
     "QualificationResult",
     "QualificationRules",
     "evaluate",

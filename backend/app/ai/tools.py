@@ -25,7 +25,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +34,15 @@ from app.core.logging import get_logger
 from app.domain import qualification
 from app.domain.conversation import can_transition_lead
 from app.domain.enums import BookingStatus, LeadStatus
-from app.domain.slots import SlotPolicy, available_slots, is_slot_available
+from app.domain.slots import (
+    DEFAULT_SLOT_SEARCH_DAYS,
+    MAX_SLOT_SEARCH_DAYS,
+    SlotPolicy,
+    SlotPolicyError,
+    available_slots,
+    earliest_bookable_date,
+    is_slot_available,
+)
 from app.integrations.calendar import (
     CalendarProvider,
     EventRequest,
@@ -144,8 +152,11 @@ def tool_specs() -> tuple[ToolSpec, ...]:
                         "type": "object",
                         "description": (
                             "Structured facts extracted from the conversation, such as "
-                            "interested, demo_intent, not_interested, team_size, budget "
-                            "or use_case."
+                            "interested, demo_intent, not_interested, "
+                            "qualification_judgement "
+                            "(QUALIFIED | NEEDS_MORE_CONTEXT | NOT_QUALIFIED), "
+                            "team_size, budget or use_case. You cannot set lead status — "
+                            "record facts only."
                         ),
                         "additionalProperties": True,
                     },
@@ -171,7 +182,9 @@ def tool_specs() -> tuple[ToolSpec, ...]:
             name=AuthorizedTool.GET_AVAILABLE_SLOTS,
             description=(
                 "Get demo times that are actually free. Only offer times this returns. "
-                "Never invent a time or promise one you have not checked."
+                "Never invent a time or promise one you have not checked. "
+                "When the customer names a later date, pass from_date (YYYY-MM-DD) so the "
+                "search window covers it — do not invent availability outside this result."
             ),
             parameters={
                 "type": "object",
@@ -179,7 +192,21 @@ def tool_specs() -> tuple[ToolSpec, ...]:
                     "limit": {
                         "type": "integer",
                         "description": f"How many slots to return, at most {MAX_OFFERED_SLOTS}.",
-                    }
+                    },
+                    "from_date": {
+                        "type": "string",
+                        "description": (
+                            "Optional local calendar date (YYYY-MM-DD) to start searching. "
+                            "Earlier than the product's minimum lead is clamped forward."
+                        ),
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": (
+                            "Optional number of calendar days to search from from_date "
+                            f"(default {DEFAULT_SLOT_SEARCH_DAYS}, max {MAX_SLOT_SEARCH_DAYS})."
+                        ),
+                    },
                 },
                 "required": [],
             },
@@ -330,29 +357,52 @@ async def _get_available_slots(arguments: dict[str, Any], context: ToolContext) 
     The busy intervals come from the calendar provider, so the slots reflect the sales
     team's actual diary rather than a guess. §12's sequence starts here: retrieve real
     slots, then show those slots, and never invent one.
+
+    The search window is always finite — even when the product horizon is unbounded —
+    so this never tries to materialise an infinite list of slots.
     """
     policy, calendar = _booking_capability(context)
     limit = _positive_int(
         arguments.get("limit"), default=MAX_OFFERED_SLOTS, maximum=MAX_OFFERED_SLOTS
     )
     now = context.now or datetime.now(UTC)
-    horizon = TimeInterval(start=now, end=now + _days(policy.horizon_days))
+    search_from = _optional_date(arguments.get("from_date"))
+    search_days = None
+    if arguments.get("days") is not None:
+        search_days = _positive_int(
+            arguments.get("days"),
+            default=DEFAULT_SLOT_SEARCH_DAYS,
+            maximum=MAX_SLOT_SEARCH_DAYS,
+        )
 
     try:
-        busy = await calendar.list_busy_intervals(horizon)
+        window = _availability_window(
+            policy, now=now, search_from=search_from, search_days=search_days
+        )
+        busy = await calendar.list_busy_intervals(window)
+        slots = available_slots(
+            policy=policy,
+            busy=busy,
+            now=now,
+            limit=limit,
+            search_from=search_from,
+            search_days=search_days,
+        )
+    except SlotPolicyError as exc:
+        raise ToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - any calendar failure is the same to the model
         # Reported as a tool failure rather than raised: the model can say it will
         # follow up, which is better than the whole turn failing.
         logger.warning("ai_slot_lookup_failed", error=str(exc))
         raise ToolError("Could not check the calendar just now") from exc
 
-    slots = available_slots(policy=policy, busy=busy, now=now, limit=limit)
-
     return ToolResult(
         ok=True,
         data={
             "timezone": policy.timezone,
             "duration_minutes": policy.duration_minutes,
+            "earliest_bookable_date": earliest_bookable_date(policy, now).isoformat(),
+            "horizon_unbounded": policy.is_horizon_unbounded,
             "slots": [
                 {
                     "start_time": slot.start.isoformat(),
@@ -406,9 +456,14 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
             },
         )
 
-    horizon = TimeInterval(start=now, end=now + _days(policy.horizon_days))
+    # Cover the candidate slot itself. An unbounded product horizon must not force a
+    # multi-year busy fetch just to book one hour.
+    busy_window = TimeInterval(
+        start=min(now, slot.start) - _minutes(policy.buffer_minutes),
+        end=max(now, slot.end) + _minutes(policy.buffer_minutes) + _days(1),
+    )
     try:
-        busy = await calendar.list_busy_intervals(horizon)
+        busy = await calendar.list_busy_intervals(busy_window)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ai_booking_precheck_failed", error=str(exc))
         raise ToolError("Could not confirm the calendar just now") from exc
@@ -547,6 +602,50 @@ def _booking_description(lead: Any) -> str:
     if lead.designation:
         parts.append(f"Role: {lead.designation}")
     return "\n".join(parts)
+
+
+def _availability_window(
+    policy: SlotPolicy,
+    *,
+    now: datetime,
+    search_from: date | None,
+    search_days: int | None,
+) -> TimeInterval:
+    """Finite busy-fetch window for listing slots — never infinite, even if horizon is."""
+    local_now = now.astimezone(policy.zone)
+    start_day = search_from or earliest_bookable_date(policy, now)
+    earliest = earliest_bookable_date(policy, now)
+    if start_day < earliest:
+        start_day = earliest
+    days = (
+        search_days
+        if search_days is not None
+        else (
+            max(1, (policy.horizon_days or DEFAULT_SLOT_SEARCH_DAYS) - policy.min_lead_days)
+            if policy.horizon_days is not None
+            else DEFAULT_SLOT_SEARCH_DAYS
+        )
+    )
+    if days > MAX_SLOT_SEARCH_DAYS:
+        days = MAX_SLOT_SEARCH_DAYS
+    start = datetime.combine(start_day, policy.working_start, tzinfo=policy.zone).astimezone(UTC)
+    end = datetime.combine(
+        start_day + timedelta(days=days), policy.working_end, tzinfo=policy.zone
+    ).astimezone(UTC)
+    if start < local_now.astimezone(UTC):
+        start = now
+    return TimeInterval(start=start, end=end)
+
+
+def _optional_date(value: Any) -> date | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ToolError("from_date must be a YYYY-MM-DD string")
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise ToolError("from_date must be a YYYY-MM-DD string") from exc
 
 
 def _parse_start_time(value: Any) -> datetime:

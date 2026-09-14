@@ -54,6 +54,7 @@ from app.domain.enums import (
     RecipientStatus,
     TemplateCategory,
 )
+from app.domain.qualification import QualificationMode
 from app.persistence.models import (
     AIConfiguration,
     Audience,
@@ -360,6 +361,7 @@ class TestTheConversationPolicyIsUnchanged:
         assert run_db(resolve) == ResolvedAIConfig(
             system_prompt=FORMER_DEFAULT_SYSTEM_PROMPT,
             qualification_required_fields=(),
+            qualification_mode=QualificationMode.REQUIRED_FIELDS,
             model=settings.openrouter_model,
             rag_top_k=settings.rag_top_k,
             rag_min_similarity=settings.rag_min_similarity,

@@ -31,6 +31,7 @@ from app.domain.readiness import (
 class AIRow:
     system_prompt: str | None = None
     qualification_required_fields: list[Any] | None = None
+    qualification_mode: str | None = None
     model: str | None = None
     rag_top_k: int | None = None
     rag_min_similarity: float | None = None
@@ -48,6 +49,7 @@ class SlotOverrides:
     demo_working_hours_start: str | None = None
     demo_working_hours_end: str | None = None
     demo_booking_horizon_days: int | None = None
+    demo_min_lead_days: int | None = None
     demo_timezone: str | None = None
 
 
@@ -185,6 +187,20 @@ class TestAIPolicy:
 
         assert report.verdict is Verdict.READY_WITH_GAPS
         assert gaps(report) == {"ai.qualification_criteria_missing"}
+
+    def test_ai_judgement_with_empty_fields_is_not_a_gap(self) -> None:
+        report = judge(
+            configured(
+                product_ai=AIRow(
+                    system_prompt="p",
+                    qualification_mode="ai_judgement",
+                    qualification_required_fields=[],
+                )
+            )
+        )
+
+        assert report.verdict is Verdict.READY
+        assert "ai.qualification_criteria_missing" not in gaps(report)
 
 
 class TestAudienceSchema:

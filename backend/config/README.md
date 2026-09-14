@@ -16,26 +16,28 @@ None of these calls Meta, Google or HubSpot, and none sends a message.
 
 ## What the shipped catalog contains
 
-Only what the product owner confirmed on 2026-09-12: the three product identities and the
-initial segments. **No** phone number IDs, business account IDs, calendar IDs, prompts,
-qualification criteria, spreadsheet formats or templates. A test fails if any appear without
-being added deliberately.
+Three product identities and the initial segments (confirmed 2026-09-12). Academicae also
+holds the production values confirmed for first launch (2026-09-14): WhatsApp number and
+WABA IDs, Google Calendar ID, school-audience column mapping, slot policy, and AI
+configuration (`prompts/academicae.md`, `qualification_mode: ai_judgement`). SustainX and
+Life Herba still have identity and segments only — a test fails if either invents provider
+IDs, prompts or schemas.
 
-| Product | Slug | Segments |
-|---|---|---|
-| Academicae | `academicae` (fixed ID `00000000-0000-4000-8000-000000000001`) | none |
-| SustainX | `sustainx` | `government`, `industry` |
-| Life Herba | `life-herba` | `healthcare-professionals`, `wellness-centers`, `pharmacies`, `consumers` |
+| Product | Slug | Segments | Launch config in catalog |
+|---|---|---|---|
+| Academicae | `academicae` (fixed ID `00000000-0000-4000-8000-000000000001`) | none | yes — inactive until readiness + explicit activation |
+| SustainX | `sustainx` | `government`, `industry` | no |
+| Life Herba | `life-herba` | `healthcare-professionals`, `wellness-centers`, `pharmacies`, `consumers` | no |
 
 Slugs are permanent route identifiers (`/p/<slug>`). They are data: nothing in the code
 branches on them.
 
 **No product is active until it is ready and approved** (product owner, 2026-09-12). The
-migration seeds Academicae active, so deactivate it first in each environment
-(`deactivate-product academicae`). Activate a product only after its real WhatsApp,
-calendar, audience schema, AI configuration, templates and READY knowledge are in place,
-`product-readiness` passes, and activation is explicitly approved. `--accept-gaps` is not a
-way around missing templates or knowledge.
+Phase-17 migration originally seeded Academicae active; revision `a1b2c3d4e5f6` sets that
+row inactive by fixed ID, and `configure-products` never flips `is_active`. Activate a
+product only after its real WhatsApp, calendar, audience schema, AI configuration,
+templates and READY knowledge are in place, `product-readiness` passes, and activation is
+explicitly approved. `--accept-gaps` is not a way around missing templates or knowledge.
 
 ## Rules
 
@@ -62,8 +64,8 @@ way around missing templates or knowledge.
 | `whatsapp_business_account_id` | the WABA; may be shared by every product |
 | `google_calendar_id` | the product's own calendar; unique per product |
 | `google_calendar_token_secret_name` | only for a calendar in a different Google account |
-| `demo_duration_minutes`, `demo_buffer_minutes`, `demo_working_days`, `demo_working_hours_start`, `demo_working_hours_end`, `demo_booking_horizon_days`, `demo_timezone` | slot-policy overrides; omit to inherit the platform value |
-| `ai_configuration` | the product default: `system_prompt` (or `system_prompt_file`, relative to this file), `qualification_required_fields`, `fallback_message`, and optional operational overrides `model`, `rag_top_k`, `rag_min_similarity`, `rag_max_context_chars`, `history_turns`, `max_tool_rounds` |
+| `demo_duration_minutes`, `demo_buffer_minutes`, `demo_working_days`, `demo_working_hours_start`, `demo_working_hours_end`, `demo_booking_horizon_days`, `demo_min_lead_days`, `demo_timezone` | slot-policy overrides; omit to inherit the platform value. `demo_booking_horizon_days` may be `"unbounded"` (stored as `-1`); `null` still clears/inherits. `demo_min_lead_days` is 0 = today still offerable, 1 = earliest tomorrow |
+| `ai_configuration` | the product default: `system_prompt` (or `system_prompt_file`, relative to this file), `qualification_mode` (`required_fields` or `ai_judgement`), `qualification_required_fields`, `fallback_message`, and optional operational overrides `model`, `rag_top_k`, `rag_min_similarity`, `rag_max_context_chars`, `history_turns`, `max_tool_rounds` |
 | `segment_ai_overrides` | `{segment_slug: {...only the fields that differ...}}`; `null` removes an override |
 
 SustainX has one product-level `ai_configuration` and no `segment_ai_overrides`. Life Herba

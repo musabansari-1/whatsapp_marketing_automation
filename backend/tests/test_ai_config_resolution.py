@@ -25,6 +25,7 @@ from app.domain.ai_config import (
     PlatformDefaults,
     resolve,
 )
+from app.domain.qualification import QualificationMode
 
 
 @dataclass
@@ -33,6 +34,7 @@ class Row:
 
     system_prompt: str | None = None
     qualification_required_fields: list[Any] | None = None
+    qualification_mode: str | None = None
     model: str | None = None
     rag_top_k: int | None = None
     rag_min_similarity: float | None = None
@@ -124,6 +126,28 @@ class TestNullVersusEmpty:
         """The fail-safe direction: nobody qualifies on criteria nobody chose."""
         resolved = resolve(segment=None, product=Row(system_prompt="p"), defaults=DEFAULTS)
         assert resolved.qualification_required_fields == ()
+        assert resolved.qualification_mode is QualificationMode.REQUIRED_FIELDS
+
+    def test_ai_judgement_mode_resolves(self) -> None:
+        resolved = resolve(
+            segment=None,
+            product=Row(
+                system_prompt="p",
+                qualification_mode="ai_judgement",
+                qualification_required_fields=[],
+            ),
+            defaults=DEFAULTS,
+        )
+        assert resolved.qualification_mode is QualificationMode.AI_JUDGEMENT
+        assert resolved.qualification_required_fields == ()
+
+    def test_segment_mode_wins_over_the_product(self) -> None:
+        resolved = resolve(
+            segment=Row(qualification_mode="ai_judgement"),
+            product=Row(system_prompt="p", qualification_mode="required_fields"),
+            defaults=DEFAULTS,
+        )
+        assert resolved.qualification_mode is QualificationMode.AI_JUDGEMENT
 
 
 class TestProductShapes:

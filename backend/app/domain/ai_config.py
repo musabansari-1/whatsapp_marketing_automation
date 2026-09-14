@@ -36,6 +36,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
+from app.domain.qualification import QualificationMode
+
 T = TypeVar("T")
 
 
@@ -48,6 +50,7 @@ class ConfigurationRow(Protocol):
 
     system_prompt: str | None
     qualification_required_fields: list[Any] | None
+    qualification_mode: str | None
     model: str | None
     rag_top_k: int | None
     rag_min_similarity: float | None
@@ -81,6 +84,7 @@ class ResolvedAIConfig:
 
     system_prompt: str
     qualification_required_fields: tuple[str, ...]
+    qualification_mode: QualificationMode
     model: str | None
     rag_top_k: int
     rag_min_similarity: float
@@ -140,19 +144,36 @@ def resolve(
         raise AIConfigurationError("No fallback message is configured anywhere.")
 
     # NULL inherits; `[]` is a deliberate "no criteria", under which [D37] means nothing
-    # can qualify. `_first` distinguishes them where `or` would not.
+    # can qualify in required_fields mode. `_first` distinguishes them where `or` would not.
     #
     # Unset everywhere resolves to **no criteria** rather than raising, and that is the
     # fail-safe direction. The harm here is qualifying a lead on criteria nobody chose for
     # their product; declining to qualify anyone is merely inert. Readiness reports it.
+    # `ai_judgement` mode does not use the checklist — readiness treats that mode as
+    # configured even when the list is empty.
     criteria = _first(
         segment.qualification_required_fields if segment else None,
         product.qualification_required_fields if product else None,
     )
+    mode_raw = _first(
+        segment.qualification_mode if segment else None,
+        product.qualification_mode if product else None,
+    )
+    try:
+        qualification_mode = (
+            QualificationMode(mode_raw)
+            if mode_raw is not None
+            else QualificationMode.REQUIRED_FIELDS
+        )
+    except ValueError as exc:
+        raise AIConfigurationError(
+            f"Unknown qualification mode {mode_raw!r}; use {[m.value for m in QualificationMode]}"
+        ) from exc
 
     resolved = ResolvedAIConfig(
         system_prompt=system_prompt,
         qualification_required_fields=tuple(str(field) for field in (criteria or [])),
+        qualification_mode=qualification_mode,
         model=_first(
             segment.model if segment else None,
             product.model if product else None,

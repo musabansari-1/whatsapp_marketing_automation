@@ -10,7 +10,9 @@ tools are useless without it and §9 places both in the AI's authorized set. Pha
 still owns the Google integration, the notification fan-out and the booking record.
 
 Every value here comes from configuration ([D8]): duration, buffer, working days and
-hours, horizon and timezone. None of them is a literal in this file.
+hours, horizon, minimum lead time and timezone. None of them is a literal used as a
+product policy — defaults below are only for bounded *search windows* when the horizon
+itself is unbounded.
 
 Two rules matter more than they look:
 
@@ -20,6 +22,10 @@ Two rules matter more than they look:
 - **Everything is computed in the sales team's timezone, then returned as UTC-aware
   instants.** "10:00 to 18:00" is a local statement, and a customer in another timezone
   must still be offered the same working hours.
+
+`horizon_days=None` means there is no artificial latest bookable day. Slot listing still
+walks a finite search window so it never tries to materialise an infinite calendar.
+`min_lead_days` is how soon the earliest offerable day may be (0 = today, 1 = tomorrow).
 """
 
 from __future__ import annotations
@@ -34,6 +40,15 @@ from app.integrations.calendar import TimeInterval
 # Weekday names as configuration uses them, in `date.weekday()` order.
 WEEKDAY_NAMES = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 
+# Stored on `products.demo_booking_horizon_days` when the catalog sets `"unbounded"`.
+# NULL on that column still means "inherit the platform horizon".
+UNBOUNDED_BOOKING_HORIZON = -1
+
+# When the policy horizon is unbounded, listing still needs a finite window. Callers may
+# pass a wider `search_days`; this is only the default for "show me some times".
+DEFAULT_SLOT_SEARCH_DAYS = 14
+MAX_SLOT_SEARCH_DAYS = 60
+
 
 class SlotPolicyError(ValueError):
     """The configured slot policy cannot be interpreted."""
@@ -45,6 +60,8 @@ class SlotPolicy:
 
     Constructed from `Settings` by `policy_from_settings`, so the values live in
     configuration and nothing downstream carries a literal.
+
+    `horizon_days` is `None` when the product has no artificial latest bookable day.
     """
 
     duration_minutes: int
@@ -52,16 +69,24 @@ class SlotPolicy:
     working_days: frozenset[int]
     working_start: time
     working_end: time
-    horizon_days: int
+    horizon_days: int | None
     timezone: str
+    min_lead_days: int = 0
 
     def __post_init__(self) -> None:
         if self.duration_minutes <= 0:
             raise SlotPolicyError("Demo duration must be positive")
         if self.buffer_minutes < 0:
             raise SlotPolicyError("Demo buffer cannot be negative")
-        if self.horizon_days <= 0:
-            raise SlotPolicyError("Booking horizon must be at least one day")
+        if self.min_lead_days < 0:
+            raise SlotPolicyError("Minimum lead days cannot be negative")
+        if self.horizon_days is not None and self.horizon_days <= 0:
+            raise SlotPolicyError("Booking horizon must be at least one day, or unbounded")
+        if self.horizon_days is not None and self.min_lead_days >= self.horizon_days:
+            raise SlotPolicyError(
+                "Minimum lead days must be less than the booking horizon "
+                f"({self.min_lead_days} >= {self.horizon_days})"
+            )
         if not self.working_days:
             raise SlotPolicyError("At least one working day is required")
         if self.working_end <= self.working_start:
@@ -79,6 +104,10 @@ class SlotPolicy:
             return ZoneInfo(self.timezone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise SlotPolicyError(f"Unknown timezone {self.timezone!r}") from exc
+
+    @property
+    def is_horizon_unbounded(self) -> bool:
+        return self.horizon_days is None
 
 
 def parse_working_days(values: list[str]) -> frozenset[int]:
@@ -103,21 +132,33 @@ def parse_clock_time(value: str) -> time:
         raise SlotPolicyError(f"Working hours must look like HH:MM, got {value!r}") from exc
 
 
+def earliest_bookable_date(policy: SlotPolicy, now: datetime | None = None) -> date:
+    """The first local calendar day that may hold an offerable slot."""
+    moment = (now or datetime.now(UTC)).astimezone(policy.zone)
+    return moment.date() + timedelta(days=policy.min_lead_days)
+
+
 def available_slots(
     *,
     policy: SlotPolicy,
     busy: list[TimeInterval],
     now: datetime | None = None,
     limit: int | None = None,
+    search_from: date | None = None,
+    search_days: int | None = None,
 ) -> list[TimeInterval]:
     """Slots that may be offered, earliest first.
 
     A slot is offerable when it falls on a working day, sits inside working hours,
-    starts in the future, and does not collide with a busy interval once the buffer is
-    applied to both.
+    starts in the future, respects min lead and horizon, and does not collide with a
+    busy interval once the buffer is applied to both.
 
     `limit` caps the result because these are read out to a customer over WhatsApp;
     offering forty slots is not a choice, it is a wall of text.
+
+    `search_from` / `search_days` bound the walk when the policy horizon is unbounded
+    (or when the caller wants a specific window). They never relax min lead or a finite
+    horizon — a request for "today" still fails when min lead is tomorrow.
     """
     moment = (now or datetime.now(UTC)).astimezone(policy.zone)
     padded = [_pad(interval, policy.buffer_minutes) for interval in busy]
@@ -127,9 +168,19 @@ def available_slots(
     # 10:00, 10:05, 10:10 — technically free, useless to choose between.
     step = duration
 
+    first_day = earliest_bookable_date(policy, moment)
+    start_day = search_from or first_day
+    if start_day < first_day:
+        start_day = first_day
+
+    window = _resolve_search_days(policy, search_days)
+    last_allowed = _last_bookable_date(policy, moment.date())
+
     slots: list[TimeInterval] = []
-    for day_offset in range(policy.horizon_days):
-        day = (moment + timedelta(days=day_offset)).date()
+    for day_offset in range(window):
+        day = start_day + timedelta(days=day_offset)
+        if last_allowed is not None and day > last_allowed:
+            break
         if day.weekday() not in policy.working_days:
             continue
 
@@ -181,7 +232,11 @@ def is_slot_available(
     if local_start.date() != local_end.date():
         # A slot spanning midnight cannot sit inside one working day.
         return False
-    if (local_start.date() - moment.date()).days >= policy.horizon_days:
+
+    lead = (local_start.date() - moment.date()).days
+    if lead < policy.min_lead_days:
+        return False
+    if policy.horizon_days is not None and lead >= policy.horizon_days:
         return False
 
     padded = [_pad(interval, policy.buffer_minutes) for interval in busy]
@@ -189,6 +244,25 @@ def is_slot_available(
 
 
 # ---------------------------------------------------------------- internals
+
+
+def _resolve_search_days(policy: SlotPolicy, search_days: int | None) -> int:
+    if search_days is not None:
+        if search_days < 1:
+            raise SlotPolicyError("search_days must be at least 1")
+        if search_days > MAX_SLOT_SEARCH_DAYS:
+            raise SlotPolicyError(f"search_days cannot exceed {MAX_SLOT_SEARCH_DAYS}")
+        return search_days
+    if policy.horizon_days is not None:
+        # Keep offering from the earliest bookable day through the last horizon day.
+        return max(1, policy.horizon_days - policy.min_lead_days)
+    return DEFAULT_SLOT_SEARCH_DAYS
+
+
+def _last_bookable_date(policy: SlotPolicy, today: date) -> date | None:
+    if policy.horizon_days is None:
+        return None
+    return today + timedelta(days=policy.horizon_days - 1)
 
 
 def _day_candidates(
@@ -223,12 +297,28 @@ def _minutes_between(start: time, end: time) -> int:
     return (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
 
 
+def _normalize_horizon(value: int) -> int | None:
+    """Map a stored horizon override onto SlotPolicy.horizon_days."""
+    if value == UNBOUNDED_BOOKING_HORIZON:
+        return None
+    if value < 1:
+        raise SlotPolicyError(
+            f"Booking horizon must be at least one day or {UNBOUNDED_BOOKING_HORIZON} "
+            f"(unbounded); got {value}"
+        )
+    return value
+
+
 __all__ = [
+    "DEFAULT_SLOT_SEARCH_DAYS",
+    "MAX_SLOT_SEARCH_DAYS",
+    "UNBOUNDED_BOOKING_HORIZON",
     "WEEKDAY_NAMES",
     "SlotPolicy",
     "SlotPolicyError",
     "SlotPolicySettings",
     "available_slots",
+    "earliest_bookable_date",
     "is_slot_available",
     "parse_clock_time",
     "parse_working_days",
@@ -252,6 +342,7 @@ class SlotPolicySettings(Protocol):
     demo_working_hours_start: str
     demo_working_hours_end: str
     demo_booking_horizon_days: int
+    demo_min_lead_days: int
     demo_timezone: str
 
 
@@ -261,6 +352,9 @@ class SlotPolicyOverrides(Protocol):
     Read-only properties rather than attributes, so an ORM row satisfies it directly.
     Every value `None` means inherit — a product whose hours match the platform's states
     nothing.
+
+    `demo_booking_horizon_days` may be `UNBOUNDED_BOOKING_HORIZON` (-1) to mean no
+    artificial latest day; that is distinct from NULL, which inherits the platform.
     """
 
     @property
@@ -275,6 +369,8 @@ class SlotPolicyOverrides(Protocol):
     def demo_working_hours_end(self) -> str | None: ...
     @property
     def demo_booking_horizon_days(self) -> int | None: ...
+    @property
+    def demo_min_lead_days(self) -> int | None: ...
     @property
     def demo_timezone(self) -> str | None: ...
 
@@ -308,6 +404,11 @@ def resolve_slot_policy(
         # at a time and fail confusingly.
         raise SlotPolicyError("Working days must be a list such as ['MON', 'TUE']")
 
+    raw_horizon = _inherit(
+        overrides.demo_booking_horizon_days if overrides else None,
+        settings.demo_booking_horizon_days,
+    )
+
     policy = SlotPolicy(
         duration_minutes=_inherit(
             overrides.demo_duration_minutes if overrides else None,
@@ -329,9 +430,10 @@ def resolve_slot_policy(
                 settings.demo_working_hours_end,
             )
         ),
-        horizon_days=_inherit(
-            overrides.demo_booking_horizon_days if overrides else None,
-            settings.demo_booking_horizon_days,
+        horizon_days=_normalize_horizon(raw_horizon),
+        min_lead_days=_inherit(
+            overrides.demo_min_lead_days if overrides else None,
+            settings.demo_min_lead_days,
         ),
         timezone=_inherit(overrides.demo_timezone if overrides else None, settings.demo_timezone),
     )

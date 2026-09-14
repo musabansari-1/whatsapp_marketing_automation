@@ -918,3 +918,81 @@ class TestPhase27AudienceSchemas:
         _alembic(scratch_database, PHASE_26, direction="down")
         assert _rows(scratch_database, AUDIENCE_SCHEMA_COLUMN_SQL) == []
         _alembic(scratch_database, PHASE_27, direction="up")
+
+
+# ---------------------------------------------------------------- Academicae launch safety
+
+ACADEMICAE_LAUNCH = "a1b2c3d4e5f6"
+
+ACADEMICAE_ACTIVE_SQL = "SELECT is_active FROM products WHERE id = CAST(:id AS uuid)"
+MIN_LEAD_COLUMN_SQL = (
+    "SELECT is_nullable FROM information_schema.columns"
+    " WHERE table_name = 'products' AND column_name = 'demo_min_lead_days'"
+)
+QUALIFICATION_MODE_COLUMN_SQL = (
+    "SELECT is_nullable FROM information_schema.columns"
+    " WHERE table_name = 'ai_configurations' AND column_name = 'qualification_mode'"
+)
+
+
+def _current_revision(url: str) -> str | None:
+    try:
+        rows = _rows(url, "SELECT version_num FROM alembic_version")
+    except Exception:  # noqa: BLE001 - empty scratch DB has no alembic_version yet
+        return None
+    return rows[0][0] if rows else None
+
+
+def _ensure_revision(url: str, revision: str) -> None:
+    """Move the scratch DB to `revision`, whether we are behind or ahead of it."""
+    current = _current_revision(url)
+    if current == revision:
+        return
+    if current is None:
+        _alembic(url, revision, direction="up")
+        return
+    try:
+        _alembic(url, revision, direction="up")
+    except Exception:  # noqa: BLE001 - destination is behind the current head
+        _alembic(url, revision, direction="down")
+
+
+class TestAcademicaeLaunchLeavesProductInactive:
+    """Migration `a1b2c3d4e5f6` turns off the Phase-17 active seed for Academicae.
+
+    Self-contained against the module scratch DB: brings the schema to Phase 27 (where
+    Academicae is still the Phase-17 active seed), then applies the launch revision.
+    After that upgrade the product must be inactive so migrate → configure-products
+    cannot go live without `activate-product`.
+    """
+
+    def test_upgrade_deactivates_academicae_by_fixed_id(self, scratch_database: str) -> None:
+        _ensure_revision(scratch_database, PHASE_27)
+        _exec(
+            scratch_database,
+            [
+                (
+                    "UPDATE products SET is_active = true WHERE id = CAST(:id AS uuid)",
+                    {"id": ACADEMICAE_ID},
+                )
+            ],
+            autocommit=False,
+        )
+        assert _scalar(scratch_database, ACADEMICAE_ACTIVE_SQL, {"id": ACADEMICAE_ID}) is True
+
+        _alembic(scratch_database, ACADEMICAE_LAUNCH, direction="up")
+
+        assert _scalar(scratch_database, MIN_LEAD_COLUMN_SQL) == "YES"
+        assert _scalar(scratch_database, QUALIFICATION_MODE_COLUMN_SQL) == "YES"
+        assert _scalar(scratch_database, ACADEMICAE_ACTIVE_SQL, {"id": ACADEMICAE_ID}) is False
+
+    def test_downgrade_does_not_reactivate_academicae(self, scratch_database: str) -> None:
+        _ensure_revision(scratch_database, ACADEMICAE_LAUNCH)
+        assert _scalar(scratch_database, ACADEMICAE_ACTIVE_SQL, {"id": ACADEMICAE_ID}) is False
+
+        _alembic(scratch_database, PHASE_27, direction="down")
+
+        assert _scalar(scratch_database, ACADEMICAE_ACTIVE_SQL, {"id": ACADEMICAE_ID}) is False
+        assert _rows(scratch_database, MIN_LEAD_COLUMN_SQL) == []
+
+        _alembic(scratch_database, ACADEMICAE_LAUNCH, direction="up")

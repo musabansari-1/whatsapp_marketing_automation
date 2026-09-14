@@ -43,6 +43,7 @@ from app.domain.audience import (
     parse_audience_schema,
 )
 from app.domain.product import SLUG_MAX_LENGTH, is_valid_slug
+from app.domain.qualification import QualificationMode
 from app.domain.slots import (
     SlotPolicyError,
     SlotPolicyOverrides,
@@ -263,12 +264,16 @@ def _ai(facts: ProductFacts, platform: PlatformInputs) -> list[Finding]:
         ]
 
     findings = []
-    if not resolved.qualification_required_fields:
+    if (
+        resolved.qualification_mode is QualificationMode.REQUIRED_FIELDS
+        and not resolved.qualification_required_fields
+    ):
         findings.append(
             _gap(
                 "ai.qualification_criteria_missing",
                 Area.AI,
-                "No qualification criteria are configured, so no lead can reach QUALIFIED ([D37]).",
+                "No qualification criteria are configured, so no lead can reach QUALIFIED ([D37]). "
+                "Set qualification_required_fields, or use qualification_mode ai_judgement.",
             )
         )
 

@@ -49,7 +49,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.audience import parse_audience_schema
 from app.domain.product import is_valid_slug
+from app.domain.qualification import QualificationMode
 from app.domain.readiness import PlatformInputs
+from app.domain.slots import UNBOUNDED_BOOKING_HORIZON
 from app.persistence.models import AIConfiguration, Product, Segment
 from app.persistence.repositories import ai_configurations as ai_config_repo
 from app.persistence.repositories import products as product_repo
@@ -68,6 +70,7 @@ PRODUCT_FIELDS: tuple[str, ...] = (
     "demo_working_hours_start",
     "demo_working_hours_end",
     "demo_booking_horizon_days",
+    "demo_min_lead_days",
     "demo_timezone",
 )
 
@@ -75,6 +78,7 @@ PRODUCT_FIELDS: tuple[str, ...] = (
 AI_FIELDS: tuple[str, ...] = (
     "system_prompt",
     "qualification_required_fields",
+    "qualification_mode",
     "model",
     "rag_top_k",
     "rag_min_similarity",
@@ -136,6 +140,7 @@ class AIConfigurationEntry(_Strict):
 
     system_prompt: str | None = None
     qualification_required_fields: list[str] | None = None
+    qualification_mode: str | None = None
     model: str | None = None
     rag_top_k: int | None = None
     rag_min_similarity: float | None = None
@@ -157,6 +162,20 @@ class AIConfigurationEntry(_Strict):
                 _text(item)
         return value
 
+    @field_validator("qualification_mode")
+    @classmethod
+    def _known_mode(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = _text(value)
+        try:
+            return QualificationMode(text).value
+        except ValueError as exc:
+            raise ValueError(
+                f"qualification_mode must be one of "
+                f"{[m.value for m in QualificationMode]}, got {value!r}"
+            ) from exc
+
 
 class ProductEntry(_Strict):
     slug: str
@@ -176,7 +195,9 @@ class ProductEntry(_Strict):
     demo_working_days: list[str] | None = None
     demo_working_hours_start: str | None = None
     demo_working_hours_end: str | None = None
+    #: Integer days, `"unbounded"` (stored as -1), or `null` to clear/inherit.
     demo_booking_horizon_days: int | None = None
+    demo_min_lead_days: int | None = None
     demo_timezone: str | None = None
 
     ai_configuration: AIConfigurationEntry | None = None
@@ -221,6 +242,23 @@ class ProductEntry(_Strict):
     def _valid_schema(cls, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         if value is not None:
             parse_audience_schema(value)
+        return value
+
+    @field_validator("demo_booking_horizon_days", mode="before")
+    @classmethod
+    def _horizon_or_unbounded(cls, value: Any) -> Any:
+        """`"unbounded"` → sentinel `-1`. NULL still clears (inherit). Absent leaves alone."""
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip().lower() == "unbounded":
+            return UNBOUNDED_BOOKING_HORIZON
+        return value
+
+    @field_validator("demo_min_lead_days")
+    @classmethod
+    def _non_negative_lead(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("demo_min_lead_days cannot be negative")
         return value
 
     @field_validator("ai_configuration", mode="before")
