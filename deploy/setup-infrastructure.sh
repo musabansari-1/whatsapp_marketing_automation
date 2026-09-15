@@ -69,6 +69,10 @@ grant() {
 log "Permissions"
 # The API enqueues work.
 grant "$API_SA" "roles/cloudtasks.enqueuer"
+# The worker enqueues too: one conversation turn per inbound message (§18), and its
+# own recovery sweep re-enqueues stranded turns (D-15). Without this the webhook
+# path dies here: the message is stored, and no reply is ever queued.
+grant "$WORKER_SA" "roles/cloudtasks.enqueuer"
 # Both read their configuration secrets.
 grant "$API_SA" "roles/secretmanager.secretAccessor"
 grant "$WORKER_SA" "roles/secretmanager.secretAccessor"
@@ -78,6 +82,12 @@ grant "$WORKER_SA" "roles/secretmanager.secretVersionAdder"
 # The invoker is what Cloud Tasks and Cloud Scheduler use to call the worker; the
 # worker verifies the resulting OIDC token.
 grant "$INVOKER_SA" "roles/run.invoker"
+# The worker's requeue path (§18, D-15) creates tasks with the invoker's identity, so
+# OIDC tokens can be minted for its sends. Acting as the invoker needs the same
+# delegation the API already has, granted on the invoker account itself.
+gcloud iam service-accounts add-iam-policy-binding "$INVOKER_SA" \
+  --member "serviceAccount:$WORKER_SA" --role "roles/iam.serviceAccountUser" \
+  --project "$PROJECT_ID" --quiet >/dev/null
 
 # ---------------------------------------------------------------- queue
 #
