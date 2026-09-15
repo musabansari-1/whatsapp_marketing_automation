@@ -1,0 +1,24 @@
+// Cloudflare Workers configuration for the Next.js frontend ([D12], [D13]).
+//
+// The frontend deploys to Cloudflare — NOT Cloud Run ([D12]) — via the
+// @opennextjs/cloudflare adapter, which transforms `next build` output into a
+// Worker. The BFF proxy (`app/api/[...path]/route.ts`) runs inside that Worker,
+// so the browser keeps a single same-origin entry point and the Cloud Run API
+// URL stays server-side ([D13]).
+//
+// INTERNAL_API_BASE_URL is a Worker *secret* (wrangler secret put), never a
+// var: like the BFF env var on Vercel, it must not reach the browser bundle.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "main": ".open-next/worker.js",
+  "name": "wa-web",
+  "compatibility_date": "2024-09-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
