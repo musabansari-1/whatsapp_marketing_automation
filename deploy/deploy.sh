@@ -145,6 +145,14 @@ gcloud run deploy "$WORKER_SERVICE" \
 
 WORKER_URL="$(gcloud run services describe "$WORKER_SERVICE" \
   --region "$REGION" --project "$PROJECT_ID" --format 'value(status.url)')"
+# Canonical form. Cloud Run serves two URL shapes — the numbered
+# SERVICE-HASH.REGION.run.app and an SERVICE-HASH-el.a.run.app alias — and
+# `status.url` can return either. The worker verifies the OIDC audience against
+# WORKER_BASE_URL character for character, so every consumer of this URL (the API's
+# WORKER_BASE_URL here, the sweeps' token audience in schedule-sweeps.sh) must agree
+# on one string. Pinning the canonical form here keeps them consistent even when the
+# alias is the one `status.url` happens to return.
+WORKER_URL="${WORKER_URL/.a.run.app/.${REGION}.run.app}"
 echo "  worker: $WORKER_URL"
 
 # ---------------------------------------------------------------- API

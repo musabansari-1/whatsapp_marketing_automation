@@ -25,6 +25,16 @@ fi
 
 TASK_ENDPOINT="${WORKER_URL}/internal/tasks"
 
+# Cloud Run services answer on two URL forms — the numbered canonical one
+# (...REGION.run.app) and an alias (...a.run.app) — and `status.url` can return
+# either. `verify_task_request` compares the OIDC audience against WORKER_BASE_URL
+# character by character, so the token must name the same string the services were
+# configured with. WORKER_BASE_URL is set to the canonical form (deploy.sh resolves
+# the URL once and strips the a.run.app alias), so the audience is pinned to that
+# same canonical form here rather than reusing whatever WORKER_URL happens to be.
+SWEEP_AUDIENCE="${SWEEP_AUDIENCE:-${WORKER_URL/a.run.app/${REGION}.run.app}}"
+
+
 schedule() {
   local name="$1" cron="$2" task_type="$3" description="$4"
 
@@ -48,7 +58,7 @@ schedule() {
     --headers "Content-Type=application/json" \
     --message-body "$body" \
     --oidc-service-account-email "$INVOKER_SA" \
-    --oidc-token-audience "$WORKER_URL" \
+    --oidc-token-audience "$SWEEP_AUDIENCE" \
     --description "$description" \
     --attempt-deadline 600s \
     --quiet
