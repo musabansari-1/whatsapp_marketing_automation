@@ -159,19 +159,49 @@ def build_llm_provider(settings: Settings) -> LLMProvider:
 
 
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
+    """[Performance] Cached on the configuration that selects it.
+
+    The provider owns the loaded SentenceTransformer, which is process state: loading
+    takes seconds, and before this cache it re-loaded inside *every* conversation turn
+    (visible in logs as a fresh `Loading SentenceTransformer model` per turn). Caching
+    the built provider loads the model once per process and hands every caller the warm
+    instance. `Settings` is unhashable (pydantic), so the key is the four fields the
+    builder actually reads; a settings change that matters produces a different key, and
+    everything else reuses the warm provider.
+    """
+    key = (
+        settings.embedding_provider.value,
+        settings.embedding_model,
+        settings.embedding_dimension,
+        settings.embedding_batch_size,
+    )
+    cached = _embedding_providers.get(key)
+    if cached is not None:
+        return cached
+
     match settings.embedding_provider:
         case EmbeddingProviderName.FAKE:
             # Dimension mirrors configuration so fake vectors stay compatible with
             # the pgvector column Phase 2 creates.
-            return FakeEmbeddingProvider(dimension=settings.embedding_dimension)
+            provider: EmbeddingProvider = FakeEmbeddingProvider(
+                dimension=settings.embedding_dimension
+            )
         case EmbeddingProviderName.LOCAL_SENTENCE_TRANSFORMER:
             # The model is loaded lazily, so building this costs nothing until
-            # something actually embeds ([D1]).
-            return LocalSentenceTransformerProvider(
+            # something actually embeds ([D1]) — and it is then held for the
+            # process lifetime, which is the point of the cache.
+            provider = LocalSentenceTransformerProvider(
                 model_name=settings.embedding_model,
                 dimension=settings.embedding_dimension,
                 batch_size=settings.embedding_batch_size,
             )
+    _embedding_providers[key] = provider
+    return provider
+
+
+# Keyed by (provider, model, dimension, batch_size); see build_embedding_provider.
+# Bounded in practice: one entry per distinct embedding configuration the process sees.
+_embedding_providers: dict[tuple[str, str, int, int], EmbeddingProvider] = {}
 
 
 class CalendarNotConfiguredError(ConfigurationError):

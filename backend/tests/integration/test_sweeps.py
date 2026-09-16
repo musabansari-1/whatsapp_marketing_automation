@@ -233,7 +233,11 @@ class TestIdempotency:
 
         run_sweep()
 
-        assert sweep_env[0].task_id == f"turn-{message_id}"
+        # The sweep deliberately does NOT reuse the webhook's "turn-{id}" name: a task
+        # Cloud Tasks has exhausted stays name-tombstoned for ~1h, so the same name would
+        # be silently ignored. The "-sweep" suffix is a genuine new task; idempotency of
+        # the turn handler makes double replies impossible.
+        assert sweep_env[0].task_id == f"turn-{message_id}-sweep"
         assert sweep_env[0].task_type is TaskType.PROCESS_CONVERSATION_TURN
 
     def test_the_sweep_and_the_handler_agree_on_the_key(self) -> None:

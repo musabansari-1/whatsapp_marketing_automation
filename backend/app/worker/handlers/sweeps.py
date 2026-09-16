@@ -87,10 +87,13 @@ async def sweep_unanswered_messages(task: TaskRequest) -> dict[str, int | str]:
             await queue.enqueue(
                 TaskRequest(
                     task_type=TaskType.PROCESS_CONVERSATION_TURN,
-                    # The same deterministic name the webhook would have used, so a task
-                    # somehow already queued collapses rather than producing a second
-                    # reply (§20).
-                    task_id=f"turn-{message_id}",
+                    # NOT the webhook's original deterministic name: when Cloud Tasks has
+                    # exhausted a task's attempts it keeps that name tombstoned for about
+                    # an hour, so re-enqueueing under the same name is silently ignored
+                    # (AlreadyExists) and the sweep reports success while repairing
+                    # nothing. A suffixed name is a genuine new task; double replies are
+                    # still impossible because the turn handler is idempotent (§20).
+                    task_id=f"turn-{message_id}-sweep",
                     payload={"message_id": str(message_id)},
                 )
             )

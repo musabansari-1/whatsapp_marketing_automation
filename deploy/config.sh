@@ -40,6 +40,17 @@ API_MIN_INSTANCES="${API_MIN_INSTANCES:-1}"
 API_MAX_INSTANCES="${API_MAX_INSTANCES:-10}"
 WORKER_MAX_INSTANCES="${WORKER_MAX_INSTANCES:-10}"
 
+# WORKER_MIN_INSTANCES defaults to 1. A worker instance starts empty and loads the
+# embedding model on first use, so a cold start is tens of seconds, while Cloud Tasks
+# retries a failed dispatch five times on a 2s→300s backoff and then *drops* the task.
+# A burst of customer messages that arrives while the worker is scaled to zero can
+# therefore 503 every dispatch of a turn before any instance is warm, stranding the
+# customer exactly once — the sweep cannot re-enqueue it either, because Cloud Tasks
+# keeps the dropped task's name reserved for an hour. One always-warm instance removes
+# the 503 path; the burst ceiling is WORKER_MAX_INSTANCES, not this floor.
+WORKER_MIN_INSTANCES="${WORKER_MIN_INSTANCES:-1}"
+
+
 # ---------------------------------------------------------------- environments
 #
 # Staging and production are separate Google Cloud **projects**, not two sets of names in
@@ -80,8 +91,14 @@ INVOKER_SA="${INVOKER_SA:-wa-invoker@${PROJECT_ID}.iam.gserviceaccount.com}"
 # the application considers permanently failed.
 
 TASKS_QUEUE="${TASKS_QUEUE:-wa-tasks}"
-QUEUE_MAX_ATTEMPTS="${QUEUE_MAX_ATTEMPTS:-5}"      # = SEND_MAX_ATTEMPTS
-QUEUE_MIN_BACKOFF="${QUEUE_MIN_BACKOFF:-2s}"        # = SEND_BACKOFF_BASE_SECONDS
+# Deliberately NOT SEND_MAX_ATTEMPTS. Cloud Tasks retries cover transport failures
+# (503 while a cold-started worker finishes loading), not message-send retries — a
+# send that fails burns the app's own retry schedule instead, so the queue budget
+# should outlast a cold start, not mirror the send budget (the original value of 5
+# dropped turns during the ~40s worker cold start; D-27's alignment goal holds for
+# SEND retry semantics, not for availability).
+QUEUE_MAX_ATTEMPTS="${QUEUE_MAX_ATTEMPTS:-10}"
+QUEUE_MIN_BACKOFF="${QUEUE_MIN_BACKOFF:-10s}"       # first retry waits out most of a cold start
 QUEUE_MAX_BACKOFF="${QUEUE_MAX_BACKOFF:-300s}"      # = SEND_BACKOFF_MAX_SECONDS
 
 # [D28]: the real global dispatch ceiling. The application's client-side pacing is

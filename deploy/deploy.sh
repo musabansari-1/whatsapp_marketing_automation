@@ -29,7 +29,15 @@ TAG="${TAG:-$(git rev-parse --short HEAD)}"
 # deliberate change rather than a default.
 WHATSAPP_PROVIDER="${WHATSAPP_PROVIDER:-fake}"
 LLM_PROVIDER="${LLM_PROVIDER:-fake}"
+# Embedding is an internal provider, not one of the six external ones above. The default
+# matches [D1]: the worker embeds in-process with the model baked into its image.
 EMBEDDING_PROVIDER="${EMBEDDING_PROVIDER:-local_sentence_transformer}"
+# Per-service split. The API image is deliberately slim — it carries no PyTorch and no
+# code path embeds in the API (retrieval and ingestion are worker work) — so it is pinned
+# to the fake below regardless of the value above. The worker honours the value above
+# unless this override says otherwise, e.g. WORKER_EMBEDDING_PROVIDER=fake for a
+# torch-free worker image.
+WORKER_EMBEDDING_PROVIDER="${WORKER_EMBEDDING_PROVIDER:-${EMBEDDING_PROVIDER}}"
 CALENDAR_PROVIDER="${CALENDAR_PROVIDER:-fake}"
 CRM_PROVIDER="${CRM_PROVIDER:-fake}"
 QUEUE_PROVIDER="${QUEUE_PROVIDER:-cloud_tasks}"
@@ -76,7 +84,8 @@ common_env=(
   "APP_ENV=${APP_ENV}"
   "WHATSAPP_PROVIDER=${WHATSAPP_PROVIDER}"
   "LLM_PROVIDER=${LLM_PROVIDER}"
-  "EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}"
+  # Not in the shared list: the API and the worker need different values on their slim
+  # and torch-carrying images, so each service's deploy line sets its own below.
   "CALENDAR_PROVIDER=${CALENDAR_PROVIDER}"
   "CRM_PROVIDER=${CRM_PROVIDER}"
   "QUEUE_PROVIDER=${QUEUE_PROVIDER}"
@@ -139,8 +148,8 @@ gcloud run deploy "$WORKER_SERVICE" \
   --service-account "$WORKER_SA" \
   --no-allow-unauthenticated \
   --memory 4Gi --cpu 2 --concurrency 1 --timeout 900 \
-  --min-instances 0 --max-instances "${WORKER_MAX_INSTANCES:-10}" \
-  --update-env-vars "$(join "${common_env[@]}")" \
+  --min-instances "${WORKER_MIN_INSTANCES:-1}" --max-instances "${WORKER_MAX_INSTANCES:-10}" \
+  --update-env-vars "$(join "${common_env[@]}"),EMBEDDING_PROVIDER=${WORKER_EMBEDDING_PROVIDER}" \
   --set-secrets "$(join "${common_secrets[@]}")"
 
 WORKER_URL="$(gcloud run services describe "$WORKER_SERVICE" \
@@ -169,7 +178,7 @@ gcloud run deploy "$API_SERVICE" \
   --allow-unauthenticated \
   --memory 1Gi --cpu 1 --concurrency 80 --timeout 60 \
   --min-instances "${API_MIN_INSTANCES:-1}" --max-instances "${API_MAX_INSTANCES:-10}" \
-  --update-env-vars "$(join "${common_env[@]}"),WORKER_BASE_URL=${WORKER_URL}" \
+  --update-env-vars "$(join "${common_env[@]}"),WORKER_BASE_URL=${WORKER_URL},EMBEDDING_PROVIDER=fake" \
   --set-secrets "$(join "${common_secrets[@]}")"
 
 API_URL="$(gcloud run services describe "$API_SERVICE" \
