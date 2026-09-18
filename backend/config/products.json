@@ -41,6 +41,12 @@
       "display_name": "Life Herba",
       "conversion_mode": "external_registration",
       "registration_url": "https://lifeherbagroup.com/",
+      "audience_column_schema": [
+        { "source": "Name", "field": "name", "required": true },
+        { "source": "Phone", "field": "phone", "required": true },
+        { "source": "Email", "field": "email", "required": false },
+        { "source": "City", "field": "city", "required": false }
+      ],
       "segments": [
         {
           "slug": "healthcare-practitioners",

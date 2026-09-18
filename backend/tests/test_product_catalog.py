@@ -88,7 +88,12 @@ class TestTheShippedCatalog:
         }
         assert product.whatsapp_phone_number_id is None
         assert product.google_calendar_id is None
-        assert product.audience_column_schema is None
+        assert product.audience_column_schema == [
+            {"source": "Name", "field": "name", "required": True},
+            {"source": "Phone", "field": "phone", "required": True},
+            {"source": "Email", "field": "email", "required": False},
+            {"source": "City", "field": "city", "required": False},
+        ]
         for segment in product.segments:
             assert segment.cta_label
             assert segment.cta_instruction

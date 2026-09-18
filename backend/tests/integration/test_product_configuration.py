@@ -233,8 +233,8 @@ class TestTheShippedCatalog:
                 "consumers",
             ],
         }
-        # SustainX stays identity-only. Life Herba may carry confirmed AI / conversion
-        # config, but still invents no WhatsApp number, calendar, or audience schema.
+        # SustainX stays identity-only. Life Herba may carry confirmed AI / conversion /
+        # audience schema, but still invents no WhatsApp number or calendar.
         assert policies == 5  # Life Herba: 1 product default + 4 segment overrides
         sustainx = rows["sustainx"]
         life_herba = rows["life-herba"]
@@ -243,7 +243,12 @@ class TestTheShippedCatalog:
         assert sustainx.audience_column_schema is None
         assert life_herba.whatsapp_phone_number_id is None
         assert life_herba.google_calendar_id is None
-        assert life_herba.audience_column_schema is None
+        assert life_herba.audience_column_schema == [
+            {"source": "Name", "field": "name", "required": True},
+            {"source": "Phone", "field": "phone", "required": True},
+            {"source": "Email", "field": "email", "required": False},
+            {"source": "City", "field": "city", "required": False},
+        ]
         assert life_herba.conversion_mode == "external_registration"
         assert life_herba.registration_url == "https://lifeherbagroup.com/"
 
@@ -742,10 +747,10 @@ class TestReadiness:
             f["code"] for f in life_herba["findings"] if f["severity"] == "BLOCKER"
         }
         assert life_herba_blockers == {
-            "audience.schema_missing",
             "whatsapp.phone_number_missing",
             "whatsapp.business_account_missing",
         }
+        assert "audience.schema_missing" not in life_herba_blockers
         assert "calendar.missing" not in life_herba_blockers
         assert "ai.policy_missing" not in life_herba_blockers
 
