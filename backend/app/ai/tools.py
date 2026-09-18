@@ -118,13 +118,16 @@ class ToolResult:
 # ---------------------------------------------------------------- specifications
 
 
-def tool_specs() -> tuple[ToolSpec, ...]:
+def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
     """The tools offered to the model.
 
     Descriptions are written for the model and matter as much as the schemas: they are
     where "do not promise a booking you have not made" is stated in terms it acts on.
+
+    ``include_booking`` is false for external-registration products: the booking tools
+    stay in the authorized set for dispatch safety, but are not offered to the model.
     """
-    return (
+    specs: list[ToolSpec] = [
         ToolSpec(
             name=AuthorizedTool.GET_LEAD,
             description=(
@@ -155,8 +158,8 @@ def tool_specs() -> tuple[ToolSpec, ...]:
                             "interested, demo_intent, not_interested, "
                             "qualification_judgement "
                             "(QUALIFIED | NEEDS_MORE_CONTEXT | NOT_QUALIFIED), "
-                            "team_size, budget or use_case. You cannot set lead status — "
-                            "record facts only."
+                            "registration_intent, team_size, budget or use_case. You "
+                            "cannot set lead status — record facts only."
                         ),
                         "additionalProperties": True,
                     },
@@ -178,57 +181,69 @@ def tool_specs() -> tuple[ToolSpec, ...]:
                 "required": [],
             },
         ),
-        ToolSpec(
-            name=AuthorizedTool.GET_AVAILABLE_SLOTS,
-            description=(
-                "Get demo times that are actually free. Only offer times this returns. "
-                "Never invent a time or promise one you have not checked. "
-                "When the customer names a later date, pass from_date (YYYY-MM-DD) so the "
-                "search window covers it — do not invent availability outside this result."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": f"How many slots to return, at most {MAX_OFFERED_SLOTS}.",
+    ]
+    if include_booking:
+        specs.extend(
+            [
+                ToolSpec(
+                    name=AuthorizedTool.GET_AVAILABLE_SLOTS,
+                    description=(
+                        "Get demo times that are actually free. Only offer times this returns. "
+                        "Never invent a time or promise one you have not checked. "
+                        "When the customer names a later date, pass from_date (YYYY-MM-DD) so the "
+                        "search window covers it — do not invent availability outside this result."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": (
+                                    f"How many slots to return, at most {MAX_OFFERED_SLOTS}."
+                                ),
+                            },
+                            "from_date": {
+                                "type": "string",
+                                "description": (
+                                    "Optional local calendar date (YYYY-MM-DD) to start searching. "
+                                    "Earlier than the product's minimum lead is clamped forward."
+                                ),
+                            },
+                            "days": {
+                                "type": "integer",
+                                "description": (
+                                    "Optional number of calendar days to search from from_date "
+                                    f"(default {DEFAULT_SLOT_SEARCH_DAYS}, max {MAX_SLOT_SEARCH_DAYS})."
+                                ),
+                            },
+                        },
+                        "required": [],
                     },
-                    "from_date": {
-                        "type": "string",
-                        "description": (
-                            "Optional local calendar date (YYYY-MM-DD) to start searching. "
-                            "Earlier than the product's minimum lead is clamped forward."
-                        ),
+                ),
+                ToolSpec(
+                    name=AuthorizedTool.BOOK_DEMO,
+                    description=(
+                        "Book a demo at a time the customer chose from get_available_slots. "
+                        "Only tell the customer the demo is booked if this returns ok: true. "
+                        "If it fails, the slot was taken and you must offer another."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "start_time": {
+                                "type": "string",
+                                "description": (
+                                    "Slot start in ISO 8601 format, exactly as returned by "
+                                    "get_available_slots."
+                                ),
+                            }
+                        },
+                        "required": ["start_time"],
                     },
-                    "days": {
-                        "type": "integer",
-                        "description": (
-                            "Optional number of calendar days to search from from_date "
-                            f"(default {DEFAULT_SLOT_SEARCH_DAYS}, max {MAX_SLOT_SEARCH_DAYS})."
-                        ),
-                    },
-                },
-                "required": [],
-            },
-        ),
-        ToolSpec(
-            name=AuthorizedTool.BOOK_DEMO,
-            description=(
-                "Book a demo at a time the customer chose from get_available_slots. "
-                "Only tell the customer the demo is booked if this returns ok: true. "
-                "If it fails, the slot was taken and you must offer another."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "start_time": {
-                        "type": "string",
-                        "description": "Slot start in ISO 8601 format, exactly as returned by get_available_slots.",
-                    }
-                },
-                "required": ["start_time"],
-            },
-        ),
+                ),
+            ]
+        )
+    specs.append(
         ToolSpec(
             name=AuthorizedTool.SEND_WHATSAPP_MESSAGE,
             description=(
@@ -241,8 +256,9 @@ def tool_specs() -> tuple[ToolSpec, ...]:
                 "properties": {"body": {"type": "string"}},
                 "required": ["body"],
             },
-        ),
+        )
     )
+    return tuple(specs)
 
 
 # ---------------------------------------------------------------- dispatch

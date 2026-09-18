@@ -128,6 +128,16 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         JSONB(none_as_null=True)
     )
 
+    # ---------------------------------------------------------------- conversion
+    #
+    # How interest becomes an action. `calendar_booking` (default) requires a product
+    # calendar and exposes the booking tools. `external_registration` converts through a
+    # shared registration URL and per-segment CTA copy — no calendar required.
+    conversion_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="calendar_booking", server_default="calendar_booking"
+    )
+    registration_url: Mapped[str | None] = mapped_column(Text)
+
     segments: Mapped[list[Segment]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
     )
@@ -162,6 +172,10 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "audience_column_schema IS NULL OR jsonb_typeof(audience_column_schema) = 'array'",
             name="audience_column_schema_is_array",
         ),
+        CheckConstraint(
+            "conversion_mode IN ('calendar_booking', 'external_registration')",
+            name="ck_products_conversion_mode",
+        ),
     )
 
 
@@ -186,6 +200,11 @@ class Segment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Sparse CTA copy for external-registration products. NULL means inherit nothing —
+    # the product prompt and registration_url still apply.
+    cta_label: Mapped[str | None] = mapped_column(String(255))
+    cta_instruction: Mapped[str | None] = mapped_column(Text)
 
     product: Mapped[Product] = relationship(back_populates="segments")
 

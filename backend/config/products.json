@@ -39,16 +39,58 @@
     {
       "slug": "life-herba",
       "display_name": "Life Herba",
+      "conversion_mode": "external_registration",
+      "registration_url": "https://lifeherbagroup.com/",
       "segments": [
         {
-          "slug": "healthcare-professionals",
-          "display_name": "Healthcare Professionals",
-          "display_order": 10
+          "slug": "healthcare-practitioners",
+          "display_name": "Healthcare Practitioners",
+          "display_order": 10,
+          "cta_label": "Join as Doctor / Practitioner",
+          "cta_instruction": "Open LifeHerba and select the practitioner / Join as Doctor registration option."
         },
-        { "slug": "wellness-centers", "display_name": "Wellness Centers", "display_order": 20 },
-        { "slug": "pharmacies", "display_name": "Pharmacies", "display_order": 30 },
-        { "slug": "consumers", "display_name": "Consumers", "display_order": 40 }
-      ]
+        {
+          "slug": "wellness-centres",
+          "display_name": "Wellness Centres",
+          "display_order": 20,
+          "cta_label": "Join as Wellness Centre",
+          "cta_instruction": "Open LifeHerba and select the Join as Wellness Centre registration option."
+        },
+        {
+          "slug": "pharmacies",
+          "display_name": "Pharmacies",
+          "display_order": 30,
+          "cta_label": "Join as Pharmacy",
+          "cta_instruction": "Open LifeHerba and select the Join as Pharmacy registration option."
+        },
+        {
+          "slug": "consumers",
+          "display_name": "Consumers",
+          "display_order": 40,
+          "cta_label": "Register on LifeHerba",
+          "cta_instruction": "Open LifeHerba and complete the normal / general user registration."
+        }
+      ],
+      "ai_configuration": {
+        "system_prompt_file": "prompts/life-herba.md",
+        "qualification_mode": "ai_judgement",
+        "qualification_required_fields": [],
+        "fallback_message": "I don't have verified information on that yet. Please check lifeherbagroup.com or ask the Life Herba team for help with that detail."
+      },
+      "segment_ai_overrides": {
+        "healthcare-practitioners": {
+          "system_prompt_file": "prompts/life-herba-healthcare-practitioners.md"
+        },
+        "wellness-centres": {
+          "system_prompt_file": "prompts/life-herba-wellness-centres.md"
+        },
+        "pharmacies": {
+          "system_prompt_file": "prompts/life-herba-pharmacies.md"
+        },
+        "consumers": {
+          "system_prompt_file": "prompts/life-herba-consumers.md"
+        }
+      }
     }
   ]
 }

@@ -47,7 +47,9 @@ from pydantic import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.configuration.segment_aliases import reconcile_life_herba_segment_aliases
 from app.domain.audience import parse_audience_schema
+from app.domain.conversion import ConversionMode
 from app.domain.product import is_valid_slug
 from app.domain.qualification import QualificationMode
 from app.domain.readiness import PlatformInputs
@@ -72,6 +74,8 @@ PRODUCT_FIELDS: tuple[str, ...] = (
     "demo_booking_horizon_days",
     "demo_min_lead_days",
     "demo_timezone",
+    "conversion_mode",
+    "registration_url",
 )
 
 #: `ai_configurations` columns a catalog may set. Every one nullable: NULL inherits.
@@ -123,6 +127,8 @@ class SegmentEntry(_Strict):
     display_name: str
     display_order: int | None = None
     is_active: bool | None = None
+    cta_label: str | None = None
+    cta_instruction: str | None = None
 
     @field_validator("slug")
     @classmethod
@@ -133,6 +139,11 @@ class SegmentEntry(_Strict):
     @classmethod
     def _named(cls, value: str) -> str:
         return _text(value)
+
+    @field_validator("cta_label", "cta_instruction")
+    @classmethod
+    def _cta_not_blank(cls, value: str | None) -> str | None:
+        return _optional_text(value)
 
 
 class AIConfigurationEntry(_Strict):
@@ -199,6 +210,8 @@ class ProductEntry(_Strict):
     demo_booking_horizon_days: int | None = None
     demo_min_lead_days: int | None = None
     demo_timezone: str | None = None
+    conversion_mode: str | None = None
+    registration_url: str | None = None
 
     ai_configuration: AIConfigurationEntry | None = None
     #: Segment slug → sparse override. `null` removes that segment's override.
@@ -232,10 +245,25 @@ class ProductEntry(_Strict):
         "demo_working_hours_start",
         "demo_working_hours_end",
         "demo_timezone",
+        "registration_url",
     )
     @classmethod
     def _not_blank(cls, value: str | None) -> str | None:
         return _optional_text(value)
+
+    @field_validator("conversion_mode")
+    @classmethod
+    def _known_conversion_mode(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = _text(value)
+        try:
+            return ConversionMode(text).value
+        except ValueError as exc:
+            raise ValueError(
+                f"conversion_mode must be one of "
+                f"{[m.value for m in ConversionMode]}, got {value!r}"
+            ) from exc
 
     @field_validator("audience_column_schema")
     @classmethod
@@ -377,6 +405,9 @@ async def apply_catalog(
     changes: list[str] = []
     for entry in catalog.products:
         changes.extend(await apply_product(session, entry))
+    # Collapse obsolete Life Herba segment slugs onto the canonical four. The catalog
+    # never deletes segments, so without this a re-configure would leave duplicates.
+    changes.extend(await reconcile_life_herba_segment_aliases(session))
     await session.flush()
 
     worsened: list[str] = []
@@ -488,6 +519,8 @@ async def _apply_segments(
                     display_name=entry.display_name,
                     display_order=entry.display_order or 0,
                     is_active=True if entry.is_active is None else entry.is_active,
+                    cta_label=entry.cta_label,
+                    cta_instruction=entry.cta_instruction,
                 )
             )
             changes.append(f"{label}: segment {entry.slug} created")
@@ -498,6 +531,12 @@ async def _apply_segments(
             changes.extend(_set(existing, "display_order", entry.display_order, segment_label))
         if entry.is_active is not None:
             changes.extend(_set(existing, "is_active", entry.is_active, segment_label))
+        if "cta_label" in entry.model_fields_set:
+            changes.extend(_set(existing, "cta_label", entry.cta_label, segment_label))
+        if "cta_instruction" in entry.model_fields_set:
+            changes.extend(
+                _set(existing, "cta_instruction", entry.cta_instruction, segment_label)
+            )
     await session.flush()
     return changes
 

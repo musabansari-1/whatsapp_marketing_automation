@@ -92,6 +92,7 @@ async def respond_to_customer(
     context: ai_tools.ToolContext,
     fallback_message: str,
     max_rounds: int = MAX_TOOL_ROUNDS,
+    include_booking_tools: bool = True,
 ) -> AgentOutcome:
     """Produce one reply, running authorized tools as the model requests them."""
     messages = _build_messages(
@@ -101,7 +102,7 @@ async def respond_to_customer(
         fallback_message=fallback_message,
     )
 
-    specs = ai_tools.tool_specs()
+    specs = ai_tools.tool_specs(include_booking=include_booking_tools)
     executed: list[dict[str, Any]] = []
     prompt_tokens = 0
     completion_tokens = 0

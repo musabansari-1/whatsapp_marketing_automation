@@ -42,6 +42,12 @@ from app.domain.audience import (
     is_development_placeholder,
     parse_audience_schema,
 )
+from app.domain.conversion import (
+    DEFAULT_CONVERSION_MODE,
+    ConversionMode,
+    parse_conversion_mode,
+    uses_calendar_booking,
+)
 from app.domain.product import SLUG_MAX_LENGTH, is_valid_slug
 from app.domain.qualification import QualificationMode
 from app.domain.slots import (
@@ -70,6 +76,7 @@ class Area(StrEnum):
     WHATSAPP = "WhatsApp"
     CALENDAR = "calendar"
     SLOTS = "slot policy"
+    CONVERSION = "conversion"
     TEMPLATES = "templates"
     KNOWLEDGE = "knowledge"
 
@@ -103,6 +110,9 @@ class ProductFacts:
     segment_slugs: tuple[str, ...]
     product_ai: ConfigurationRow | None
     segment_ai: Mapping[str, ConfigurationRow]
+    #: How interest converts. Default is calendar booking so existing products stay safe.
+    conversion_mode: str = DEFAULT_CONVERSION_MODE.value
+    registration_url: str | None = None
     #: Other products holding the same phone number ID, or the same calendar, by slug.
     phone_number_also_on: tuple[str, ...] = ()
     calendar_also_on: tuple[str, ...] = ()
@@ -162,6 +172,7 @@ def evaluate(facts: ProductFacts, platform: PlatformInputs) -> ProductReadiness:
         *_audience(facts, platform),
         *_ai(facts, platform),
         *_whatsapp(facts),
+        *_conversion(facts),
         *_calendar(facts),
         *_slots(facts, platform),
         *_templates(facts),
@@ -337,15 +348,46 @@ def _whatsapp(facts: ProductFacts) -> list[Finding]:
     return findings
 
 
-def _calendar(facts: ProductFacts) -> list[Finding]:
-    if not facts.google_calendar_id:
+def _conversion(facts: ProductFacts) -> list[Finding]:
+    try:
+        mode = parse_conversion_mode(facts.conversion_mode)
+    except ValueError:
         return [
             _blocker(
-                "calendar.missing",
-                Area.CALENDAR,
-                "No Google Calendar ID, so the assistant cannot offer or book demos.",
+                "conversion.mode_invalid",
+                Area.CONVERSION,
+                f"conversion_mode {facts.conversion_mode!r} is not recognised. Use "
+                f"{ConversionMode.CALENDAR_BOOKING.value} or "
+                f"{ConversionMode.EXTERNAL_REGISTRATION.value}.",
             )
         ]
+    if mode is ConversionMode.EXTERNAL_REGISTRATION and not (
+        facts.registration_url and facts.registration_url.strip()
+    ):
+        return [
+            _blocker(
+                "conversion.registration_url_missing",
+                Area.CONVERSION,
+                "conversion_mode is external_registration but no registration_url is set, "
+                "so the assistant has nowhere to send interested contacts.",
+            )
+        ]
+    return []
+
+
+def _calendar(facts: ProductFacts) -> list[Finding]:
+    # Booking products need a calendar. Registration-only products do not — unless they
+    # still configured one, in which case uniqueness still applies.
+    if not facts.google_calendar_id:
+        if uses_calendar_booking(facts.conversion_mode):
+            return [
+                _blocker(
+                    "calendar.missing",
+                    Area.CALENDAR,
+                    "No Google Calendar ID, so the assistant cannot offer or book demos.",
+                )
+            ]
+        return []
     if facts.calendar_also_on:
         return [
             _blocker(
@@ -360,6 +402,10 @@ def _calendar(facts: ProductFacts) -> list[Finding]:
 
 
 def _slots(facts: ProductFacts, platform: PlatformInputs) -> list[Finding]:
+    # Slot policy only matters when booking is in play: calendar-booking mode, or a
+    # registration product that nonetheless configured a calendar.
+    if not uses_calendar_booking(facts.conversion_mode) and not facts.google_calendar_id:
+        return []
     try:
         resolve_slot_policy(platform.slot_settings, facts.slot_overrides)
     except SlotPolicyError as exc:

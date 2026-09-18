@@ -227,18 +227,25 @@ class TestTheShippedCatalog:
         assert segments == {
             "sustainx": ["government", "industry"],
             "life-herba": [
-                "healthcare-professionals",
-                "wellness-centers",
+                "healthcare-practitioners",
+                "wellness-centres",
                 "pharmacies",
                 "consumers",
             ],
         }
-        # Nothing invented: no policy, no number, no calendar, no spreadsheet format.
-        assert policies == 0
-        for row in rows.values():
-            assert row.whatsapp_phone_number_id is None
-            assert row.google_calendar_id is None
-            assert row.audience_column_schema is None
+        # SustainX stays identity-only. Life Herba may carry confirmed AI / conversion
+        # config, but still invents no WhatsApp number, calendar, or audience schema.
+        assert policies == 5  # Life Herba: 1 product default + 4 segment overrides
+        sustainx = rows["sustainx"]
+        life_herba = rows["life-herba"]
+        assert sustainx.whatsapp_phone_number_id is None
+        assert sustainx.google_calendar_id is None
+        assert sustainx.audience_column_schema is None
+        assert life_herba.whatsapp_phone_number_id is None
+        assert life_herba.google_calendar_id is None
+        assert life_herba.audience_column_schema is None
+        assert life_herba.conversion_mode == "external_registration"
+        assert life_herba.registration_url == "https://lifeherbagroup.com/"
 
     async def test_keeps_the_existing_academicae_row_its_id_and_does_not_flip_activation(
         self, cli_env: None, db: async_sessionmaker[AsyncSession]
@@ -725,6 +732,22 @@ class TestReadiness:
             "whatsapp.business_account_missing",
             "calendar.missing",
         }
+
+        out = io.StringIO()
+        code = await product_readiness(Settings(), ["life-herba"], as_json=True, out=out)
+        (life_herba,) = json.loads(out.getvalue())["products"]
+        assert code == EXIT_OK
+        assert life_herba["verdict"] == "NOT READY"
+        life_herba_blockers = {
+            f["code"] for f in life_herba["findings"] if f["severity"] == "BLOCKER"
+        }
+        assert life_herba_blockers == {
+            "audience.schema_missing",
+            "whatsapp.phone_number_missing",
+            "whatsapp.business_account_missing",
+        }
+        assert "calendar.missing" not in life_herba_blockers
+        assert "ai.policy_missing" not in life_herba_blockers
 
     async def test_an_active_product_that_is_not_ready_fails_the_check(
         self, cli_env: None, db: async_sessionmaker[AsyncSession], tmp_path: Path

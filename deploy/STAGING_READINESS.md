@@ -159,7 +159,7 @@ does not book, without its own number it does not send, an unassigned template i
 |---|---|---|---|
 | Row, slug, display name | ☑ `academicae` — existing row, fixed ID | ◐ `sustainx` — in the catalog, created on first apply | ◐ `life-herba` — in the catalog, created on first apply |
 | Active | **inactive (intended)** — seeded active; deactivate first | inactive | inactive |
-| Segments | none — valid | ☑ `government`, `industry` (more later, as data) | ☑ `healthcare-professionals`, `wellness-centers`, `pharmacies`, `consumers` |
+| Segments | none — valid | ☑ `government`, `industry` (more later, as data) | ☑ `healthcare-practitioners`, `wellness-centres`, `pharmacies`, `consumers` |
 | Audience column schema | ☐ import from its environment, then confirm the real headers (D-46b) | ☐ not supplied | ☐ not supplied |
 | AI system prompt | ☐ import from its environment, then review | ☐ not supplied — one product-level prompt | ☐ not supplied — product default |
 | Qualification criteria — [D37] | ☐ | ☐ | ☐ |

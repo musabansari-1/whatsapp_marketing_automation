@@ -46,6 +46,7 @@ from app.core.errors import ProviderError
 from app.core.logging import get_logger
 from app.domain.ai_config import AIConfigurationError, ResolvedAIConfig
 from app.domain.conversation import LeadStateError, can_transition_conversation
+from app.domain.conversion import uses_calendar_booking, with_conversion_guidance
 from app.domain.enums import ConversationStatus, LeadStatus, MessageStatus
 from app.domain.product import ProductInactiveError, assert_accepts_new_activity
 from app.domain.qualification import rules_from_settings
@@ -68,7 +69,14 @@ from app.integrations.registry import (
 )
 from app.integrations.whatsapp import OutboundTextMessage
 from app.persistence.database import get_session_factory
-from app.persistence.models import AIRun, Conversation, Lead, Product, WhatsAppSuppression
+from app.persistence.models import (
+    AIRun,
+    Conversation,
+    Lead,
+    Product,
+    Segment,
+    WhatsAppSuppression,
+)
 from app.persistence.repositories import ai_configurations as ai_config_repo
 from app.persistence.repositories import conversations as conversation_repo
 from app.persistence.repositories import knowledge as knowledge_repo
@@ -246,8 +254,22 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             # The calendar and slot policy are the conversation's product's ([D43], [D52]).
             # Resolved from the snapshotted product, never from anything the model says,
             # so a turn cannot read or book another product's diary.
-            slot_policy, calendar = resolve_booking_capability(
-                settings, await session.get(Product, conversation.product_id)
+            product = await session.get(Product, conversation.product_id)
+            segment = (
+                await session.get(Segment, conversation.segment_id)
+                if conversation.segment_id is not None
+                else None
+            )
+            slot_policy, calendar = resolve_booking_capability(settings, product)
+            include_booking_tools = uses_calendar_booking(
+                None if product is None else product.conversion_mode
+            )
+            system_prompt = with_conversion_guidance(
+                ai_config.system_prompt,
+                mode=None if product is None else product.conversion_mode,
+                registration_url=None if product is None else product.registration_url,
+                cta_label=None if segment is None else segment.cta_label,
+                cta_instruction=None if segment is None else segment.cta_instruction,
             )
             tool_context = ai_tools.ToolContext(
                 session=session,
@@ -266,12 +288,13 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
 
             outcome = await respond_to_customer(
                 provider=provider,
-                system_prompt=ai_config.system_prompt,
+                system_prompt=system_prompt,
                 history=prompt,
                 retrieval=retrieval,
                 context=tool_context,
                 fallback_message=ai_config.fallback_message,
                 max_rounds=ai_config.max_tool_rounds,
+                include_booking_tools=include_booking_tools,
             )
             # Tools write through this session, so their effects are committed with
             # the turn rather than left dangling if the send fails.

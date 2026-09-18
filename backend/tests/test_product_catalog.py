@@ -55,24 +55,43 @@ class TestTheShippedCatalog:
             ("industry", "Industry"),
         ]
         assert [(s.slug, s.display_name) for s in products["life-herba"].segments] == [
-            ("healthcare-professionals", "Healthcare Professionals"),
-            ("wellness-centers", "Wellness Centers"),
+            ("healthcare-practitioners", "Healthcare Practitioners"),
+            ("wellness-centres", "Wellness Centres"),
             ("pharmacies", "Pharmacies"),
             ("consumers", "Consumers"),
         ]
 
-    def test_it_invents_no_provider_ids_prompts_schemas_or_overrides(self) -> None:
-        """SustainX and Life Herba still have no confirmed provider IDs, prompts or schemas.
-        Academicae may carry confirmed launch configuration — asserted separately."""
-        products = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}
-        for slug in ("sustainx", "life-herba"):
-            product = products[slug]
-            configured = product.model_fields_set & {
-                *PRODUCT_FIELDS,
-                "ai_configuration",
-                "segment_ai_overrides",
-            }
-            assert configured == set(), slug
+    def test_sustainx_invents_no_provider_ids_prompts_schemas_or_overrides(self) -> None:
+        """SustainX still has identity and segments only — no invented launch values."""
+        product = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["sustainx"]
+        configured = product.model_fields_set & {
+            *PRODUCT_FIELDS,
+            "ai_configuration",
+            "segment_ai_overrides",
+        }
+        assert configured == set()
+
+    def test_life_herba_has_registration_launch_configuration_without_invented_providers(
+        self,
+    ) -> None:
+        """Life Herba may carry confirmed AI / conversion config, but not invented Meta IDs."""
+        product = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["life-herba"]
+        assert product.conversion_mode == "external_registration"
+        assert product.registration_url == "https://lifeherbagroup.com/"
+        assert product.ai_configuration is not None
+        assert product.ai_configuration.qualification_mode == "ai_judgement"
+        assert set(product.segment_ai_overrides) == {
+            "healthcare-practitioners",
+            "wellness-centres",
+            "pharmacies",
+            "consumers",
+        }
+        assert product.whatsapp_phone_number_id is None
+        assert product.google_calendar_id is None
+        assert product.audience_column_schema is None
+        for segment in product.segments:
+            assert segment.cta_label
+            assert segment.cta_instruction
 
     def test_academicae_has_confirmed_launch_configuration(self) -> None:
         academicae = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["academicae"]

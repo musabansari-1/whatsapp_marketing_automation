@@ -54,6 +54,8 @@ async def gather_facts(session: AsyncSession, product: Product) -> ProductFacts:
         segment_slugs=tuple(segment.slug for segment in segments),
         product_ai=await ai_config_repo.get_product_default(session, product.id),
         segment_ai=await ai_config_repo.segment_overrides_by_slug(session, product.id),
+        conversion_mode=product.conversion_mode,
+        registration_url=product.registration_url,
         phone_number_also_on=await product_repo.slugs_sharing_phone_number(session, product),
         calendar_also_on=await product_repo.slugs_sharing_calendar(session, product),
         usable_marketing_templates=sum(

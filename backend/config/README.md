@@ -19,15 +19,16 @@ None of these calls Meta, Google or HubSpot, and none sends a message.
 Three product identities and the initial segments (confirmed 2026-09-12). Academicae also
 holds the production values confirmed for first launch (2026-09-14): WhatsApp number and
 WABA IDs, Google Calendar ID, school-audience column mapping, slot policy, and AI
-configuration (`prompts/academicae.md`, `qualification_mode: ai_judgement`). SustainX and
-Life Herba still have identity and segments only — a test fails if either invents provider
-IDs, prompts or schemas.
+configuration (`prompts/academicae.md`, `qualification_mode: ai_judgement`). SustainX still
+has identity and segments only. Life Herba carries confirmed AI configuration, segment
+overrides, and `conversion_mode: external_registration` with registration URL/CTAs — but
+still invents no WhatsApp number, calendar, or audience spreadsheet schema.
 
 | Product | Slug | Segments | Launch config in catalog |
 |---|---|---|---|
 | Academicae | `academicae` (fixed ID `00000000-0000-4000-8000-000000000001`) | none | yes — inactive until readiness + explicit activation |
 | SustainX | `sustainx` | `government`, `industry` | no |
-| Life Herba | `life-herba` | `healthcare-professionals`, `wellness-centers`, `pharmacies`, `consumers` | no |
+| Life Herba | `life-herba` | `healthcare-practitioners`, `wellness-centres`, `pharmacies`, `consumers` | partial — AI + external registration; no WhatsApp/audience schema yet |
 
 Slugs are permanent route identifiers (`/p/<slug>`). They are data: nothing in the code
 branches on them.
@@ -65,11 +66,28 @@ explicitly approved. `--accept-gaps` is not a way around missing templates or kn
 | `google_calendar_id` | the product's own calendar; unique per product |
 | `google_calendar_token_secret_name` | only for a calendar in a different Google account |
 | `demo_duration_minutes`, `demo_buffer_minutes`, `demo_working_days`, `demo_working_hours_start`, `demo_working_hours_end`, `demo_booking_horizon_days`, `demo_min_lead_days`, `demo_timezone` | slot-policy overrides; omit to inherit the platform value. `demo_booking_horizon_days` may be `"unbounded"` (stored as `-1`); `null` still clears/inherits. `demo_min_lead_days` is 0 = today still offerable, 1 = earliest tomorrow |
+| `conversion_mode` | `calendar_booking` (default) or `external_registration`. Registration-only products do not need a Google Calendar for readiness |
+| `registration_url` | shared destination when `conversion_mode` is `external_registration` |
 | `ai_configuration` | the product default: `system_prompt` (or `system_prompt_file`, relative to this file), `qualification_mode` (`required_fields` or `ai_judgement`), `qualification_required_fields`, `fallback_message`, and optional operational overrides `model`, `rag_top_k`, `rag_min_similarity`, `rag_max_context_chars`, `history_turns`, `max_tool_rounds` |
 | `segment_ai_overrides` | `{segment_slug: {...only the fields that differ...}}`; `null` removes an override |
+| segment `cta_label`, `cta_instruction` | optional per-segment CTA copy for external-registration products |
 
-SustainX has one product-level `ai_configuration` and no `segment_ai_overrides`. Life Herba
-has one product default and sparse overrides only where a segment genuinely differs.
+SustainX has one product-level `ai_configuration` and no `segment_ai_overrides` once configured.
+Life Herba has one product default, sparse segment prompt overrides, and per-segment CTAs.
+
+## Life Herba planned Meta template names
+
+Names only — **not** approved, **not** seeded, **not** assigned. Flow remains Meta approval →
+template sync → explicit Life Herba ownership assignment ([D57]).
+
+| Segment | Planned template name |
+|---|---|
+| Healthcare Practitioners | `lifeherba_healthcare_practitioner_onboarding` |
+| Wellness Centres | `lifeherba_wellness_centre_onboarding` |
+| Pharmacies | `lifeherba_pharmacy_onboarding` |
+| Consumers | `lifeherba_consumer_outreach` |
+
+Do not invent alternate or shortened planned names.
 
 ## Example of a later addition (not real values)
 

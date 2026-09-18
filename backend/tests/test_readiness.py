@@ -261,8 +261,39 @@ class TestCalendarAndSlots:
         report = judge(configured(google_calendar_id=None))
         assert blockers(report) == {"calendar.missing"}
 
+    def test_external_registration_does_not_require_a_calendar(self) -> None:
+        report = judge(
+            configured(
+                google_calendar_id=None,
+                conversion_mode="external_registration",
+                registration_url="https://example.com/join",
+            )
+        )
+        assert "calendar.missing" not in blockers(report)
+        assert "slots.policy_invalid" not in blockers(report)
+
+    def test_external_registration_without_a_url_blocks(self) -> None:
+        report = judge(
+            configured(
+                google_calendar_id=None,
+                conversion_mode="external_registration",
+                registration_url=None,
+            )
+        )
+        assert "conversion.registration_url_missing" in blockers(report)
+
     def test_a_calendar_held_by_another_product_blocks(self) -> None:
         report = judge(configured(calendar_also_on=("other-product",)))
+        assert blockers(report) == {"calendar.shared"}
+
+    def test_shared_calendar_still_blocks_registration_products(self) -> None:
+        report = judge(
+            configured(
+                conversion_mode="external_registration",
+                registration_url="https://example.com/join",
+                calendar_also_on=("other-product",),
+            )
+        )
         assert blockers(report) == {"calendar.shared"}
 
     @pytest.mark.parametrize(
@@ -277,6 +308,17 @@ class TestCalendarAndSlots:
     def test_an_invalid_slot_policy_blocks(self, overrides: SlotOverrides) -> None:
         report = judge(configured(slot_overrides=overrides))
         assert blockers(report) == {"slots.policy_invalid"}
+
+    def test_invalid_slots_are_ignored_for_registration_without_calendar(self) -> None:
+        report = judge(
+            configured(
+                google_calendar_id=None,
+                conversion_mode="external_registration",
+                registration_url="https://example.com/join",
+                slot_overrides=SlotOverrides(demo_timezone="Nowhere/Imaginary"),
+            )
+        )
+        assert "slots.policy_invalid" not in blockers(report)
 
     def test_a_valid_override_is_ready(self) -> None:
         report = judge(configured(slot_overrides=SlotOverrides(demo_duration_minutes=45)))
