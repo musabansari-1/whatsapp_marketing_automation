@@ -21,15 +21,15 @@ holds the production values confirmed for first launch (2026-09-14): WhatsApp nu
 WABA IDs, Google Calendar ID, school-audience column mapping, slot policy, and AI
 configuration (`prompts/academicae.md`, `qualification_mode: ai_judgement`). SustainX still
 has identity and segments only. Life Herba carries confirmed AI configuration, segment
-overrides, `conversion_mode: external_registration` with registration URL/CTAs, and a
-launch audience column schema (Name/Phone/Email/City) — but still invents no WhatsApp
-number or calendar.
+overrides, `conversion_mode: external_registration` with registration URL/CTAs, a launch
+audience column schema (Name/Phone/Email/City), and its own WhatsApp phone number ID
+(shared WABA with Academicae; distinct number for inbound routing) — still no calendar.
 
 | Product | Slug | Segments | Launch config in catalog |
 |---|---|---|---|
 | Academicae | `academicae` (fixed ID `00000000-0000-4000-8000-000000000001`) | none | yes — inactive until readiness + explicit activation |
 | SustainX | `sustainx` | `government`, `industry` | no |
-| Life Herba | `life-herba` | `healthcare-practitioners`, `wellness-centres`, `pharmacies`, `consumers` | partial — AI + external registration + audience schema; no WhatsApp yet |
+| Life Herba | `life-herba` | `healthcare-practitioners`, `wellness-centres`, `pharmacies`, `consumers` | partial — AI + external registration + audience schema + WhatsApp IDs; gaps: templates, knowledge |
 
 Slugs are permanent route identifiers (`/p/<slug>`). They are data: nothing in the code
 branches on them.

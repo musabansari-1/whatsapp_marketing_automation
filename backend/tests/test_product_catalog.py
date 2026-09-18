@@ -71,11 +71,11 @@ class TestTheShippedCatalog:
         }
         assert configured == set()
 
-    def test_life_herba_has_registration_launch_configuration_without_invented_providers(
-        self,
-    ) -> None:
-        """Life Herba may carry confirmed AI / conversion config, but not invented Meta IDs."""
-        product = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["life-herba"]
+    def test_life_herba_has_registration_launch_configuration(self) -> None:
+        """Life Herba launch config: AI, conversion, audience schema, own WhatsApp number."""
+        products = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}
+        product = products["life-herba"]
+        academicae = products["academicae"]
         assert product.conversion_mode == "external_registration"
         assert product.registration_url == "https://lifeherbagroup.com/"
         assert product.ai_configuration is not None
@@ -86,7 +86,11 @@ class TestTheShippedCatalog:
             "pharmacies",
             "consumers",
         }
-        assert product.whatsapp_phone_number_id is None
+        assert product.whatsapp_phone_number_id == "1340886312439722"
+        assert product.whatsapp_business_account_id == "1055996760528305"
+        # Shared WABA is fine; routing uses the unique phone number ID ([D40]).
+        assert product.whatsapp_business_account_id == academicae.whatsapp_business_account_id
+        assert product.whatsapp_phone_number_id != academicae.whatsapp_phone_number_id
         assert product.google_calendar_id is None
         assert product.audience_column_schema == [
             {"source": "Name", "field": "name", "required": True},

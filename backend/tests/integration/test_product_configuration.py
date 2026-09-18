@@ -233,15 +233,16 @@ class TestTheShippedCatalog:
                 "consumers",
             ],
         }
-        # SustainX stays identity-only. Life Herba may carry confirmed AI / conversion /
-        # audience schema, but still invents no WhatsApp number or calendar.
+        # SustainX stays identity-only. Life Herba carries confirmed launch config but
+        # still has no calendar (external registration).
         assert policies == 5  # Life Herba: 1 product default + 4 segment overrides
         sustainx = rows["sustainx"]
         life_herba = rows["life-herba"]
         assert sustainx.whatsapp_phone_number_id is None
         assert sustainx.google_calendar_id is None
         assert sustainx.audience_column_schema is None
-        assert life_herba.whatsapp_phone_number_id is None
+        assert life_herba.whatsapp_phone_number_id == "1340886312439722"
+        assert life_herba.whatsapp_business_account_id == "1055996760528305"
         assert life_herba.google_calendar_id is None
         assert life_herba.audience_column_schema == [
             {"source": "Name", "field": "name", "required": True},
@@ -742,17 +743,17 @@ class TestReadiness:
         code = await product_readiness(Settings(), ["life-herba"], as_json=True, out=out)
         (life_herba,) = json.loads(out.getvalue())["products"]
         assert code == EXIT_OK
-        assert life_herba["verdict"] == "NOT READY"
+        assert life_herba["is_active"] is False
         life_herba_blockers = {
             f["code"] for f in life_herba["findings"] if f["severity"] == "BLOCKER"
         }
-        assert life_herba_blockers == {
-            "whatsapp.phone_number_missing",
-            "whatsapp.business_account_missing",
-        }
-        assert "audience.schema_missing" not in life_herba_blockers
-        assert "calendar.missing" not in life_herba_blockers
-        assert "ai.policy_missing" not in life_herba_blockers
+        # WhatsApp and audience schema are configured; remaining gaps are templates /
+        # knowledge (and Life Herba stays inactive until activation is approved).
+        assert life_herba_blockers == set()
+        assert life_herba["verdict"] == "READY WITH GAPS"
+        gap_codes = {f["code"] for f in life_herba["findings"] if f["severity"] == "GAP"}
+        assert "templates.none_usable" in gap_codes
+        assert "knowledge.none_ready" in gap_codes
 
     async def test_an_active_product_that_is_not_ready_fails_the_check(
         self, cli_env: None, db: async_sessionmaker[AsyncSession], tmp_path: Path
@@ -805,15 +806,24 @@ class TestActivation:
     async def test_a_product_that_is_not_ready_is_refused_and_stays_inactive(
         self, cli_env: None, db: async_sessionmaker[AsyncSession]
     ) -> None:
+        """SustainX still has blockers; Life Herba is only gap-blocked after WhatsApp config."""
         await configure_products(Settings(), SHIPPED_CATALOG, out=io.StringIO())
 
         out = io.StringIO()
-        code = await activate_product(Settings(), "life-herba", accept_gaps=True, out=out)
+        code = await activate_product(Settings(), "sustainx", accept_gaps=True, out=out)
 
         assert code == EXIT_FAILED
         assert "is not ready" in out.getvalue()
-        refused = await product(db, "life-herba")
+        refused = await product(db, "sustainx")
         assert refused is not None and refused.is_active is False
+
+        # Life Herba has gaps only: without --accept-gaps it stays inactive.
+        out = io.StringIO()
+        code = await activate_product(Settings(), "life-herba", out=out)
+        assert code == EXIT_FAILED
+        assert "--accept-gaps" in out.getvalue()
+        life_herba = await product(db, "life-herba")
+        assert life_herba is not None and life_herba.is_active is False
 
     async def test_gaps_need_an_explicit_acknowledgement(
         self, cli_env: None, db: async_sessionmaker[AsyncSession], tmp_path: Path

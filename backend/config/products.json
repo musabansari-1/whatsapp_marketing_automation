@@ -41,6 +41,8 @@
       "display_name": "Life Herba",
       "conversion_mode": "external_registration",
       "registration_url": "https://lifeherbagroup.com/",
+      "whatsapp_phone_number_id": "1340886312439722",
+      "whatsapp_business_account_id": "1055996760528305",
       "audience_column_schema": [
         { "source": "Name", "field": "name", "required": true },
         { "source": "Phone", "field": "phone", "required": true },
