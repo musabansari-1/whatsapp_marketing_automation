@@ -164,8 +164,8 @@ does not book, without its own number it does not send, an unassigned template i
 | AI system prompt | ☐ import from its environment, then review | ☐ not supplied — one product-level prompt | ☐ not supplied — product default |
 | Qualification criteria — [D37] | ☐ | ☐ | ☐ |
 | Segment AI overrides | none | **none** — every segment shares one behaviour | ☐ sparse, only where a segment genuinely differs |
-| WhatsApp phone number ID | ☐ | ☐ | ☐ |
-| WhatsApp business account ID | ☐ | ☐ (may equal the others) | ☐ (may equal the others) |
+| WhatsApp phone number ID | ☐ | ☑ `1355444384311332` (catalog; own number) | ☑ `1340886312439722` (catalog; own number) |
+| WhatsApp business account ID | ☐ | ☑ `1107203798409996` (catalog; own WABA) | ☑ `2034571340595521` (catalog; own WABA) |
 | Google Calendar ID | ☐ | ☐ | ☐ |
 | Slot policy | platform default unless an override is supplied | platform default; one calendar for all segments | platform default; no segment calendars |
 | Templates: synced, assigned, APPROVED, MARKETING | ☐ | ☐ | ☐ |

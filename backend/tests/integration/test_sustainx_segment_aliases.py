@@ -323,7 +323,8 @@ async def test_configure_products_collapses_obsolete_then_seeds_canonical(
         ).scalar_one()
         assert row.is_active is False
         assert row.google_calendar_id is not None
-        assert row.whatsapp_phone_number_id is None
+        assert row.whatsapp_phone_number_id == "1355444384311332"
+        assert row.whatsapp_business_account_id == "1107203798409996"
         ai = (
             await session.execute(
                 select(AIConfiguration).where(

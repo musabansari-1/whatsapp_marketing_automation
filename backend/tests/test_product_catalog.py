@@ -63,18 +63,24 @@ class TestTheShippedCatalog:
             ("consumers", "Consumers"),
         ]
 
-    def test_sustainx_has_confirmed_launch_configuration_without_whatsapp_ids(self) -> None:
-        """SustainX launch config is present; WhatsApp IDs stay unset readiness blockers."""
-        product = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["sustainx"]
-        academicae = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["academicae"]
+    def test_sustainx_has_confirmed_launch_configuration(self) -> None:
+        """SustainX launch config includes its own WhatsApp number and WABA."""
+        products = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}
+        product = products["sustainx"]
+        academicae = products["academicae"]
+        life_herba = products["life-herba"]
 
         assert product.google_calendar_id == (
             "15ab1950b41e20b63b6bd2ef1aad5506808ac502c9722c11267733d882e101b1@"
             "group.calendar.google.com"
         )
-        assert product.whatsapp_phone_number_id is None
-        assert product.whatsapp_business_account_id is None
+        assert product.whatsapp_phone_number_id == "1355444384311332"
+        assert product.whatsapp_business_account_id == "1107203798409996"
+        # Routing uses phone_number_id ([D40]); SustainX must not reuse another product.
         assert product.whatsapp_phone_number_id != academicae.whatsapp_phone_number_id
+        assert product.whatsapp_phone_number_id != life_herba.whatsapp_phone_number_id
+        assert product.whatsapp_business_account_id != academicae.whatsapp_business_account_id
+        assert product.whatsapp_business_account_id != life_herba.whatsapp_business_account_id
         assert product.ai_configuration is not None
         assert product.ai_configuration.qualification_mode == "ai_judgement"
         assert product.ai_configuration.system_prompt

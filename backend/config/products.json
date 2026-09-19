@@ -42,6 +42,8 @@
           "display_order": 50
         }
       ],
+      "whatsapp_phone_number_id": "1355444384311332",
+      "whatsapp_business_account_id": "1107203798409996",
       "google_calendar_id": "15ab1950b41e20b63b6bd2ef1aad5506808ac502c9722c11267733d882e101b1@group.calendar.google.com",
       "audience_column_schema": [
         { "source": "Contact Name", "field": "name", "required": true },

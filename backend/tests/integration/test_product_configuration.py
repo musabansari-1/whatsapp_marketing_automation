@@ -243,8 +243,10 @@ class TestTheShippedCatalog:
         assert policies == 6
         sustainx = rows["sustainx"]
         life_herba = rows["life-herba"]
-        assert sustainx.whatsapp_phone_number_id is None
-        assert sustainx.whatsapp_business_account_id is None
+        assert sustainx.whatsapp_phone_number_id == "1355444384311332"
+        assert sustainx.whatsapp_business_account_id == "1107203798409996"
+        assert sustainx.whatsapp_phone_number_id != life_herba.whatsapp_phone_number_id
+        assert sustainx.whatsapp_business_account_id != life_herba.whatsapp_business_account_id
         assert sustainx.google_calendar_id == (
             "15ab1950b41e20b63b6bd2ef1aad5506808ac502c9722c11267733d882e101b1@"
             "group.calendar.google.com"
@@ -744,14 +746,11 @@ class TestReadiness:
         code = await product_readiness(Settings(), ["sustainx"], as_json=True, out=out)
         (sustainx,) = json.loads(out.getvalue())["products"]
 
-        # Inactive and not ready: WhatsApp IDs remain the launch blockers.
+        # Inactive with gaps only: WhatsApp/calendar/AI/schema are configured.
         assert code == EXIT_OK
         assert sustainx["is_active"] is False
-        assert sustainx["verdict"] == "NOT READY"
-        assert {f["code"] for f in sustainx["findings"] if f["severity"] == "BLOCKER"} == {
-            "whatsapp.phone_number_missing",
-            "whatsapp.business_account_missing",
-        }
+        assert sustainx["verdict"] == "READY WITH GAPS"
+        assert {f["code"] for f in sustainx["findings"] if f["severity"] == "BLOCKER"} == set()
         gap_codes = {f["code"] for f in sustainx["findings"] if f["severity"] == "GAP"}
         assert "templates.none_usable" in gap_codes
         assert "knowledge.none_ready" in gap_codes
@@ -823,18 +822,16 @@ class TestActivation:
     async def test_a_product_that_is_not_ready_is_refused_and_stays_inactive(
         self, cli_env: None, db: async_sessionmaker[AsyncSession]
     ) -> None:
-        """SustainX still has blockers; Life Herba is only gap-blocked after WhatsApp config."""
+        """SustainX and Life Herba are gap-blocked; without --accept-gaps they stay inactive."""
         await configure_products(Settings(), SHIPPED_CATALOG, out=io.StringIO())
 
         out = io.StringIO()
-        code = await activate_product(Settings(), "sustainx", accept_gaps=True, out=out)
-
+        code = await activate_product(Settings(), "sustainx", out=out)
         assert code == EXIT_FAILED
-        assert "is not ready" in out.getvalue()
+        assert "--accept-gaps" in out.getvalue()
         refused = await product(db, "sustainx")
         assert refused is not None and refused.is_active is False
 
-        # Life Herba has gaps only: without --accept-gaps it stays inactive.
         out = io.StringIO()
         code = await activate_product(Settings(), "life-herba", out=out)
         assert code == EXIT_FAILED

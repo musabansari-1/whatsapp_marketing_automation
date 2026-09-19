@@ -21,17 +21,17 @@ launch (2026-09-14): WhatsApp number and WABA IDs, Google Calendar ID, school-au
 column mapping, slot policy, and AI configuration (`prompts/academicae.md`,
 `qualification_mode: ai_judgement`). SustainX launch configuration (2026-09-19) includes
 five audience segments, shared AI (`prompts/sustainx.md`, discovery-first,
-`ai_judgement`), calendar/slot policy, and a general audience schema — WhatsApp Phone
-Number ID and WABA remain unset readiness blockers. Life Herba carries confirmed AI
-configuration, segment overrides, `conversion_mode: external_registration` with
-registration URL/CTAs, a launch audience column schema (Name/Phone/Email/City), its own
-WhatsApp phone number ID, and its own WABA (`2034571340595521`) — still no calendar
-(external registration).
+`ai_judgement`), calendar/slot policy, a general audience schema, WhatsApp phone
+`1355444384311332`, and WABA `1107203798409996` (SustainX's own account; distinct from
+Academicae and Life Herba). Life Herba carries confirmed AI configuration, segment
+overrides, `conversion_mode: external_registration` with registration URL/CTAs, a launch
+audience column schema (Name/Phone/Email/City), its own WhatsApp phone number ID, and its
+own WABA (`2034571340595521`) — still no calendar (external registration).
 
 | Product | Slug | Segments | Launch config in catalog |
 |---|---|---|---|
 | Academicae | `academicae` (fixed ID `00000000-0000-4000-8000-000000000001`) | none | yes — inactive until readiness + explicit activation |
-| SustainX | `sustainx` | `industries`, `institutions`, `government-bodies`, `students`, `professionals-executives` | partial — AI + calendar + audience schema; blockers: WhatsApp IDs; gaps: templates, knowledge |
+| SustainX | `sustainx` | `industries`, `institutions`, `government-bodies`, `students`, `professionals-executives` | partial — AI + calendar + audience schema + own WhatsApp IDs; gaps: templates, knowledge |
 | Life Herba | `life-herba` | `healthcare-practitioners`, `wellness-centres`, `pharmacies`, `consumers` | partial — AI + external registration + audience schema + WhatsApp IDs; gaps: templates, knowledge |
 
 Slugs are permanent route identifiers (`/p/<slug>`). They are data: nothing in the code
