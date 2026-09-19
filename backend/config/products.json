@@ -32,9 +32,39 @@
       "slug": "sustainx",
       "display_name": "SustainX",
       "segments": [
-        { "slug": "government", "display_name": "Government", "display_order": 10 },
-        { "slug": "industry", "display_name": "Industry", "display_order": 20 }
-      ]
+        { "slug": "industries", "display_name": "Industries", "display_order": 10 },
+        { "slug": "institutions", "display_name": "Institutions", "display_order": 20 },
+        { "slug": "government-bodies", "display_name": "Government Bodies", "display_order": 30 },
+        { "slug": "students", "display_name": "Students", "display_order": 40 },
+        {
+          "slug": "professionals-executives",
+          "display_name": "Professionals / Executives",
+          "display_order": 50
+        }
+      ],
+      "google_calendar_id": "15ab1950b41e20b63b6bd2ef1aad5506808ac502c9722c11267733d882e101b1@group.calendar.google.com",
+      "audience_column_schema": [
+        { "source": "Contact Name", "field": "name", "required": true },
+        { "source": "Phone", "field": "phone", "required": true },
+        { "source": "Email", "field": "email", "required": false },
+        { "source": "Organization Name", "field": "company", "required": false },
+        { "source": "Designation", "field": "designation", "required": false },
+        { "source": "City", "field": "city", "required": false }
+      ],
+      "demo_duration_minutes": 60,
+      "demo_buffer_minutes": 15,
+      "demo_working_days": ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"],
+      "demo_working_hours_start": "08:00",
+      "demo_working_hours_end": "18:00",
+      "demo_booking_horizon_days": "unbounded",
+      "demo_min_lead_days": 1,
+      "demo_timezone": "Asia/Kolkata",
+      "ai_configuration": {
+        "system_prompt_file": "prompts/sustainx.md",
+        "qualification_mode": "ai_judgement",
+        "qualification_required_fields": [],
+        "fallback_message": "I don't have verified information on that yet. The SustainX team can cover it in a presentation if you'd like me to arrange one."
+      }
     },
     {
       "slug": "life-herba",

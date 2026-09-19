@@ -16,7 +16,6 @@ import pytest
 from pydantic import ValidationError
 
 from app.configuration.catalog import (
-    PRODUCT_FIELDS,
     CatalogError,
     ProductCatalog,
     ProductEntry,
@@ -51,8 +50,11 @@ class TestTheShippedCatalog:
     def test_the_confirmed_segments_are_seeded_in_order(self) -> None:
         products = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}
         assert [(s.slug, s.display_name) for s in products["sustainx"].segments] == [
-            ("government", "Government"),
-            ("industry", "Industry"),
+            ("industries", "Industries"),
+            ("institutions", "Institutions"),
+            ("government-bodies", "Government Bodies"),
+            ("students", "Students"),
+            ("professionals-executives", "Professionals / Executives"),
         ]
         assert [(s.slug, s.display_name) for s in products["life-herba"].segments] == [
             ("healthcare-practitioners", "Healthcare Practitioners"),
@@ -61,15 +63,38 @@ class TestTheShippedCatalog:
             ("consumers", "Consumers"),
         ]
 
-    def test_sustainx_invents_no_provider_ids_prompts_schemas_or_overrides(self) -> None:
-        """SustainX still has identity and segments only — no invented launch values."""
+    def test_sustainx_has_confirmed_launch_configuration_without_whatsapp_ids(self) -> None:
+        """SustainX launch config is present; WhatsApp IDs stay unset readiness blockers."""
         product = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["sustainx"]
-        configured = product.model_fields_set & {
-            *PRODUCT_FIELDS,
-            "ai_configuration",
-            "segment_ai_overrides",
-        }
-        assert configured == set()
+        academicae = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["academicae"]
+
+        assert product.google_calendar_id == (
+            "15ab1950b41e20b63b6bd2ef1aad5506808ac502c9722c11267733d882e101b1@"
+            "group.calendar.google.com"
+        )
+        assert product.whatsapp_phone_number_id is None
+        assert product.whatsapp_business_account_id is None
+        assert product.whatsapp_phone_number_id != academicae.whatsapp_phone_number_id
+        assert product.ai_configuration is not None
+        assert product.ai_configuration.qualification_mode == "ai_judgement"
+        assert product.ai_configuration.system_prompt
+        assert "presume" in product.ai_configuration.system_prompt.lower() or (
+            "does NOT tell you what" in product.ai_configuration.system_prompt
+        )
+        assert product.segment_ai_overrides == {}
+        assert product.demo_duration_minutes == 60
+        assert product.demo_buffer_minutes == 15
+        assert product.demo_booking_horizon_days == -1
+        assert product.demo_min_lead_days == 1
+        assert product.demo_timezone == "Asia/Kolkata"
+        assert product.audience_column_schema == [
+            {"source": "Contact Name", "field": "name", "required": True},
+            {"source": "Phone", "field": "phone", "required": True},
+            {"source": "Email", "field": "email", "required": False},
+            {"source": "Organization Name", "field": "company", "required": False},
+            {"source": "Designation", "field": "designation", "required": False},
+            {"source": "City", "field": "city", "required": False},
+        ]
 
     def test_life_herba_has_registration_launch_configuration(self) -> None:
         """Life Herba launch config: AI, conversion, audience schema, own WhatsApp number."""

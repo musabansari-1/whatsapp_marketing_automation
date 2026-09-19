@@ -16,19 +16,22 @@ None of these calls Meta, Google or HubSpot, and none sends a message.
 
 ## What the shipped catalog contains
 
-Three product identities and the initial segments (confirmed 2026-09-12). Academicae also
-holds the production values confirmed for first launch (2026-09-14): WhatsApp number and
-WABA IDs, Google Calendar ID, school-audience column mapping, slot policy, and AI
-configuration (`prompts/academicae.md`, `qualification_mode: ai_judgement`). SustainX still
-has identity and segments only. Life Herba carries confirmed AI configuration, segment
-overrides, `conversion_mode: external_registration` with registration URL/CTAs, a launch
-audience column schema (Name/Phone/Email/City), its own WhatsApp phone number ID, and its
-own WABA (`2034571340595521`) — still no calendar (external registration).
+Three product identities. Academicae holds the production values confirmed for first
+launch (2026-09-14): WhatsApp number and WABA IDs, Google Calendar ID, school-audience
+column mapping, slot policy, and AI configuration (`prompts/academicae.md`,
+`qualification_mode: ai_judgement`). SustainX launch configuration (2026-09-19) includes
+five audience segments, shared AI (`prompts/sustainx.md`, discovery-first,
+`ai_judgement`), calendar/slot policy, and a general audience schema — WhatsApp Phone
+Number ID and WABA remain unset readiness blockers. Life Herba carries confirmed AI
+configuration, segment overrides, `conversion_mode: external_registration` with
+registration URL/CTAs, a launch audience column schema (Name/Phone/Email/City), its own
+WhatsApp phone number ID, and its own WABA (`2034571340595521`) — still no calendar
+(external registration).
 
 | Product | Slug | Segments | Launch config in catalog |
 |---|---|---|---|
 | Academicae | `academicae` (fixed ID `00000000-0000-4000-8000-000000000001`) | none | yes — inactive until readiness + explicit activation |
-| SustainX | `sustainx` | `government`, `industry` | no |
+| SustainX | `sustainx` | `industries`, `institutions`, `government-bodies`, `students`, `professionals-executives` | partial — AI + calendar + audience schema; blockers: WhatsApp IDs; gaps: templates, knowledge |
 | Life Herba | `life-herba` | `healthcare-practitioners`, `wellness-centres`, `pharmacies`, `consumers` | partial — AI + external registration + audience schema + WhatsApp IDs; gaps: templates, knowledge |
 
 Slugs are permanent route identifiers (`/p/<slug>`). They are data: nothing in the code
@@ -73,8 +76,48 @@ explicitly approved. `--accept-gaps` is not a way around missing templates or kn
 | `segment_ai_overrides` | `{segment_slug: {...only the fields that differ...}}`; `null` removes an override |
 | segment `cta_label`, `cta_instruction` | optional per-segment CTA copy for external-registration products |
 
-SustainX has one product-level `ai_configuration` and no `segment_ai_overrides` once configured.
-Life Herba has one product default, sparse segment prompt overrides, and per-segment CTAs.
+SustainX has one product-level `ai_configuration` and no `segment_ai_overrides`. The
+audience segment is injected as conversation context (who received the campaign) and must
+not determine the prospect's presumed need — interest is discovered in the chat. Life Herba
+has one product default, sparse segment prompt overrides, and per-segment CTAs.
+
+## SustainX planned Meta template names
+
+Names only — **not** approved, **not** seeded, **not** assigned. Flow remains Meta
+submission → approval → template sync → explicit SustainX ownership assignment ([D57]).
+
+| Segment | Planned template name |
+|---|---|
+| Industries | `sustainx_industries_outreach` |
+| Institutions | `sustainx_institutions_outreach` |
+| Government Bodies | `sustainx_government_bodies_outreach` |
+| Students | `sustainx_students_outreach` |
+| Professionals / Executives | `sustainx_professionals_executives_outreach` |
+
+Do not invent alternate or shortened planned names. Retired obsolete names (do not use):
+`sustainx_government_outreach`, `sustainx_industry_outreach`.
+
+Marketing template copy should introduce SustainX broadly for that audience and invite a
+reply about interest. Do not assume what the recipient wants from their segment alone.
+
+## SustainX audience spreadsheet
+
+Canonical mapped fields (importer supports only these six):
+
+| Spreadsheet header | Canonical field | Required |
+|---|---|---|
+| Contact Name | `name` | yes |
+| Phone | `phone` | yes |
+| Email | `email` | no |
+| Organization Name | `company` | no |
+| Designation | `designation` | no |
+| City | `city` | no |
+
+Optional spreadsheet extras that may appear in uploads and remain in `raw_row` when present,
+but are not first-class mapped fields: Website, State, Organization Type, Sector / Industry,
+Primary Interest, Project / Initiative, Project Stage, Notes. Organization fields may be
+empty for Students or individuals. The authoritative audience segment is the platform
+audience selection, not a free-text spreadsheet column.
 
 ## Life Herba planned Meta template names
 
@@ -89,26 +132,6 @@ template sync → explicit Life Herba ownership assignment ([D57]).
 | Consumers | `lifeherba_consumer_outreach` |
 
 Do not invent alternate or shortened planned names.
-
-## Example of a later addition (not real values)
-
-```json
-{
-  "slug": "sustainx",
-  "display_name": "SustainX",
-  "whatsapp_phone_number_id": "<from Meta>",
-  "whatsapp_business_account_id": "<from Meta>",
-  "google_calendar_id": "<from Google>",
-  "audience_column_schema": [
-    { "source": "<header>", "field": "name", "required": true },
-    { "source": "<header>", "field": "phone", "required": true }
-  ],
-  "ai_configuration": {
-    "system_prompt_file": "prompts/sustainx.md",
-    "qualification_required_fields": ["<confirmed field>"]
-  }
-}
-```
 
 ## Academicae's pre-Phase-27 configuration
 

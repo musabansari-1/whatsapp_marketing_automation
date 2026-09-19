@@ -44,7 +44,11 @@ from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.errors import ProviderError
 from app.core.logging import get_logger
-from app.domain.ai_config import AIConfigurationError, ResolvedAIConfig
+from app.domain.ai_config import (
+    AIConfigurationError,
+    ResolvedAIConfig,
+    with_audience_segment_context,
+)
 from app.domain.conversation import LeadStateError, can_transition_conversation
 from app.domain.conversion import uses_calendar_booking, with_conversion_guidance
 from app.domain.enums import ConversationStatus, LeadStatus, MessageStatus
@@ -270,6 +274,10 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
                 registration_url=None if product is None else product.registration_url,
                 cta_label=None if segment is None else segment.cta_label,
                 cta_instruction=None if segment is None else segment.cta_instruction,
+            )
+            system_prompt = with_audience_segment_context(
+                system_prompt,
+                segment_display_name=None if segment is None else segment.display_name,
             )
             tool_context = ai_tools.ToolContext(
                 session=session,

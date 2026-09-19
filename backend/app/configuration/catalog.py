@@ -47,7 +47,10 @@ from pydantic import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.configuration.segment_aliases import reconcile_life_herba_segment_aliases
+from app.configuration.segment_aliases import (
+    reconcile_life_herba_segment_aliases,
+    reconcile_sustainx_segment_aliases,
+)
 from app.domain.audience import parse_audience_schema
 from app.domain.conversion import ConversionMode
 from app.domain.product import is_valid_slug
@@ -261,8 +264,7 @@ class ProductEntry(_Strict):
             return ConversionMode(text).value
         except ValueError as exc:
             raise ValueError(
-                f"conversion_mode must be one of "
-                f"{[m.value for m in ConversionMode]}, got {value!r}"
+                f"conversion_mode must be one of {[m.value for m in ConversionMode]}, got {value!r}"
             ) from exc
 
     @field_validator("audience_column_schema")
@@ -405,9 +407,11 @@ async def apply_catalog(
     changes: list[str] = []
     for entry in catalog.products:
         changes.extend(await apply_product(session, entry))
-    # Collapse obsolete Life Herba segment slugs onto the canonical four. The catalog
-    # never deletes segments, so without this a re-configure would leave duplicates.
+    # Collapse obsolete Life Herba / SustainX segment slugs onto their canonical sets.
+    # The catalog never deletes segments, so without this a re-configure would leave
+    # duplicates. Ambiguous SustainX experimental segments are reported, not guessed.
     changes.extend(await reconcile_life_herba_segment_aliases(session))
+    changes.extend(await reconcile_sustainx_segment_aliases(session))
     await session.flush()
 
     worsened: list[str] = []
@@ -534,9 +538,7 @@ async def _apply_segments(
         if "cta_label" in entry.model_fields_set:
             changes.extend(_set(existing, "cta_label", entry.cta_label, segment_label))
         if "cta_instruction" in entry.model_fields_set:
-            changes.extend(
-                _set(existing, "cta_instruction", entry.cta_instruction, segment_label)
-            )
+            changes.extend(_set(existing, "cta_instruction", entry.cta_instruction, segment_label))
     await session.flush()
     return changes
 

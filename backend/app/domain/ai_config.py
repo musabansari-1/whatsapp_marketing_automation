@@ -252,10 +252,39 @@ def _validate(config: ResolvedAIConfig) -> None:
         raise AIConfigurationError("max_tool_rounds must be at least 1")
 
 
+def with_audience_segment_context(
+    system_prompt: str,
+    *,
+    segment_display_name: str | None,
+) -> str:
+    """Append who received the campaign, without implying what they want.
+
+    The segment is marketing audience context. Interest must still be discovered from
+    the conversation. Empty when the conversation has no segment.
+    """
+    name = (segment_display_name or "").strip()
+    if not name:
+        return system_prompt
+    block = "\n".join(
+        [
+            "## Audience segment context",
+            "",
+            f"This conversation's marketing audience segment is: {name}.",
+            "",
+            "The segment tells you who received the campaign. It does NOT tell you what",
+            "they are interested in. Discover their actual interest from what they say.",
+            "Do not presume, prioritize, or redirect toward a need based on audience type alone.",
+        ]
+    )
+    prompt = system_prompt.rstrip()
+    return f"{prompt}\n\n{block}" if prompt else block
+
+
 __all__ = [
     "AIConfigurationError",
     "ConfigurationRow",
     "PlatformDefaults",
     "ResolvedAIConfig",
     "resolve",
+    "with_audience_segment_context",
 ]

@@ -225,7 +225,13 @@ class TestTheShippedCatalog:
             "life-herba": False,
         }
         assert segments == {
-            "sustainx": ["government", "industry"],
+            "sustainx": [
+                "industries",
+                "institutions",
+                "government-bodies",
+                "students",
+                "professionals-executives",
+            ],
             "life-herba": [
                 "healthcare-practitioners",
                 "wellness-centres",
@@ -233,14 +239,24 @@ class TestTheShippedCatalog:
                 "consumers",
             ],
         }
-        # SustainX stays identity-only. Life Herba carries confirmed launch config but
-        # still has no calendar (external registration).
-        assert policies == 5  # Life Herba: 1 product default + 4 segment overrides
+        # SustainX: one product AI default, no segment overrides. Life Herba: 1 + 4.
+        assert policies == 6
         sustainx = rows["sustainx"]
         life_herba = rows["life-herba"]
         assert sustainx.whatsapp_phone_number_id is None
-        assert sustainx.google_calendar_id is None
-        assert sustainx.audience_column_schema is None
+        assert sustainx.whatsapp_business_account_id is None
+        assert sustainx.google_calendar_id == (
+            "15ab1950b41e20b63b6bd2ef1aad5506808ac502c9722c11267733d882e101b1@"
+            "group.calendar.google.com"
+        )
+        assert sustainx.audience_column_schema == [
+            {"source": "Contact Name", "field": "name", "required": True},
+            {"source": "Phone", "field": "phone", "required": True},
+            {"source": "Email", "field": "email", "required": False},
+            {"source": "Organization Name", "field": "company", "required": False},
+            {"source": "Designation", "field": "designation", "required": False},
+            {"source": "City", "field": "city", "required": False},
+        ]
         assert life_herba.whatsapp_phone_number_id == "1340886312439722"
         assert life_herba.whatsapp_business_account_id == "2034571340595521"
         assert life_herba.google_calendar_id is None
@@ -728,16 +744,17 @@ class TestReadiness:
         code = await product_readiness(Settings(), ["sustainx"], as_json=True, out=out)
         (sustainx,) = json.loads(out.getvalue())["products"]
 
-        # Inactive and not ready is the expected state while configuring: not a failure.
+        # Inactive and not ready: WhatsApp IDs remain the launch blockers.
         assert code == EXIT_OK
+        assert sustainx["is_active"] is False
         assert sustainx["verdict"] == "NOT READY"
         assert {f["code"] for f in sustainx["findings"] if f["severity"] == "BLOCKER"} == {
-            "audience.schema_missing",
-            "ai.policy_missing",
             "whatsapp.phone_number_missing",
             "whatsapp.business_account_missing",
-            "calendar.missing",
         }
+        gap_codes = {f["code"] for f in sustainx["findings"] if f["severity"] == "GAP"}
+        assert "templates.none_usable" in gap_codes
+        assert "knowledge.none_ready" in gap_codes
 
         out = io.StringIO()
         code = await product_readiness(Settings(), ["life-herba"], as_json=True, out=out)

@@ -24,6 +24,7 @@ from app.domain.ai_config import (
     AIConfigurationError,
     PlatformDefaults,
     resolve,
+    with_audience_segment_context,
 )
 from app.domain.qualification import QualificationMode
 
@@ -163,11 +164,27 @@ class TestProductShapes:
             fallback_message="A colleague will follow up.",
         )
 
-        government = resolve(segment=None, product=product, defaults=DEFAULTS)
-        industry = resolve(segment=None, product=product, defaults=DEFAULTS)
+        industries = resolve(segment=None, product=product, defaults=DEFAULTS)
+        students = resolve(segment=None, product=product, defaults=DEFAULTS)
 
-        assert government == industry
-        assert government.system_prompt == "Book a presentation with the team."
+        assert industries == students
+        assert industries.system_prompt == "Book a presentation with the team."
+
+
+class TestAudienceSegmentContext:
+    def test_appends_who_received_the_campaign_without_presuming_need(self) -> None:
+        text = with_audience_segment_context(
+            "Base prompt.",
+            segment_display_name="Industries",
+        )
+        assert text.startswith("Base prompt.")
+        assert "Industries" in text
+        assert "does NOT tell you what" in text
+        assert "Do not presume" in text
+
+    def test_omits_block_when_there_is_no_segment(self) -> None:
+        assert with_audience_segment_context("Base.", segment_display_name=None) == "Base."
+        assert with_audience_segment_context("Base.", segment_display_name="  ") == "Base."
 
     def test_the_life_herba_shape_differs_only_where_stated(self) -> None:
         product = Row(
