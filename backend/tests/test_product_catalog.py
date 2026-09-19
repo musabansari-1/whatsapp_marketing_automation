@@ -87,10 +87,10 @@ class TestTheShippedCatalog:
             "consumers",
         }
         assert product.whatsapp_phone_number_id == "1340886312439722"
-        assert product.whatsapp_business_account_id == "1055996760528305"
-        # Shared WABA is fine; routing uses the unique phone number ID ([D40]).
-        assert product.whatsapp_business_account_id == academicae.whatsapp_business_account_id
+        assert product.whatsapp_business_account_id == "2034571340595521"
+        # Routing uses the unique phone number ID ([D40]); Life Herba has its own WABA.
         assert product.whatsapp_phone_number_id != academicae.whatsapp_phone_number_id
+        assert product.whatsapp_business_account_id != academicae.whatsapp_business_account_id
         assert product.google_calendar_id is None
         assert product.audience_column_schema == [
             {"source": "Name", "field": "name", "required": True},

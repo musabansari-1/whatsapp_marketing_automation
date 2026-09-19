@@ -22,8 +22,8 @@ WABA IDs, Google Calendar ID, school-audience column mapping, slot policy, and A
 configuration (`prompts/academicae.md`, `qualification_mode: ai_judgement`). SustainX still
 has identity and segments only. Life Herba carries confirmed AI configuration, segment
 overrides, `conversion_mode: external_registration` with registration URL/CTAs, a launch
-audience column schema (Name/Phone/Email/City), and its own WhatsApp phone number ID
-(shared WABA with Academicae; distinct number for inbound routing) — still no calendar.
+audience column schema (Name/Phone/Email/City), its own WhatsApp phone number ID, and its
+own WABA (`2034571340595521`) — still no calendar (external registration).
 
 | Product | Slug | Segments | Launch config in catalog |
 |---|---|---|---|

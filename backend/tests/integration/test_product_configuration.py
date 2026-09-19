@@ -242,7 +242,7 @@ class TestTheShippedCatalog:
         assert sustainx.google_calendar_id is None
         assert sustainx.audience_column_schema is None
         assert life_herba.whatsapp_phone_number_id == "1340886312439722"
-        assert life_herba.whatsapp_business_account_id == "1055996760528305"
+        assert life_herba.whatsapp_business_account_id == "2034571340595521"
         assert life_herba.google_calendar_id is None
         assert life_herba.audience_column_schema == [
             {"source": "Name", "field": "name", "required": True},
