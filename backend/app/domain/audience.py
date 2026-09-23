@@ -11,6 +11,7 @@ repository. That keeps the validation rules testable against plain dictionaries.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -162,11 +163,48 @@ class MissingColumnsError(Exception):
     Raised for the file as a whole rather than per row: a missing required column
     means the wrong file, and processing it row by row would produce thousands of
     identical errors.
+
+    The message names the sheet and the rows that were read, because "Missing required
+    column(s)" with no location sends an operator looking for a formatting problem that
+    may not exist — a title row above the headers is the usual cause ([D63]).
     """
 
-    def __init__(self, missing: list[str]) -> None:
-        super().__init__("Missing required column(s): " + ", ".join(missing))
+    def __init__(
+        self,
+        missing: list[str],
+        *,
+        sheet_name: str | None = None,
+        header_row: int = 1,
+        scanned_rows: int = 1,
+    ) -> None:
+        message = "Missing required column(s): " + ", ".join(missing)
+        if sheet_name:
+            if scanned_rows > 1:
+                message += (
+                    f". Looked for them in the first {scanned_rows} rows of sheet "
+                    f"{sheet_name!r}; none of those rows is the header row."
+                )
+            else:
+                message += f". Read row {header_row} of sheet {sheet_name!r} as the header row."
+        super().__init__(message)
         self.missing = missing
+
+
+def header_carries_required_columns(
+    schema: AudienceColumnSchema,
+) -> Callable[[list[str]], bool]:
+    """A predicate for `app.domain.excel.parse_excel`: is this row the header row?
+
+    Deliberately strict — a candidate must carry *every* required column of this
+    product's schema before it is preferred over row 1. Which columns exist stays
+    configuration ([D25], [D51]); only the header row's **position** is inferred, and
+    only from this product's own mapping, never another product's.
+    """
+
+    def matches(headers: list[str]) -> bool:
+        return not find_missing_columns(headers, schema)
+
+    return matches
 
 
 @dataclass(frozen=True, slots=True)

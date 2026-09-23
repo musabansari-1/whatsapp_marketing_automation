@@ -104,9 +104,17 @@ in production and refuses uploads (Phase 27). What a product lacks is reported b
 
 ### Set by `deploy.sh`
 
-`APP_ENV`, the six provider selections, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`,
-`GOOGLE_CLOUD_TASKS_QUEUE`, `GOOGLE_SECRET_MANAGER_PROJECT`,
-`GOOGLE_CALENDAR_TOKEN_SECRET_NAME`, `WORKER_SERVICE_ACCOUNT_EMAIL`, `WORKER_BASE_URL`.
+`APP_ENV`, the six provider selections, `GOOGLE_CALENDAR_AUTH_MODE` ([D62]),
+`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_TASKS_QUEUE`,
+`GOOGLE_SECRET_MANAGER_PROJECT`, `GOOGLE_CALENDAR_TOKEN_SECRET_NAME`,
+`WORKER_SERVICE_ACCOUNT_EMAIL`, `WORKER_BASE_URL`.
+
+`WORKER_BASE_URL` is set on **both** services from one resolved value: it is the address
+the API dispatches every task to *and* the OIDC audience the worker expects, compared
+character for character. It is read from Cloud Run, never derived — a rewritten suffix
+invented a hostname Cloud Run does not serve and silently stopped every task dispatch
+(2026-09-22). `resolve_service_url` in `config.sh` is the one place it comes from, and
+`smoke-test.sh` checks the two copies still agree.
 
 ### Secret references, resolved by Cloud Run at start
 
@@ -124,7 +132,8 @@ These have no safe default and the platform cannot infer them:
 | Variable | Waiting on |
 |---|---|
 | `OPENROUTER_MODEL` | The benchmark ([D17], D-20) — **no default exists and startup fails without it when the provider is `openrouter`** |
-| `GOOGLE_OAUTH_CLIENT_ID` | The shared OAuth client (D-28). Each product's calendar is `products.google_calendar_id`, not an environment variable (Phase 24) |
+| `GOOGLE_OAUTH_CLIENT_ID` | The shared OAuth client (D-28). **Not needed when `GOOGLE_CALENDAR_AUTH_MODE=service_account`.** Each product's calendar is `products.google_calendar_id`, not an environment variable (Phase 24) |
+| `GOOGLE_CALENDAR_AUTH_MODE` | [D62]: `service_account` (production — calendars shared with the worker's service account) or `oauth_refresh_token` (fallback — human consent flow, see `deploy/oauth-consent.md`) |
 | `MSG_*` | Customer-facing copy ([D21]) |
 
 **Not environment variables any more (Phase 27):** each product's WhatsApp phone number ID

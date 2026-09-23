@@ -51,6 +51,24 @@ class CalendarProviderName(StrEnum):
     GOOGLE = "google"
 
 
+class CalendarAuthMode(StrEnum):
+    """How the platform proves who it is to Google ([D62]).
+
+    `oauth_refresh_token` is the Phase 11 arrangement: a human consents once and the
+    refresh token lives in Secret Manager ([D19]). `service_account` is the production
+    arrangement: the worker authenticates as the identity Cloud Run gives it, and each
+    product's calendar is shared with that service account.
+
+    Both are supported because they differ operationally rather than functionally — the
+    same calendar, the same calls — and because a consent screen in Testing status
+    expires the refresh token every 7 days, which is a production failure an
+    environment must be able to move off without a code change.
+    """
+
+    OAUTH_REFRESH_TOKEN = "oauth_refresh_token"  # noqa: S105 - a mode name, not a secret
+    SERVICE_ACCOUNT = "service_account"
+
+
 class CRMProviderName(StrEnum):
     FAKE = "fake"
     HUBSPOT = "hubspot"
@@ -183,15 +201,21 @@ class Settings(BaseSettings):
     worker_service_account_email: str | None = None
 
     # ---------------------------------------------------------------- Calendar [D19][D43]
-    # Shared across every product: the operations account's OAuth client, where its refresh
-    # token lives, and the Secret Manager project. *Which* calendar is not configured here.
-    # It is `products.google_calendar_id`, one per product (Phase 24), and there is
-    # deliberately no platform-wide calendar to fall back to.
+    # Shared across every product: how the platform authenticates to Google and, in the
+    # refresh-token mode, where the operations account's token lives. *Which* calendar is
+    # not configured here. It is `products.google_calendar_id`, one per product
+    # (Phase 24), and there is deliberately no platform-wide calendar to fall back to.
+    #
+    # [D62]: `service_account` uses the worker's own Cloud Run identity, so none of the
+    # three settings below is read and no secret is needed. It is the production default
+    # an operator should choose once each product's calendar is shared with the service
+    # account; `oauth_refresh_token` stays the fallback and the local-development path.
+    google_calendar_auth_mode: CalendarAuthMode = CalendarAuthMode.OAUTH_REFRESH_TOKEN
     google_secret_manager_project: str | None = None
     google_calendar_token_secret_name: str | None = None
     # The OAuth client the refresh token belongs to. The *token* lives in Secret
     # Manager ([D19]); these identify the application it was granted to, and the
-    # secret is still a secret — hence SecretStr.
+    # secret is still a secret — hence SecretStr. Unused in service-account mode.
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: SecretStr | None = None
     google_calendar_timeout_seconds: float = 20.0
@@ -210,6 +234,12 @@ class Settings(BaseSettings):
     audience_phone_default_region: str = "IN"
     audience_max_file_bytes: int = 5 * 1024 * 1024
     audience_max_rows: int = 50_000
+    # How many leading rows may be inspected for the header row ([D63]). A title above the
+    # headers — often merged, often followed by a blank row — is normal in the client's
+    # spreadsheets, and reading row 1 as the header row reports their columns as missing.
+    # A file whose headers sit deeper than this is reported as missing its required
+    # columns rather than searched indefinitely.
+    audience_header_scan_rows: int = 5
 
     # ---------------------------------------------------------------- opt-out [D5]
     opt_out_keywords: CommaSeparated = Field(
@@ -378,7 +408,14 @@ class Settings(BaseSettings):
             if not self.whatsapp_app_secret:
                 missing.append("WHATSAPP_APP_SECRET")
 
-        if self.calendar_provider is CalendarProviderName.GOOGLE:
+        # [D62]: only the refresh-token mode needs credentials to exist. The
+        # service-account mode takes its identity from the environment it runs in, which
+        # startup cannot inspect — and must not, since local development uses Application
+        # Default Credentials that are not configuration.
+        if (
+            self.calendar_provider is CalendarProviderName.GOOGLE
+            and self.google_calendar_auth_mode is CalendarAuthMode.OAUTH_REFRESH_TOKEN
+        ):
             if not self.google_secret_manager_project:
                 missing.append("GOOGLE_SECRET_MANAGER_PROJECT")
             if not self.google_calendar_token_secret_name:

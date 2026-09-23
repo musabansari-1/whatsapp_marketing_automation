@@ -50,6 +50,23 @@ class TestParsing:
         sheet = parse_excel(content, max_rows=100)
         assert len(sheet.rows) == 2
 
+    def test_a_sheet_shorter_than_the_scan_keeps_row_one(self) -> None:
+        """A file with fewer rows than the scan depth ends the search: the header is
+        whatever the top row carried, exactly as the platform has always read it."""
+        content = make_xlsx([["Email", "Company"], ["r@example.com", "Acme"]])
+
+        sheet = parse_excel(content, max_rows=100)
+        scanned = parse_excel(
+            content,
+            max_rows=100,
+            header_matches=lambda headers: False,
+            header_scan_rows=5,
+        )
+
+        assert scanned.headers == sheet.headers == ["Email", "Company"]
+        assert scanned.header_row == sheet.header_row == 1
+        assert scanned.rows == sheet.rows == [{"Email": "r@example.com", "Company": "Acme"}]
+
     def test_short_rows_are_padded(self) -> None:
         """Spreadsheets routinely omit trailing cells."""
         content = make_xlsx([["Phone", "Name", "Email"], ["9876543210"]])
@@ -78,6 +95,101 @@ class TestParsing:
         workbook.save(buffer)
         sheet = parse_excel(buffer.getvalue(), max_rows=100)
 
+        assert len(sheet.rows) == 1
+
+
+class TestHeaderRowDetection:
+    """A title above the headers is normal in the client's spreadsheets ([D63]).
+
+    Academicae's real file (2026-09-24) is the shape below: a merged title, a blank row,
+    then the headers. Read from row 1 it appeared to have no columns at all, and the
+    upload was refused with "Missing required column(s): School Name, Phone" while the
+    columns were plainly there. Only the header row's *position* is inferred, and only
+    when the caller supplies the predicate.
+    """
+
+    TITLE = "Master List — All 100 Delhi Schools"
+
+    def client_file(self) -> bytes:
+        return make_xlsx(
+            [
+                [self.TITLE],
+                [],
+                ["S.No.", "Category", "School Name", "Address", "Phone", "Email"],
+                [1, "referral", "Cambridge School", "New Friends Colony", 917467865887, "a@b.in"],
+                [2, "referral", "Ardee School", "New Friends Colony", 919711000498, None],
+            ]
+        )
+
+    @staticmethod
+    def academicae(headers: Sequence[str]) -> bool:
+        wanted = {"school name", "phone"}
+        return wanted <= {header.strip().casefold() for header in headers}
+
+    def test_the_header_row_is_found_below_a_title(self) -> None:
+        sheet = parse_excel(
+            self.client_file(), max_rows=100, header_matches=self.academicae, header_scan_rows=5
+        )
+
+        assert sheet.header_row == 3
+        assert sheet.headers[:3] == ["S.No.", "Category", "School Name"]
+        assert len(sheet.rows) == 2
+
+    def test_the_title_above_the_headers_is_not_read_as_data(self) -> None:
+        """Every preamble row would otherwise be an invalid row in the preview."""
+        sheet = parse_excel(
+            self.client_file(), max_rows=100, header_matches=self.academicae, header_scan_rows=5
+        )
+
+        assert sheet.rows[0]["School Name"] == "Cambridge School"
+        assert all(self.TITLE not in str(value) for row in sheet.rows for value in row.values())
+
+    def test_the_sheet_is_named_in_the_result(self) -> None:
+        """An operator told a column is missing needs to know which sheet was read."""
+        sheet = parse_excel(
+            self.client_file(), max_rows=100, header_matches=self.academicae, header_scan_rows=5
+        )
+        assert sheet.sheet_name == "Sheet"
+
+    def test_without_a_predicate_row_one_is_still_the_header_row(self) -> None:
+        """The long-standing behaviour, unchanged for a caller that states no format."""
+        sheet = parse_excel(self.client_file(), max_rows=100)
+
+        assert sheet.header_row == 1
+        assert sheet.headers == [self.TITLE]
+
+    def test_a_header_deeper_than_the_scan_reports_row_one(self) -> None:
+        """Bounded on purpose: a header row further down is not searched for, and the
+        caller reports the file as missing its columns rather than being guessed at."""
+        content = make_xlsx(
+            [[self.TITLE], [], ["note"], ["x"], [], [self.TITLE], ["School Name", "Phone"]]
+        )
+
+        sheet = parse_excel(
+            content, max_rows=100, header_matches=self.academicae, header_scan_rows=5
+        )
+
+        assert sheet.header_row == 1
+        assert sheet.headers == [self.TITLE]
+
+    def test_a_matching_header_row_is_preferred_even_when_row_one_matches(self) -> None:
+        content = make_xlsx([["School Name", "Phone"], ["A", "9876543210"]])
+
+        sheet = parse_excel(
+            content, max_rows=100, header_matches=self.academicae, header_scan_rows=5
+        )
+
+        assert sheet.header_row == 1
+        assert len(sheet.rows) == 1
+
+    def test_the_scan_never_treats_a_blank_row_as_the_header(self) -> None:
+        content = make_xlsx([[self.TITLE], [], [], ["School Name", "Phone"], ["A", "9876543210"]])
+
+        sheet = parse_excel(
+            content, max_rows=100, header_matches=self.academicae, header_scan_rows=5
+        )
+
+        assert sheet.header_row == 4
         assert len(sheet.rows) == 1
 
 

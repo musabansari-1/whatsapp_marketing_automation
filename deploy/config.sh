@@ -36,7 +36,7 @@ MIGRATE_JOB="${MIGRATE_JOB:-wa-migrate}"
 # start under an inbound burst turns one slow reply into a redelivery storm.
 # WORKER_MAX_INSTANCES bounds concurrency against the LLM and WhatsApp providers, each
 # of which has its own rate limit.
-API_MIN_INSTANCES="${API_MIN_INSTANCES:-1}"
+API_MIN_INSTANCES="${API_MIN_INSTANCES:-0}"
 API_MAX_INSTANCES="${API_MAX_INSTANCES:-10}"
 WORKER_MAX_INSTANCES="${WORKER_MAX_INSTANCES:-10}"
 
@@ -152,3 +152,79 @@ log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 # hard error. This keeps the scripts re-runnable, which matters because a half-finished
 # setup is the normal state after a permissions problem.
 exists() { "$@" >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------- Cloud Run URLs
+#
+# A Cloud Run service answers on two hostnames: the numbered
+# SERVICE-PROJECT_NUMBER.REGION.run.app, and a legacy SERVICE-HASH-REGIONCODE.a.run.app
+# alias. They are unrelated strings — the project number appears nowhere in the alias —
+# so no substitution turns one into the other, and `status.url` may return either.
+#
+# deploy.sh used to try exactly that substitution (`${url/.a.run.app/.${REGION}.run.app}`)
+# and fabricated a hostname Cloud Run does not serve. On 2026-09-22 it left the API
+# dispatching every customer message to a 404 while the sweeps, configured by hand
+# against the real URL, kept working: eighteen hours of inbound messages unanswered,
+# both services healthy, and no alert able to see it.
+#
+# So the URL is *read*, never derived. Every consumer — the API's WORKER_BASE_URL, the
+# worker's own copy of it, the sweeps' OIDC audience — takes the value from here, so
+# they cannot disagree about a host that does not exist.
+resolve_service_url() {
+  local service="$1" url urls canonical
+
+  url="$(gcloud run services describe "$service" \
+    --region "$REGION" --project "$PROJECT_ID" --format 'value(status.url)' 2>/dev/null || true)"
+  if [ -z "$url" ]; then
+    echo "Service $service is not deployed in $PROJECT_ID/$REGION" >&2
+    return 1
+  fi
+
+  # Cloud Run lists every hostname it serves in this annotation. Prefer the numbered
+  # form from that list — not because the alias is broken, but because it is the stable
+  # one: it does not change shape on a redeploy, and the sweeps bake their audience in
+  # at schedule time, so a value that flips would 401 them silently.
+  urls="$(gcloud run services describe "$service" \
+    --region "$REGION" --project "$PROJECT_ID" \
+    --format 'value(metadata.annotations."run.googleapis.com/urls")' 2>/dev/null || true)"
+  canonical="$(printf '%s' "$urls" | tr -d '[]"' | tr ',' '\n' \
+    | grep -E "^https://${service}-[0-9]+\.${REGION}\.run\.app$" | head -n 1 || true)"
+
+  # A service that advertises only the alias is fine: it is a real hostname, and
+  # status.url returned it rather than us inventing it.
+  echo "${canonical:-$url}"
+}
+
+# The canonical hostname for a service that has never been deployed, which has no
+# status.url and no annotation to read. Needed exactly once: the worker verifies task
+# OIDC audiences against WORKER_BASE_URL, and Settings refuses to start with the Cloud
+# Tasks queue selected and that variable unset — so the first worker revision of a new
+# project needs a value before Cloud Run can tell us one. deploy.sh verifies it against
+# the live service immediately afterwards, so a wrong guess fails the deployment rather
+# than reaching the API.
+canonical_service_url() {
+  local service="$1" number
+  number="$(gcloud projects describe "$PROJECT_ID" --format 'value(projectNumber)')"
+  echo "https://${service}-${number}.${REGION}.run.app"
+}
+
+# The HTTP status a URL answers with, or 000 when it answers not at all (no curl, no
+# route, no DNS). This is the probe that catches a fabricated hostname: Cloud Run serves
+# 404 for a host it does not have, where a real but private service answers 403.
+http_status() {
+  local url="$1" code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || true)"
+  echo "${code:-000}"
+}
+
+# An environment variable as the deployed service actually holds it, not as the
+# operator's shell or this file claims. Checks that read configuration are only worth
+# anything if they read what is running.
+deployed_env_value() {
+  local service="$1" name="$2" value
+  value="$(gcloud run services describe "$service" \
+    --region "$REGION" --project "$PROJECT_ID" \
+    --format "value(spec.template.spec.containers[0].env.filter(\"name:${name}\").extract(\"value\"))" \
+    2>/dev/null || true)"
+  # --format returns a YAML list (e.g. ['staging']); peel the brackets and quotes.
+  printf '%s' "$(printf '%s' "$value" | tr -d "[]\"'")"
+}

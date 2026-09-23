@@ -1,4 +1,4 @@
-"""Google Calendar provider (specification §12, §20, [D7], [D19]).
+"""Google Calendar provider (specification §12, §20, [D7], [D19], [D62]).
 
 The real implementation behind `CalendarProvider`. One shared sales calendar ([D7]);
 per-salesperson calendars are not V1.
@@ -8,11 +8,12 @@ the client library is synchronous and would need a thread for every call, and a 
 transport is the only way to test this without a real calendar. The API surface used
 here is three endpoints.
 
-**Credentials come from Secret Manager, never from configuration ([D19]).** The refresh
-token is read at first use and cached in memory for the process lifetime, which keeps
-the worker stateless. When Google returns a rotated refresh token it is written back as
-a new secret version — miss that, and authentication keeps working until the old token
-expires, then fails everywhere at once.
+**Authentication is not this module's business.** It asks a `CalendarAuthenticator` for
+an access token before each call (`app.integrations.calendar.google_auth`), which is
+where both the Secret Manager refresh token ([D19]) and the service-account identity
+([D62]) live. The provider therefore holds no credential, no expiry arithmetic and no
+lock: swapping how the platform proves who it is does not touch a line of the calendar
+logic.
 
 Idempotency (§12, §20) rests on Google accepting a client-supplied event ID. A retried
 booking sends the same ID; Google answers 409, and the provider fetches the existing
@@ -22,7 +23,6 @@ double-booking the sales team.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -30,6 +30,7 @@ import httpx
 
 from app.core.errors import NonRetryableProviderError, RetryableProviderError
 from app.core.logging import get_logger
+from app.integrations.calendar.google_auth import CalendarAuthenticator, error_detail
 from app.integrations.calendar.provider import (
     CalendarEvent,
     CalendarProvider,
@@ -37,20 +38,19 @@ from app.integrations.calendar.provider import (
     SlotUnavailableError,
     TimeInterval,
 )
-from app.integrations.secrets import SecretStore
 
 logger = get_logger(__name__)
 
 CALENDAR_API = "https://www.googleapis.com/calendar/v3"
-TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105 - an endpoint, not a secret
 
 
 class GoogleCalendarProvider(CalendarProvider):
     """Reads availability from and writes events to one Google calendar.
 
-    Generic on purpose: which calendar, and which refresh token, are constructor arguments.
-    Since Phase 24 the registry builds one per product from that product's configuration
-    ([D43]), so nothing in here knows or branches on which product it serves.
+    Generic on purpose: which calendar is a constructor argument, and how the platform
+    authenticates arrives as `auth`. Since Phase 24 the registry builds one per product
+    from that product's configuration ([D43]), so nothing in here knows or branches on
+    which product it serves — or on how identity is proven.
     """
 
     name = "google"
@@ -59,30 +59,17 @@ class GoogleCalendarProvider(CalendarProvider):
         self,
         *,
         calendar_id: str,
-        client_id: str,
-        client_secret: str,
-        secret_store: SecretStore,
-        refresh_token_secret_name: str,
+        auth: CalendarAuthenticator,
         timezone: str = "UTC",
         timeout_seconds: float = 20.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._calendar_id = calendar_id
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._secrets = secret_store
-        self._refresh_token_secret_name = refresh_token_secret_name
+        self._auth = auth
         self._timezone = timezone
         self._timeout = timeout_seconds
         # Injectable so tests supply a mock transport and no request reaches Google.
         self._client = client
-
-        self._refresh_token: str | None = None
-        self._access_token: str | None = None
-        self._access_token_expires_at: datetime | None = None
-        # Serialises refreshes: several concurrent turns would otherwise each mint a
-        # token, and one rotation could be lost.
-        self._token_lock = asyncio.Lock()
 
     # ---------------------------------------------------------------- interface
 
@@ -200,92 +187,12 @@ class GoogleCalendarProvider(CalendarProvider):
     # ---------------------------------------------------------------- auth
 
     async def _get_access_token(self) -> str:
-        """A valid access token, minting one from the refresh token when needed."""
-        async with self._token_lock:
-            # Refreshed a minute early (see the expiry calculation below): a token
-            # that expires mid-request would fail a booking the customer is waiting on.
-            if (
-                self._access_token
-                and self._access_token_expires_at
-                and datetime.now(UTC) < self._access_token_expires_at
-            ):
-                return self._access_token
+        """A valid access token, from whichever authenticator this provider was given.
 
-            refresh_token = await self._get_refresh_token()
-            token, expires_at, rotated = await self._exchange_refresh_token(refresh_token)
-
-            self._access_token = token
-            self._access_token_expires_at = expires_at
-
-            if rotated and rotated != refresh_token:
-                # [D19]: write the rotation back, or authentication works until the
-                # old token expires and then fails everywhere at once.
-                self._refresh_token = rotated
-                await self._secrets.set_secret(self._refresh_token_secret_name, rotated)
-                logger.info("calendar_refresh_token_rotated")
-
-            return token
-
-    async def _get_refresh_token(self) -> str:
-        if self._refresh_token:
-            return self._refresh_token
-
-        token = await self._secrets.get_secret(self._refresh_token_secret_name)
-        if not token:
-            # Nothing to retry: someone must complete the one-time OAuth consent and
-            # store the result ([D19]).
-            raise NonRetryableProviderError(
-                f"No Google refresh token in secret {self._refresh_token_secret_name!r}. "
-                "Complete the OAuth consent flow and store the refresh token.",
-                provider=self.name,
-            )
-
-        self._refresh_token = token
-        return token
-
-    async def _exchange_refresh_token(self, refresh_token: str) -> tuple[str, datetime, str | None]:
-        from datetime import timedelta
-
-        data = {
-            "client_id": self._client_id,
-            "client_secret": self._client_secret,
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        }
-
-        try:
-            response = await self._send("POST", TOKEN_URL, data=data)
-        except httpx.TimeoutException as exc:
-            raise RetryableProviderError(
-                f"Token request timed out: {exc}", provider=self.name
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise RetryableProviderError(
-                f"Token request failed: {exc}", provider=self.name
-            ) from exc
-
-        if not response.is_success:
-            detail = _error_detail(response)
-            if response.status_code in (400, 401):
-                # invalid_grant: the token was revoked or expired. Retrying cannot
-                # help; the consent flow must be run again.
-                raise NonRetryableProviderError(
-                    f"Google rejected the refresh token: {detail}", provider=self.name
-                )
-            raise RetryableProviderError(
-                f"Token exchange failed ({response.status_code}): {detail}",
-                provider=self.name,
-            )
-
-        body = response.json()
-        access_token = body.get("access_token")
-        if not access_token:
-            raise NonRetryableProviderError("Google returned no access token", provider=self.name)
-
-        expires_in = int(body.get("expires_in") or 3600)
-        expires_at = datetime.now(UTC) + timedelta(seconds=max(expires_in - 60, 30))
-
-        return access_token, expires_at, body.get("refresh_token")
+        Renewal, rotation and expiry are the authenticator's concern; the provider only
+        needs a token that works.
+        """
+        return await self._auth.access_token()
 
     # ---------------------------------------------------------------- transport
 
@@ -358,7 +265,7 @@ class GoogleCalendarProvider(CalendarProvider):
 
     def _classify_error(self, response: httpx.Response) -> Exception:
         """The §20 retryable / permanent split."""
-        detail = _error_detail(response)
+        detail = error_detail(response)
         status = response.status_code
 
         if status == 429:
@@ -455,26 +362,6 @@ def _parse_event(body: dict[str, Any], *, fallback_timezone: str) -> CalendarEve
         attendee_emails=attendees,
         meeting_link=body.get("hangoutLink") or body.get("htmlLink"),
     )
-
-
-def _error_detail(response: httpx.Response) -> str:
-    try:
-        body = response.json()
-    except ValueError:
-        return response.text[:300]
-
-    error = body.get("error")
-    if isinstance(error, dict):
-        message = error.get("message", "")
-        reasons = ",".join(
-            item.get("reason", "") for item in error.get("errors", []) if isinstance(item, dict)
-        )
-        return f"{message} {reasons}".strip()[:300]
-    if isinstance(error, str):
-        description = body.get("error_description", "")
-        return f"{error} {description}".strip()[:300]
-
-    return str(body)[:300]
 
 
 __all__ = ["GoogleCalendarProvider"]

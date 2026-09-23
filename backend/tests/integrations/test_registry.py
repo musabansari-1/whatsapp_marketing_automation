@@ -17,6 +17,7 @@ from app.integrations.llm import FakeLLMProvider, LLMProvider
 from app.integrations.queue import InMemoryQueueProvider, QueueProvider
 from app.integrations.registry import (
     WhatsAppNotConfiguredError,
+    build_calendar_auth,
     build_calendar_provider,
     build_crm_provider,
     build_embedding_provider,
@@ -134,7 +135,8 @@ class TestFakeSelection:
         provider = build_calendar_provider(Settings(), product=a_product("sales@example.com"))
 
         assert isinstance(provider, GoogleCalendarProvider)
-        assert provider._refresh_token is None  # noqa: SLF001 - laziness is the point
+        # Laziness is the point: nothing has read a secret yet.
+        assert provider._auth._refresh_token is None  # noqa: SLF001
 
     def test_the_secret_store_is_in_memory_without_the_google_calendar(self) -> None:
         """[D19]: local development and tests must not require Secret Manager."""
@@ -172,6 +174,98 @@ class TestFakeSelection:
 
         assert isinstance(provider, LocalSentenceTransformerProvider)
         assert provider._model is None  # noqa: SLF001 - laziness is the point
+
+
+class TestCalendarAuthMode:
+    """[D62]: which way the platform proves its identity to Google.
+
+    The two modes differ operationally, not functionally — the same calendar, the same
+    calls — so what matters here is that selecting one builds the right authenticator and
+    demands only the configuration that mode actually reads.
+    """
+
+    def test_the_default_is_the_refresh_token(self, settings: Settings) -> None:
+        """Unchanged behaviour: an environment that sets nothing new keeps working."""
+        from app.integrations.calendar.google_auth import OAuthRefreshTokenAuthenticator
+
+        assert settings.google_calendar_auth_mode.value == "oauth_refresh_token"
+
+        auth = build_calendar_auth(settings, product=a_product())
+
+        assert isinstance(auth, OAuthRefreshTokenAuthenticator)
+
+    def test_service_account_mode_builds_the_service_account_authenticator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.integrations.calendar.google_auth import (
+            CALENDAR_SCOPE,
+            ServiceAccountAuthenticator,
+        )
+
+        monkeypatch.setenv("CALENDAR_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_CALENDAR_AUTH_MODE", "service_account")
+
+        # No OAuth client, no Secret Manager project, no secret name — and it still
+        # builds, because none of them is read in this mode.
+        settings = Settings()
+        auth = build_calendar_auth(settings, product=a_product())
+
+        assert isinstance(auth, ServiceAccountAuthenticator)
+        assert auth._scopes == (CALENDAR_SCOPE,)  # noqa: SLF001
+        # Nothing resolved Application Default Credentials to do it.
+        assert auth._credentials is None  # noqa: SLF001
+
+    def test_service_account_mode_selects_the_real_provider_without_a_secret(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.integrations.calendar.google import GoogleCalendarProvider
+        from app.integrations.calendar.google_auth import ServiceAccountAuthenticator
+
+        monkeypatch.setenv("CALENDAR_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_CALENDAR_AUTH_MODE", "service_account")
+
+        provider = build_calendar_provider(Settings(), product=a_product("sales@example.com"))
+
+        assert isinstance(provider, GoogleCalendarProvider)
+        assert isinstance(provider._auth, ServiceAccountAuthenticator)  # noqa: SLF001
+
+    def test_the_refresh_token_mode_still_requires_its_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The check that has always existed, scoped to the mode that needs it."""
+        monkeypatch.setenv("CALENDAR_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_CALENDAR_AUTH_MODE", "oauth_refresh_token")
+
+        with pytest.raises(ValueError, match="GOOGLE_OAUTH_CLIENT_ID"):
+            Settings()
+
+    def test_an_unknown_auth_mode_is_rejected_at_config_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CALENDAR_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_CALENDAR_AUTH_MODE", "workload_identity")
+
+        with pytest.raises(ValueError, match="google_calendar_auth_mode"):
+            Settings()
+
+    def test_a_product_may_still_name_its_own_token_secret(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """[D43] is unchanged: one shared OAuth client, one token per Google account."""
+        monkeypatch.setenv("CALENDAR_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_SECRET_MANAGER_PROJECT", "proj")
+        monkeypatch.setenv("GOOGLE_CALENDAR_TOKEN_SECRET_NAME", "shared-refresh-token")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+
+        own = a_product()
+        own.google_calendar_token_secret_name = "herba-refresh-token"
+        shared = build_calendar_auth(Settings(), product=a_product())
+        separate = build_calendar_auth(Settings(), product=own)
+
+        assert shared._client_id == separate._client_id == "client-id"  # noqa: SLF001
+        assert shared._refresh_token_secret_name == "shared-refresh-token"  # noqa: SLF001
+        assert separate._refresh_token_secret_name == "herba-refresh-token"  # noqa: SLF001
 
 
 class TestEveryProviderIsImplemented:

@@ -367,7 +367,11 @@ class TestProviderSelection:
     def test_the_oauth_identity_is_shared_but_a_product_may_name_its_own_token(self) -> None:
         """[D43]: one operations account serves every calendar, so the client and token
         are shared. A product in a different Google account names a different token
-        *secret* — never a token value, and never a second OAuth client."""
+        *secret* — never a token value, and never a second OAuth client.
+
+        The credential now lives in an authenticator ([D62]) rather than on the provider,
+        because how the platform proves its identity is not the calendar's business.
+        """
         shared = google_for(unsaved("alpha@calendar.example"))
         separate = google_for(
             unsaved(
@@ -375,11 +379,30 @@ class TestProviderSelection:
             )
         )
 
-        assert shared._client_id == separate._client_id == "shared-client"  # noqa: SLF001
-        assert shared._refresh_token_secret_name == "shared-refresh-token"  # noqa: SLF001
-        assert separate._refresh_token_secret_name == "herba-refresh-token"  # noqa: SLF001
+        assert shared._auth._client_id == separate._auth._client_id  # noqa: SLF001
+        assert shared._auth._client_id == "shared-client"  # noqa: SLF001
+        assert shared._auth._refresh_token_secret_name == "shared-refresh-token"  # noqa: SLF001
+        assert separate._auth._refresh_token_secret_name == "herba-refresh-token"  # noqa: SLF001
         # Built lazily: nothing read a secret to construct either provider.
-        assert shared._refresh_token is None  # noqa: SLF001
+        assert shared._auth._refresh_token is None  # noqa: SLF001
+
+    def test_service_account_mode_shares_one_identity_and_keeps_own_calendars(self) -> None:
+        """[D62]: the worker authenticates as itself, so the identity is the running
+        service and every product's calendar is shared with it. Sharing one identity must
+        not merge two calendars — that is what makes per-product booking correct.
+        """
+        from app.integrations.calendar.google_auth import ServiceAccountAuthenticator
+
+        settings = Settings(calendar_provider="google", google_calendar_auth_mode="service_account")
+        alpha = build_calendar_provider(settings, product=unsaved("alpha@calendar.example"))
+        beta = build_calendar_provider(settings, product=unsaved("beta@calendar.example"))
+
+        assert isinstance(alpha, GoogleCalendarProvider)
+        assert isinstance(beta, GoogleCalendarProvider)
+        # Built with no OAuth client and no secret to read, because neither is used.
+        assert isinstance(alpha._auth, ServiceAccountAuthenticator)  # noqa: SLF001
+        assert alpha._calendar_id == "alpha@calendar.example"  # noqa: SLF001
+        assert beta._calendar_id == "beta@calendar.example"  # noqa: SLF001
 
     def test_the_timezone_follows_the_products_slot_policy(self) -> None:
         provider = google_for(unsaved("london@calendar.example", demo_timezone="Europe/London"))

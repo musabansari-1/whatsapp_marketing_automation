@@ -39,6 +39,7 @@ from app.domain.audience import (
     AudienceSchemaError,
     MissingColumnsError,
     find_missing_columns,
+    header_carries_required_columns,
     is_development_placeholder,
     parse_audience_schema,
     validate_rows,
@@ -155,7 +156,16 @@ async def upload_audience(
     content = await _read_within_limit(file, settings.audience_max_file_bytes)
 
     try:
-        sheet = parse_excel(content, max_rows=settings.audience_max_rows)
+        sheet = parse_excel(
+            content,
+            max_rows=settings.audience_max_rows,
+            # The client's spreadsheets carry a title above their headers, so the header
+            # row is located rather than assumed to be row 1 ([D63]). Only its *position*
+            # is inferred: which columns the file must have is this product's configured
+            # schema ([D25], [D51]) and is never guessed.
+            header_matches=header_carries_required_columns(schema),
+            header_scan_rows=settings.audience_header_scan_rows,
+        )
     except TooManyRowsError as exc:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)
@@ -166,9 +176,26 @@ async def upload_audience(
     missing = find_missing_columns(sheet.headers, schema)
     if missing:
         # A missing required column is the wrong file, not bad data, so the upload is
-        # rejected whole rather than producing one identical error per row.
-        error = MissingColumnsError(missing)
+        # rejected whole rather than producing one identical error per row. The message
+        # names the sheet and rows that were read, so nobody hunts for a formatting
+        # problem that is not there.
+        error = MissingColumnsError(
+            missing,
+            sheet_name=sheet.sheet_name,
+            header_row=sheet.header_row,
+            scanned_rows=settings.audience_header_scan_rows,
+        )
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error))
+
+    if sheet.header_row != 1:
+        # Recorded because it is the one piece of the file's shape the platform worked
+        # out for itself, and an operator auditing a suspicious import needs to see it.
+        logger.info(
+            "audience_headers_below_the_first_row",
+            product_id=str(product.id),
+            sheet=sheet.sheet_name,
+            header_row=sheet.header_row,
+        )
 
     summary = validate_rows(
         sheet.rows,

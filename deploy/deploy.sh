@@ -39,11 +39,17 @@ EMBEDDING_PROVIDER="${EMBEDDING_PROVIDER:-local_sentence_transformer}"
 # torch-free worker image.
 WORKER_EMBEDDING_PROVIDER="${WORKER_EMBEDDING_PROVIDER:-${EMBEDDING_PROVIDER}}"
 CALENDAR_PROVIDER="${CALENDAR_PROVIDER:-fake}"
+# [D62]: how the platform proves its identity to Google. `service_account` (production)
+# uses the worker's own Cloud Run identity — each product's calendar must be shared
+# with it — and `oauth_refresh_token` (fallback / local) uses the refresh token in
+# Secret Manager via a human consent flow. Flipping this is the entire migration;
+# no redeploy of another variable is required.
+GOOGLE_CALENDAR_AUTH_MODE="${GOOGLE_CALENDAR_AUTH_MODE:-oauth_refresh_token}"
 CRM_PROVIDER="${CRM_PROVIDER:-fake}"
 QUEUE_PROVIDER="${QUEUE_PROVIDER:-cloud_tasks}"
 
 log "Deploying $TAG to $APP_ENV in $PROJECT_ID/$REGION"
-echo "  providers: whatsapp=$WHATSAPP_PROVIDER llm=$LLM_PROVIDER calendar=$CALENDAR_PROVIDER crm=$CRM_PROVIDER"
+echo "  providers: whatsapp=$WHATSAPP_PROVIDER llm=$LLM_PROVIDER calendar=$CALENDAR_PROVIDER($GOOGLE_CALENDAR_AUTH_MODE) crm=$CRM_PROVIDER"
 
 # ---------------------------------------------------------------- images
 
@@ -87,6 +93,7 @@ common_env=(
   # Not in the shared list: the API and the worker need different values on their slim
   # and torch-carrying images, so each service's deploy line sets its own below.
   "CALENDAR_PROVIDER=${CALENDAR_PROVIDER}"
+  "GOOGLE_CALENDAR_AUTH_MODE=${GOOGLE_CALENDAR_AUTH_MODE}"
   "CRM_PROVIDER=${CRM_PROVIDER}"
   "QUEUE_PROVIDER=${QUEUE_PROVIDER}"
   "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
@@ -129,6 +136,22 @@ common_secrets=(
 
 join() { local IFS=,; echo "$*"; }
 
+# ---------------------------------------------------------------- worker URL
+#
+# Resolved before the worker is deployed, because the worker needs it as much as the API
+# does: it verifies each task's OIDC audience against WORKER_BASE_URL
+# (app/worker/security.py), and `Settings` refuses to start with the Cloud Tasks queue
+# selected and that variable unset. The two services must hold the *same* string or the
+# worker rejects every task with a 401 — the API's copy is the address it dispatches to,
+# the worker's copy is what it compares the token against. Resolving once, here, and
+# giving both services the result is what stops those two facts from drifting apart.
+#
+# Read from Cloud Run rather than rewritten from `status.url`; see resolve_service_url in
+# config.sh for why, and for what the rewrite cost on 2026-09-22.
+WORKER_URL="$(resolve_service_url "$WORKER_SERVICE" 2>/dev/null \
+  || canonical_service_url "$WORKER_SERVICE")"
+echo "  worker: $WORKER_URL"
+
 # ---------------------------------------------------------------- worker
 #
 # First, because the API needs its URL.
@@ -149,20 +172,53 @@ gcloud run deploy "$WORKER_SERVICE" \
   --no-allow-unauthenticated \
   --memory 4Gi --cpu 2 --concurrency 1 --timeout 900 \
   --min-instances "${WORKER_MIN_INSTANCES:-1}" --max-instances "${WORKER_MAX_INSTANCES:-10}" \
-  --update-env-vars "$(join "${common_env[@]}"),EMBEDDING_PROVIDER=${WORKER_EMBEDDING_PROVIDER}" \
+  --update-env-vars "$(join "${common_env[@]}"),EMBEDDING_PROVIDER=${WORKER_EMBEDDING_PROVIDER},WORKER_BASE_URL=${WORKER_URL}" \
   --set-secrets "$(join "${common_secrets[@]}")"
 
-WORKER_URL="$(gcloud run services describe "$WORKER_SERVICE" \
-  --region "$REGION" --project "$PROJECT_ID" --format 'value(status.url)')"
-# Canonical form. Cloud Run serves two URL shapes — the numbered
-# SERVICE-HASH.REGION.run.app and an SERVICE-HASH-el.a.run.app alias — and
-# `status.url` can return either. The worker verifies the OIDC audience against
-# WORKER_BASE_URL character for character, so every consumer of this URL (the API's
-# WORKER_BASE_URL here, the sweeps' token audience in schedule-sweeps.sh) must agree
-# on one string. Pinning the canonical form here keeps them consistent even when the
-# alias is the one `status.url` happens to return.
-WORKER_URL="${WORKER_URL/.a.run.app/.${REGION}.run.app}"
-echo "  worker: $WORKER_URL"
+# The first deployment of a project has no service URL to read, so the value above came
+# from the canonical form. Now that the service exists, ask Cloud Run what it actually
+# serves and correct the worker before the API is told to dispatch to it. On any later
+# deploy the two already agree and this is a no-op — no extra revision.
+RESOLVED_WORKER_URL="$(resolve_service_url "$WORKER_SERVICE")"
+if [ "$RESOLVED_WORKER_URL" != "$WORKER_URL" ]; then
+  echo "  correcting: $WORKER_URL -> $RESOLVED_WORKER_URL"
+  WORKER_URL="$RESOLVED_WORKER_URL"
+  gcloud run services update "$WORKER_SERVICE" \
+    --region "$REGION" --project "$PROJECT_ID" \
+    --update-env-vars "WORKER_BASE_URL=${WORKER_URL}" --quiet
+fi
+
+# Prove the URL names a host before it is written into the API. 404 is Cloud Run telling
+# us it serves no such hostname, so a fabricated URL fails the deploy here instead of
+# silently swallowing every customer message from a service that reports itself healthy.
+# Any other answer — 403 for the private service refusing an anonymous caller, a 5xx
+# while a revision is still warming — proves the request reached Cloud Run under that
+# name, which is the question being asked.
+WORKER_PROBE="$(http_status "${WORKER_URL}/health")"
+case "$WORKER_PROBE" in
+  404)
+    cat >&2 <<EOF
+
+ERROR: ${WORKER_URL} is not a host Cloud Run serves for ${WORKER_SERVICE} (HTTP 404).
+       Deploying now would point every task at nothing. Read what Cloud Run advertises
+       and set WORKER_BASE_URL by hand on both services, then re-run:
+
+         gcloud run services describe ${WORKER_SERVICE} --region ${REGION} \\
+           --project ${PROJECT_ID} \\
+           --format 'value(metadata.annotations."run.googleapis.com/urls")'
+EOF
+    exit 1
+    ;;
+  000)
+    # No answer of any kind. That is a fact about this machine's route to Cloud Run, not
+    # about the URL, so it is worth saying and not worth refusing to deploy over.
+    echo "  warning: ${WORKER_URL} answered nothing (curl ${WORKER_PROBE}); cannot confirm" >&2
+    echo "           the dispatch target from here. deploy/smoke-test.sh checks it again." >&2
+    ;;
+  *)
+    echo "  dispatch target answered ($WORKER_PROBE; a 403 is the private worker, as designed)"
+    ;;
+esac
 
 # ---------------------------------------------------------------- API
 #
@@ -188,6 +244,10 @@ log "Deployed"
 cat <<EOF
   API:    $API_URL
   Worker: $WORKER_URL   (not publicly reachable, by design)
+
+The worker URL above is WORKER_BASE_URL on *both* services and the OIDC audience the
+sweeps are scheduled with. Change one without the others and tasks are rejected; that
+is what deploy/smoke-test.sh's task-dispatch checks exist to catch.
 
 Next:
   ./deploy/schedule-sweeps.sh    the sweeps need the worker URL, so they come after this

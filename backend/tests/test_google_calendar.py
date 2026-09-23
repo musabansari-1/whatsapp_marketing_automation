@@ -23,6 +23,11 @@ from app.integrations.calendar.google import (
     _decode_event_id,
     _encode_event_id,
 )
+from app.integrations.calendar.google_auth import (
+    CALENDAR_SCOPE,
+    OAuthRefreshTokenAuthenticator,
+    ServiceAccountAuthenticator,
+)
 from app.integrations.secrets import InMemorySecretStore
 
 CALENDAR_ID = "sales@example.com"
@@ -33,17 +38,75 @@ START = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
 def make_provider(
     handler: Any, *, store: InMemorySecretStore | None = None
 ) -> tuple[GoogleCalendarProvider, InMemorySecretStore]:
+    """A provider authenticating with a refresh token, over one mock transport.
+
+    The same `httpx.AsyncClient` serves the token endpoint and the calendar calls, which
+    is what lets `routed()` answer both.
+    """
     secret_store = store or InMemorySecretStore({SECRET_NAME: "refresh-token-1"})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = GoogleCalendarProvider(
         calendar_id=CALENDAR_ID,
-        client_id="client-id",
-        client_secret="client-secret",  # noqa: S106 - never leaves the mock
-        secret_store=secret_store,
-        refresh_token_secret_name=SECRET_NAME,
+        auth=OAuthRefreshTokenAuthenticator(
+            client_id="client-id",
+            client_secret="client-secret",  # noqa: S106 - never leaves the mock
+            secret_store=secret_store,
+            secret_name=SECRET_NAME,
+            client=client,
+        ),
         timezone="Asia/Kolkata",
-        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        client=client,
     )
     return provider, secret_store
+
+
+def make_service_account_provider(
+    handler: Any,
+    *,
+    credentials: Any,
+) -> tuple[GoogleCalendarProvider, Any]:
+    """A provider authenticating as a service account, over one mock transport.
+
+    The credentials are injected, so the whole lifecycle is exercised without a GCP
+    identity, a key file or a socket: nothing here resolves Application Default
+    Credentials.
+    """
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    auth = ServiceAccountAuthenticator(credentials=credentials, request=object())
+    provider = GoogleCalendarProvider(
+        calendar_id=CALENDAR_ID,
+        auth=auth,
+        timezone="Asia/Kolkata",
+        client=client,
+    )
+    return provider, auth
+
+
+class FakeServiceAccountCredentials:
+    """A stand-in for `google.auth` credentials ([D62]).
+
+    Records how often it was asked to refresh, so a test can prove the token is cached
+    rather than re-minted per call, and can be made to fail the way Google fails.
+    """
+
+    def __init__(
+        self,
+        *,
+        token: str | None = "service-account-token",  # noqa: S106, S107 - a mock, never a secret
+        expires_in: float = 3600.0,
+        raises: Exception | None = None,
+    ) -> None:
+        self.token = token
+        self.expiry: datetime | None = datetime.now(UTC) + timedelta(seconds=expires_in)
+        self.raises = raises
+        self.refreshes = 0
+        self.requested_with: list[Any] = []
+
+    def refresh(self, request: Any) -> None:
+        self.refreshes += 1
+        self.requested_with.append(request)
+        if self.raises is not None:
+            raise self.raises
 
 
 def token_response(**extra: Any) -> dict[str, Any]:
@@ -223,6 +286,128 @@ class TestAuthentication:
             )
 
         assert "client-secret" not in str(caught.value)
+
+
+class TestServiceAccountAuthentication:
+    """[D62]: the production path.
+
+    No refresh token exists, so nothing expires after seven days, nothing is written back
+    to Secret Manager, and no human consent stands between the platform and a booking.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_service_accounts_token_authenticates_calendar_calls(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["authorization"] = request.headers.get("Authorization")
+            return httpx.Response(200, json={"calendars": {CALENDAR_ID: {"busy": []}}})
+
+        provider, _ = make_service_account_provider(
+            handler, credentials=FakeServiceAccountCredentials()
+        )
+
+        await provider.list_busy_intervals(TimeInterval(start=START, end=START + timedelta(days=1)))
+
+        assert seen["authorization"] == "Bearer service-account-token"
+
+    @pytest.mark.asyncio
+    async def test_the_token_is_minted_once_and_reused(self) -> None:
+        """One refresh per process, not one per call."""
+        credentials = FakeServiceAccountCredentials()
+        provider, _ = make_service_account_provider(routed(), credentials=credentials)
+        window = TimeInterval(start=START, end=START + timedelta(days=1))
+
+        await provider.list_busy_intervals(window)
+        await provider.list_busy_intervals(window)
+
+        assert credentials.refreshes == 1
+
+    @pytest.mark.asyncio
+    async def test_an_expired_token_is_minted_again(self) -> None:
+        """The cached token is not trusted past its expiry."""
+        credentials = FakeServiceAccountCredentials()
+        provider, auth = make_service_account_provider(routed(), credentials=credentials)
+        window = TimeInterval(start=START, end=START + timedelta(days=1))
+
+        await provider.list_busy_intervals(window)
+        auth._expires_at = datetime.now(UTC) - timedelta(seconds=1)  # noqa: SLF001
+        await provider.list_busy_intervals(window)
+
+        assert credentials.refreshes == 2
+
+    @pytest.mark.asyncio
+    async def test_the_calendar_scope_is_requested(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Read and write: the same scope the OAuth path asks a human for, so both
+        arrangements see one calendar."""
+        seen: dict[str, Any] = {}
+        credentials = FakeServiceAccountCredentials()
+
+        def default(*, scopes: list[str]) -> tuple[Any, str]:
+            seen["scopes"] = scopes
+            return credentials, "project"
+
+        monkeypatch.setattr("google.auth.default", default)
+        provider, _ = make_service_account_provider(routed(), credentials=None)
+
+        await provider.list_busy_intervals(TimeInterval(start=START, end=START + timedelta(days=1)))
+
+        assert seen["scopes"] == [CALENDAR_SCOPE]
+
+    @pytest.mark.asyncio
+    async def test_missing_default_credentials_are_permanent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What an operator meets when nothing has granted the identity a calendar."""
+        from google.auth.exceptions import DefaultCredentialsError
+
+        def no_credentials(*_: Any, **__: Any) -> Any:
+            raise DefaultCredentialsError("no credentials")
+
+        monkeypatch.setattr("google.auth.default", no_credentials)
+        provider, _ = make_service_account_provider(routed(), credentials=None)
+
+        with pytest.raises(NonRetryableProviderError, match="application-default login"):
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_credential_is_permanent(self) -> None:
+        """A disabled or deleted service account. Retrying with the same identity fails
+        identically, so the turn must not burn its retry budget on it."""
+        from google.auth.exceptions import RefreshError
+
+        credentials = FakeServiceAccountCredentials(raises=RefreshError("invalid_grant"))
+        provider, _ = make_service_account_provider(routed(), credentials=credentials)
+
+        with pytest.raises(NonRetryableProviderError, match="service account"):
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_while_minting_is_retryable(self) -> None:
+        """The metadata server being briefly unreachable is worth another attempt."""
+        from google.auth.exceptions import TransportError
+
+        credentials = FakeServiceAccountCredentials(raises=TransportError("network down"))
+        provider, _ = make_service_account_provider(routed(), credentials=credentials)
+
+        with pytest.raises(RetryableProviderError, match="Could not reach Google"):
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_token_without_a_value_is_permanent(self) -> None:
+        credentials = FakeServiceAccountCredentials(token=None)
+        provider, _ = make_service_account_provider(routed(), credentials=credentials)
+
+        with pytest.raises(NonRetryableProviderError, match="no access token"):
+            await provider.list_busy_intervals(
+                TimeInterval(start=START, end=START + timedelta(days=1))
+            )
 
 
 class TestAvailability:

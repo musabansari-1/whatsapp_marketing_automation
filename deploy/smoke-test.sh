@@ -80,9 +80,10 @@ fi
 log "Worker"
 
 # Minted as the operator's identity, without --audiences: that flag only works when
-# authenticated as a service account. The worker does not check the audience claim, so
-# an untargeted token is accepted — the point of this check is the IAM policy, which is
-# what a real Cloud Tasks call also proves.
+# authenticated as a service account. /health only has to pass IAM — it is not behind
+# verify_task_request — so an untargeted token is accepted here. The point of this check
+# is the IAM policy, which is what a real Cloud Tasks call also proves; the audience a
+# real dispatch is judged on is checked in the task-dispatch section below.
 TOKEN="$(gcloud auth print-identity-token 2>/dev/null || true)"
 
 check "is NOT publicly reachable" \
@@ -113,6 +114,48 @@ EXPECTED_TASKS=(
 REGISTERED="$(curl -fsS --max-time 10 -H "Authorization: Bearer ${TOKEN}" "${WORKER_URL}/health" 2>/dev/null || echo '{}')"
 for task in "${EXPECTED_TASKS[@]}"; do
   check "handler registered: $task" bash -c "echo '$REGISTERED' | grep -q '$task'"
+done
+
+# ---------------------------------------------------------------- task dispatch
+#
+# Everything above can pass while no customer message reaches the worker. The API
+# dispatches to its own WORKER_BASE_URL, the worker accepts a task only when the token's
+# audience equals *its* WORKER_BASE_URL — two strings, in two services, that nothing
+# else here compares — and the sweeps carry a third copy, baked in when their jobs were
+# created. Any of the three can name a host Cloud Run does not serve, or disagree with
+# the others, and the only symptom is silence. That was 2026-09-22: eighteen hours of
+# unanswered messages, every service healthy (see resolve_service_url in config.sh).
+
+log "Task dispatch (§18, §20)"
+
+API_WORKER_URL="$(deployed_env_value "$API_SERVICE" WORKER_BASE_URL)"
+WORKER_BASE_URL="$(deployed_env_value "$WORKER_SERVICE" WORKER_BASE_URL)"
+echo "  API dispatches to: ${API_WORKER_URL:-unset}"
+echo "  Worker expects:    ${WORKER_BASE_URL:-unset}"
+
+check "the API has a worker URL to dispatch to" \
+  bash -c "[ -n '$API_WORKER_URL' ]"
+
+# Audiences are compared character for character, so the numbered and alias forms of the
+# same service do not match — these must be one identical string, not two live hostnames.
+check "the worker and the API agree on it (OIDC audience)" \
+  bash -c "[ -n '$API_WORKER_URL' ] && [ '$WORKER_BASE_URL' = '$API_WORKER_URL' ]"
+
+# The check that would have caught 09-22. Anonymous is the right shape: IAM answers 403
+# for a private service that exists and 404 for a hostname Cloud Run does not serve, so
+# no token is needed to tell "exists" from "fabricated".
+DISPATCH_CODE="$(http_status "${API_WORKER_URL}/health")"
+check "the API's worker URL reaches a host that exists (HTTP $DISPATCH_CODE)" \
+  bash -c "[ '$DISPATCH_CODE' = '401' ] || [ '$DISPATCH_CODE' = '403' ] || [ '$DISPATCH_CODE' = '200' ]"
+
+for job in wa-sweep-unanswered wa-sweep-rate-limits wa-sweep-sessions; do
+  if gcloud scheduler jobs describe "$job" --location "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1; then
+    AUDIENCE="$(gcloud scheduler jobs describe "$job" --location "$REGION" --project "$PROJECT_ID" \
+      --format 'value(httpTarget.oidcToken.audience)' 2>/dev/null || true)"
+    check "sweep audience matches: $job" bash -c "[ '$AUDIENCE' = '$API_WORKER_URL' ]"
+  else
+    echo "  – $job is not scheduled yet (run deploy/schedule-sweeps.sh)"
+  fi
 done
 
 # ---------------------------------------------------------------- webhook
@@ -194,6 +237,11 @@ Something is wrong. Where to look:
   /readiness failing      the database secret, or Neon's IP allow-list
   worker unreachable      the invoker service account lacks roles/run.invoker
   handler missing         an incomplete image; check the tag that was deployed
+  dispatch failing        WORKER_BASE_URL differs between the two services, or names a
+                          host Cloud Run does not serve — compare the values printed
+                          above, then re-run deploy.sh to give both the same one
+  sweep audience          a scheduler job was created against an older URL; re-run
+                          deploy/schedule-sweeps.sh
   webhook handshake       whatsapp-verify-token has no value, or the wrong one
   no rate limiting        RATE_LIMIT_ENABLED is false, or the counters table is missing
 

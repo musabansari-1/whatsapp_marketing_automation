@@ -15,8 +15,11 @@
 
 source "$(dirname "$0")/config.sh"
 
-WORKER_URL="${WORKER_URL:-$(gcloud run services describe "$WORKER_SERVICE" \
-  --region "$REGION" --project "$PROJECT_ID" --format 'value(status.url)')}"
+# Read from Cloud Run through the same helper deploy.sh uses, so the sweeps address the
+# host the worker actually answers on. This used to rewrite the a.run.app alias into
+# SERVICE-HASH.REGION.run.app, which is not a hostname Cloud Run serves — the same
+# mistake that broke task dispatch on 2026-09-22, in a second place.
+WORKER_URL="${WORKER_URL:-$(resolve_service_url "$WORKER_SERVICE" || true)}"
 
 if [ -z "$WORKER_URL" ]; then
   echo "Worker not deployed. Run deploy/deploy.sh first." >&2
@@ -25,14 +28,11 @@ fi
 
 TASK_ENDPOINT="${WORKER_URL}/internal/tasks"
 
-# Cloud Run services answer on two URL forms — the numbered canonical one
-# (...REGION.run.app) and an alias (...a.run.app) — and `status.url` can return
-# either. `verify_task_request` compares the OIDC audience against WORKER_BASE_URL
-# character by character, so the token must name the same string the services were
-# configured with. WORKER_BASE_URL is set to the canonical form (deploy.sh resolves
-# the URL once and strips the a.run.app alias), so the audience is pinned to that
-# same canonical form here rather than reusing whatever WORKER_URL happens to be.
-SWEEP_AUDIENCE="${SWEEP_AUDIENCE:-${WORKER_URL/a.run.app/${REGION}.run.app}}"
+# `verify_task_request` compares the OIDC audience against the worker's own
+# WORKER_BASE_URL character for character, and deploy.sh sets that to exactly this
+# value. So the audience is this URL and not a re-derived one: the scheduler jobs are
+# created once, long before anyone notices they 401 every fifteen minutes.
+SWEEP_AUDIENCE="${SWEEP_AUDIENCE:-$WORKER_URL}"
 
 
 schedule() {

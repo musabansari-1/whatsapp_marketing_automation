@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.config import (
+    CalendarAuthMode,
     CalendarProviderName,
     CRMProviderName,
     EmbeddingProviderName,
@@ -27,6 +28,11 @@ from app.core.errors import ConfigurationError
 from app.domain.slots import resolve_slot_policy
 from app.integrations.calendar import CalendarProvider, FakeCalendarProvider
 from app.integrations.calendar.google import GoogleCalendarProvider
+from app.integrations.calendar.google_auth import (
+    CalendarAuthenticator,
+    OAuthRefreshTokenAuthenticator,
+    ServiceAccountAuthenticator,
+)
 from app.integrations.crm import CRMProvider, FakeCRMProvider
 from app.integrations.crm.hubspot import HubSpotProvider
 from app.integrations.embedding import EmbeddingProvider, FakeEmbeddingProvider
@@ -213,7 +219,51 @@ class CalendarNotConfiguredError(ConfigurationError):
     """
 
 
-def build_calendar_provider(settings: Settings, *, product: Product) -> CalendarProvider:
+def build_calendar_auth(settings: Settings, *, product: Product) -> CalendarAuthenticator:
+    """How the platform proves its identity to Google ([D19], [D62]).
+
+    Shared by every product in refresh-token mode, because one operations account holds
+    access to every product's calendar ([D43]) — so the `product` argument only ever
+    selects which *secret name* to read, never a different credential kind. In
+    service-account mode it is unused: the identity is the running service itself, which
+    is by definition shared.
+
+    Nothing here reads a secret or contacts Google. A provider is built per conversation
+    turn, so anything expensive or stateful at construction would be paid on every turn.
+    """
+    match settings.google_calendar_auth_mode:
+        case CalendarAuthMode.SERVICE_ACCOUNT:
+            # No secret, no client ID: the identity comes from the environment the
+            # process runs in. Each product's calendar must be shared with it.
+            return ServiceAccountAuthenticator(
+                timeout_seconds=settings.google_calendar_timeout_seconds
+            )
+        case CalendarAuthMode.OAUTH_REFRESH_TOKEN:
+            # The shared values are guaranteed present: configuration refuses to start
+            # when Google is selected in this mode without them.
+            return OAuthRefreshTokenAuthenticator(
+                client_id=settings.google_oauth_client_id or "",
+                client_secret=(
+                    settings.google_oauth_client_secret.get_secret_value()
+                    if settings.google_oauth_client_secret
+                    else ""
+                ),
+                # [D19]: the refresh token comes from Secret Manager, never from
+                # configuration and never from the database. Only its name may vary — and
+                # a product may name its own for a calendar in another Google account.
+                secret_store=build_secret_store(settings),
+                secret_name=(
+                    product.google_calendar_token_secret_name
+                    or settings.google_calendar_token_secret_name
+                    or ""
+                ),
+                timeout_seconds=settings.google_calendar_timeout_seconds,
+            )
+
+
+def build_calendar_provider(
+    settings: Settings, *, product: Product, auth: CalendarAuthenticator | None = None
+) -> CalendarProvider:
     """The calendar for one product ([D43]).
 
     `product` is required. Nothing builds a calendar without knowing whose it is, and no
@@ -224,6 +274,10 @@ def build_calendar_provider(settings: Settings, *, product: Product) -> Calendar
     (for a calendar in a different Google account), and the timezone, from its resolved
     slot policy. What is shared: the OAuth client and the Secret Manager project, because
     one operations account holds access to every product's calendar.
+
+    `auth` is optional so a caller with one turn's worth of work reuses the same
+    authenticator — and its cached access token — across the tools that need it. Absent,
+    one is built from configuration.
 
     Checked before the provider is selected, so the fake refuses exactly as the real one
     does and the rule is exercised by the test suite rather than only in production.
@@ -237,24 +291,9 @@ def build_calendar_provider(settings: Settings, *, product: Product) -> Calendar
         case CalendarProviderName.FAKE:
             return FakeCalendarProvider(calendar_id=product.google_calendar_id)
         case CalendarProviderName.GOOGLE:
-            # The shared values are guaranteed present: configuration refuses to start
-            # when the Google calendar is selected without them.
             return GoogleCalendarProvider(
                 calendar_id=product.google_calendar_id,
-                client_id=settings.google_oauth_client_id or "",
-                client_secret=(
-                    settings.google_oauth_client_secret.get_secret_value()
-                    if settings.google_oauth_client_secret
-                    else ""
-                ),
-                # [D19]: the refresh token comes from Secret Manager, never from
-                # configuration and never from the database. Only its name may vary.
-                secret_store=build_secret_store(settings),
-                refresh_token_secret_name=(
-                    product.google_calendar_token_secret_name
-                    or settings.google_calendar_token_secret_name
-                    or ""
-                ),
+                auth=auth or build_calendar_auth(settings, product=product),
                 timezone=resolve_slot_policy(settings, product).timezone,
                 timeout_seconds=settings.google_calendar_timeout_seconds,
             )

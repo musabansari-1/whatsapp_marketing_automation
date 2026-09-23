@@ -71,6 +71,10 @@ metric "wa_booking_confirmation_failed" \
   "A confirmed booking the customer was never told about (§12)" \
   "${BASE} AND jsonPayload.event=\"booking_confirmation_failed\""
 
+metric "wa_calendar_slot_lookup_failed" \
+  "Calendar slot lookups failing — an invalid_grant expiry kills booking platform-wide ([D62])" \
+  "${BASE} AND jsonPayload.event=\"ai_slot_lookup_failed\""
+
 metric "wa_rate_limit_unavailable" \
   "The rate limiter could not be reached, so requests are being refused (§19)" \
   "${BASE} AND jsonPayload.event=\"rate_limit_unavailable\""
@@ -135,6 +139,7 @@ policy "WhatsApp: booking confirmed but customer not told" "wa_booking_confirmat
 policy "WhatsApp: CRM sync failing" "wa_crm_sync_failed" 5 "900s"
 policy "WhatsApp: document ingestion failing" "wa_knowledge_ingest_failed" 2 "900s"
 policy "WhatsApp: LLM failing" "wa_llm_failed" 5 "900s"
+policy "WhatsApp: calendar slot lookups failing" "wa_calendar_slot_lookup_failed" 2 "900s"
 policy "WhatsApp: sweep is repairing stranded messages" "wa_sweep_requeued" 0 "3600s"
 
 log "Done"

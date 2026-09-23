@@ -200,6 +200,35 @@ class TestFileValidation:
         detail = response.json()["detail"]
         assert "Name" in detail and "Phone" in detail
 
+    def test_the_refusal_names_where_it_looked(self, client: TestClient) -> None:
+        """[D63]: the operator needs the sheet and the rows that were read, not just the
+        missing names — a title above the headers is the usual cause."""
+        login(client)
+        response = upload(client, make_xlsx([["Email", "Company"], ["r@example.com", "Acme"]]))
+
+        assert response.status_code == 422
+        assert "first 5 rows" in response.json()["detail"]
+
+    def test_a_title_above_the_headers_uploads(self, client: TestClient) -> None:
+        """[D63]: the client's real file shape — a title, a blank row, then headers — is
+        read rather than refused as missing its columns."""
+        login(client)
+        content = make_xlsx(
+            [
+                ["Master school list"],
+                [],
+                ["Name", "Phone", "Email"],
+                ["Rahul", "9876543210", "rahul@example.com"],
+                ["Priya", "9876543211", "priya@example.com"],
+            ]
+        )
+
+        response = upload(client, content)
+
+        assert response.status_code == 201
+        assert response.json()["audience"]["total_rows"] == 2
+        assert response.json()["audience"]["valid_rows"] == 2
+
     def test_non_xlsx_extension_is_rejected(self, client: TestClient) -> None:
         login(client)
         assert upload(client, b"data", filename="list.csv").status_code == 415

@@ -7,18 +7,24 @@ replace it, because nothing in the pipeline is tied to particular names.
 
 from __future__ import annotations
 
+import io
+
 import pytest
+from openpyxl import Workbook
 from pydantic import ValidationError
 
 from app.domain.audience import (
     AudienceColumnSchema,
     AudienceField,
     ColumnMapping,
+    MissingColumnsError,
     ValidationSummary,
     find_missing_columns,
+    header_carries_required_columns,
     validate_rows,
 )
 from app.domain.enums import ContactValidationStatus
+from app.domain.excel import parse_excel
 from app.domain.phone import normalize_phone
 
 # The canonical V1 fields ([D25]), behind headers that happen to match them.
@@ -51,6 +57,72 @@ def _validate(
     rows: list[dict[str, object]], schema: AudienceColumnSchema = SCHEMA
 ) -> ValidationSummary:
     return validate_rows(rows, schema=schema, default_region="IN")
+
+
+def make_client_workbook() -> bytes:
+    """The client's file shape: a title, a blank row, then [D25]'s headers and rows."""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    for row in (
+        ["Master school list"],
+        [],
+        ["Full Name", "Mobile Number", "Email ID"],
+        ["Cambridge School", 919711000498, "a@b.in"],
+        ["Ardee School", "919711000499", None],
+    ):
+        sheet.append(list(row))
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+class TestTheClientsFileShapeIsRead:
+    """[D63]: the end-to-end regression for the 2026-09-24 upload failure.
+
+    The client's workbook — Academicae's 100-school list — puts a merged title in row 1
+    and a blank row in row 2, with the headers in row 3. Read from row 1 it looked like a
+    file with no columns at all. The platform now locates the header row using *this
+    product's* configured mapping, so the same file reads correctly and the mapping is
+    still the only thing that says which columns the file must have.
+    """
+
+    FILE = make_client_workbook()
+
+    def test_the_headers_are_found_and_the_rows_validate(self) -> None:
+        sheet = parse_excel(
+            self.FILE,
+            max_rows=100,
+            header_matches=header_carries_required_columns(CLIENT_SCHEMA),
+            header_scan_rows=5,
+        )
+
+        assert find_missing_columns(sheet.headers, CLIENT_SCHEMA) == []
+        summary = _validate(sheet.rows, CLIENT_SCHEMA)
+
+        assert summary.total == 2
+        assert summary.valid == 2
+        assert summary.rows[0].full_name == "Cambridge School"
+        assert summary.rows[0].phone_e164 == "+919711000498"
+
+    def test_another_products_mapping_does_not_find_them(self) -> None:
+        """The schema is the product's own ([D51]): a file whose headers are not this
+        product's is still refused, and the refusal names the sheet and the rows read."""
+        sheet = parse_excel(
+            self.FILE,
+            max_rows=100,
+            header_matches=header_carries_required_columns(SCHEMA),
+            header_scan_rows=5,
+        )
+
+        missing = find_missing_columns(sheet.headers, SCHEMA)
+        error = MissingColumnsError(
+            missing, sheet_name=sheet.sheet_name, header_row=sheet.header_row, scanned_rows=5
+        )
+
+        assert missing == ["Name", "Phone"]
+        assert str(error).startswith("Missing required column(s): Name, Phone")
+        assert "first 5 rows" in str(error)
 
 
 class TestPhoneNormalization:

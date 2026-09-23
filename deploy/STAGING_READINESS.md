@@ -80,18 +80,20 @@ Phone number IDs and business account IDs are **not** here: they are per product
 
 System prompts and qualification criteria are **not** here: they are per product (Part 2).
 
-### 1.5 Google Calendar — shared operations account
+### 1.5 Google Calendar — how the platform authenticates ([D62])
 
 | ☐ | Item | Goes to | Verified by |
 |---|---|---|---|
 | ☐ | Calendar API enabled | — | — |
-| ☐ | **OAuth client** (Desktop app, Internal) — one for every product | `GOOGLE_OAUTH_CLIENT_ID`, secret `google-oauth-client-secret` | — |
-| ☐ | **Refresh token — one human consent** — D-27 | secret `google-calendar-refresh-token` | `deploy/oauth-consent.md` |
-| ☐ | Worker SA holds `secretmanager.secretVersionAdder` | IAM | Otherwise booking fails when Google rotates the token |
-| ☐ | Each product's calendar **shared with the operations account** | Google Calendar | That product's slots reflect its diary |
+| ☐ | **Production:** each product's calendar **shared with the worker's service account** | Google Calendar | That product's slots reflect its diary; then `GOOGLE_CALENDAR_AUTH_MODE=service_account` |
+| ☐ | Fallback only: **OAuth client** (Desktop app) — one for every product | `GOOGLE_OAUTH_CLIENT_ID`, secret `google-oauth-client-secret` | — |
+| ☐ | Fallback only: **Refresh token — one human consent** — D-27. Testing-status screens expire it every 7 days; share calendars instead | secret `google-calendar-refresh-token` | `deploy/oauth-consent.md` |
+| ☐ | Fallback only: worker SA holds `secretmanager.secretVersionAdder` | IAM | Otherwise booking fails when Google rotates the token |
 
 Calendar IDs are per product (Part 2). No new OAuth client or token is needed per product
-unless a calendar sits in a different Google account ([D43]).
+unless a calendar sits in a different Google account ([D43]). In service-account mode the
+identity is shared with every product by definition, so nothing per-account follows a
+product either.
 
 ⚠️ The consent flow cannot be automated or done by a service account.
 
