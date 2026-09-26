@@ -96,6 +96,42 @@ class TemplateCategory(StrEnum):
     AUTHENTICATION = "AUTHENTICATION"
 
 
+class TemplateHeaderType(StrEnum):
+    """The header component a Meta template carries, as Meta reported it.
+
+    Modeled because a send must mirror the template's shape, not a shape we prefer.
+    Meta rejects a send whose components do not match the approved template (132012,
+    "header: Format mismatch"), so a template with an IMAGE header cannot be sent by
+    omitting the header the way a body-only send does.
+
+    `NONE` is a template with no header at all, which is the only value that needs no
+    media. The media types are named after Meta's own `HEADER` component types rather
+    than a locally invented vocabulary, for the same reason [D6] compares Meta's
+    approval string as-is.
+    """
+
+    NONE = "NONE"
+    TEXT = "TEXT"
+    IMAGE = "IMAGE"
+    VIDEO = "VIDEO"
+    DOCUMENT = "DOCUMENT"
+
+    @property
+    def needs_media(self) -> bool:
+        """Whether sending this template requires a media URL from the application.
+
+        TEXT headers carry their own text, and a template with no header needs nothing.
+        IMAGE, VIDEO and DOCUMENT are satisfied only by a link, which the approved
+        template's own sample does not provide: Meta's stored example is a placeholder
+        shown in the manager, not the media the message is meant to carry.
+        """
+        return self in (
+            TemplateHeaderType.IMAGE,
+            TemplateHeaderType.VIDEO,
+            TemplateHeaderType.DOCUMENT,
+        )
+
+
 class ContactValidationStatus(StrEnum):
     """Derived from the §6 pipeline, which requires storing invalid and duplicate
     rows alongside valid ones together with the reason."""

@@ -16,7 +16,7 @@ from datetime import datetime
 
 # Canonical definitions live in the domain layer so persistence and integrations
 # agree on one set of states. Re-exported here for callers of this package.
-from app.domain.enums import MessageStatus, TemplateCategory
+from app.domain.enums import MessageStatus, TemplateCategory, TemplateHeaderType
 
 __all__ = [
     "ApprovedTemplate",
@@ -26,6 +26,7 @@ __all__ = [
     "OutboundTextMessage",
     "SentMessage",
     "TemplateCategory",
+    "TemplateHeaderType",
     "WhatsAppProvider",
 ]
 
@@ -54,6 +55,14 @@ class ApprovedTemplate:
     variable_count: int = 0
     body_preview: str | None = None
     provider_status: str = ""
+    # What the approved template's header looks like, as Meta reported it. Carried for
+    # the same reason approval is: the send has to mirror the template, so a header
+    # that is not known here cannot be reproduced ([D6] applies to the whole shape).
+    header_type: TemplateHeaderType = TemplateHeaderType.NONE
+    # The media link Meta recorded for a media header. This is the template's *sample*,
+    # kept for reference only — it is never sent, because the approved example is not
+    # necessarily the asset the campaign is meant to deliver.
+    header_sample_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +71,12 @@ class OutboundTemplateMessage:
 
     `idempotency_key` lets the provider and the worker collapse duplicate sends,
     which §20 requires for sending tasks.
+
+    `header_media_url` is the asset a media header carries. It is supplied by the
+    caller rather than read from the template, because the URL stored alongside an
+    approved template is Meta's *sample* and not necessarily what this campaign is
+    meant to send. It must be set whenever the template's header needs media; a
+    template whose header is absent or plain text leaves it None.
     """
 
     to_e164: str
@@ -69,6 +84,8 @@ class OutboundTemplateMessage:
     language: str
     variables: tuple[str, ...] = ()
     idempotency_key: str | None = None
+    header_type: TemplateHeaderType = TemplateHeaderType.NONE
+    header_media_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

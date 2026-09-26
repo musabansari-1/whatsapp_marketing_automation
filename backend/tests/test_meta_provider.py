@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from app.core.errors import NonRetryableProviderError, RetryableProviderError
-from app.domain.enums import MessageStatus, TemplateCategory
+from app.domain.enums import MessageStatus, TemplateCategory, TemplateHeaderType
 from app.integrations.whatsapp.meta import MetaWhatsAppProvider
 from app.integrations.whatsapp.provider import OutboundTemplateMessage, OutboundTextMessage
 
@@ -116,6 +116,127 @@ class TestSending:
             OutboundTemplateMessage(to_e164=PHONE, template_name="simple", language="en")
         )
         assert "components" not in captured["template"]
+
+    async def test_an_image_header_is_sent_as_a_header_component(self) -> None:
+        """The regression behind staging's 132012.
+
+        An approved template with an IMAGE header must be sent with a matching header
+        component. Omitting it made Meta answer "header: Format mismatch, expected
+        IMAGE, received UNKNOWN" and fail the recipient permanently.
+        """
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return ok_send(request)
+
+        await make_provider(handler).send_template_message(
+            OutboundTemplateMessage(
+                to_e164=PHONE,
+                template_name="sutainx_test",
+                language="en",
+                header_type=TemplateHeaderType.IMAGE,
+                header_media_url="https://cdn.example.com/sutainx.jpg",
+            )
+        )
+
+        header = captured["template"]["components"][0]
+        assert header["type"] == "header"
+        assert header["parameters"][0]["image"]["link"] == "https://cdn.example.com/sutainx.jpg"
+
+    async def test_the_header_precedes_the_body(self) -> None:
+        """Order matters to Meta: header first, then body."""
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return ok_send(request)
+
+        await make_provider(handler).send_template_message(
+            OutboundTemplateMessage(
+                to_e164=PHONE,
+                template_name="sutainx_test",
+                language="en",
+                variables=("Rahul",),
+                header_type=TemplateHeaderType.IMAGE,
+                header_media_url="https://cdn.example.com/sutainx.jpg",
+            )
+        )
+
+        components = captured["template"]["components"]
+        assert [c["type"] for c in components] == ["header", "body"]
+
+    async def test_a_media_header_without_a_url_is_refused_before_the_request(self) -> None:
+        """Never sent silently.
+
+        A missing asset cannot be fixed by retrying, so it is raised here rather than
+        spending an attempt per recipient to be refused permanently by Meta.
+        """
+        called = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal called
+            called = True
+            return ok_send(request)
+
+        with pytest.raises(NonRetryableProviderError, match="needs a media URL"):
+            await make_provider(handler).send_template_message(
+                OutboundTemplateMessage(
+                    to_e164=PHONE,
+                    template_name="sutainx_test",
+                    language="en",
+                    header_type=TemplateHeaderType.IMAGE,
+                )
+            )
+        assert called is False
+
+    async def test_a_document_header_uses_the_document_parameter(self) -> None:
+        """Meta's parameter key is the lowercased header type."""
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return ok_send(request)
+
+        await make_provider(handler).send_template_message(
+            OutboundTemplateMessage(
+                to_e164=PHONE,
+                template_name="menu",
+                language="en",
+                header_type=TemplateHeaderType.DOCUMENT,
+                header_media_url="https://cdn.example.com/menu.pdf",
+            )
+        )
+
+        header = captured["template"]["components"][0]
+        assert "document" in header["parameters"][0]
+
+    async def test_a_text_header_needs_no_media(self) -> None:
+        """A TEXT header carries the template's own text, so nothing is required."""
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return ok_send(request)
+
+        await make_provider(handler).send_template_message(
+            OutboundTemplateMessage(
+                to_e164=PHONE,
+                template_name="greeting",
+                language="en",
+                header_type=TemplateHeaderType.TEXT,
+            )
+        )
+
+        assert captured["template"]["components"][0]["type"] == "header"
 
     async def test_the_access_token_is_sent_as_a_bearer_header(self) -> None:
         seen: dict[str, str] = {}
@@ -262,6 +383,117 @@ class TestTemplateSync:
         assert templates[0].name == "q3_promo"
         assert templates[0].category is TemplateCategory.MARKETING
         assert templates[0].variable_count == 2
+
+    async def test_an_image_header_is_recorded_on_sync(self) -> None:
+        """The other half of the 132012 fix: the sync must learn the shape.
+
+        A header that is not read here cannot be reproduced at send time, so Meta
+        refuses the send for exactly that reason.
+        """
+        handler = self._templates_handler(
+            [
+                {
+                    "data": [
+                        {
+                            "id": "tpl-3",
+                            "name": "sutainx_test",
+                            "language": "en",
+                            "status": "APPROVED",
+                            "category": "MARKETING",
+                            "components": [
+                                {"type": "HEADER", "format": "IMAGE"},
+                                {"type": "BODY", "text": "Hi {{1}}"},
+                            ],
+                        }
+                    ]
+                }
+            ]
+        )
+        templates = await make_provider(handler).fetch_approved_templates()
+        assert templates[0].header_type is TemplateHeaderType.IMAGE
+        # The body is still parsed; the header did not displace it.
+        assert templates[0].variable_count == 1
+        assert templates[0].body_preview == "Hi {{1}}"
+
+    async def test_the_samples_image_is_kept_for_reference_only(self) -> None:
+        """Meta's example is recorded, and is clearly not treated as the asset.
+
+        It is a placeholder in the manager, so it must never become the media a
+        campaign sends — hence it is exposed as `header_sample_url`, a name the send
+        path never reads.
+        """
+        handler = self._templates_handler(
+            [
+                {
+                    "data": [
+                        {
+                            "id": "tpl-4",
+                            "name": "with_sample",
+                            "language": "en",
+                            "status": "APPROVED",
+                            "category": "MARKETING",
+                            "components": [
+                                {
+                                    "type": "HEADER",
+                                    "format": "IMAGE",
+                                    "example": {
+                                        "header_handle": ["https://cdn.example.com/sample.jpg"]
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ]
+        )
+        templates = await make_provider(handler).fetch_approved_templates()
+        assert templates[0].header_sample_url is None  # a list, not a link object
+
+    async def test_a_body_only_template_has_no_header(self) -> None:
+        """The default, and the reason existing rows need no backfill."""
+        handler = self._templates_handler(
+            [
+                {
+                    "data": [
+                        {
+                            "id": "tpl-5",
+                            "name": "plain",
+                            "language": "en",
+                            "status": "APPROVED",
+                            "category": "MARKETING",
+                            "components": [{"type": "BODY", "text": "Hello"}],
+                        }
+                    ]
+                }
+            ]
+        )
+        templates = await make_provider(handler).fetch_approved_templates()
+        assert templates[0].header_type is TemplateHeaderType.NONE
+
+    async def test_an_unrecognized_header_format_is_not_guessed(self) -> None:
+        """NONE understates the header, which fails loudly later.
+
+        Guessing a type we do not model would claim a shape Meta never approved. NONE
+        instead makes the send refuse for missing media, naming the real problem.
+        """
+        handler = self._templates_handler(
+            [
+                {
+                    "data": [
+                        {
+                            "id": "tpl-6",
+                            "name": "exotic",
+                            "language": "en",
+                            "status": "APPROVED",
+                            "category": "MARKETING",
+                            "components": [{"type": "HEADER", "format": "STICKER"}],
+                        }
+                    ]
+                }
+            ]
+        )
+        templates = await make_provider(handler).fetch_approved_templates()
+        assert templates[0].header_type is TemplateHeaderType.NONE
 
     async def test_metas_status_is_carried_through_unchanged(self) -> None:
         """[D6]: approval is Meta's. The sync records what it was told, including a

@@ -16,9 +16,11 @@ from app.domain.campaign import (
     CampaignStateError,
     TemplateAssignmentError,
     TemplateFacts,
+    TemplateMediaMissingError,
     TemplateNotApprovedError,
     TemplateOwnershipError,
     allowed_transitions,
+    assert_header_media_available,
     assert_sendable,
     assert_template_owned_by,
     assert_template_usable,
@@ -29,7 +31,7 @@ from app.domain.campaign import (
     needs_assignment,
     recipient_status_for,
 )
-from app.domain.enums import CampaignStatus, RecipientStatus
+from app.domain.enums import CampaignStatus, RecipientStatus, TemplateHeaderType
 
 
 class TestStates:
@@ -214,6 +216,43 @@ class TestSendability:
         audience."""
         with pytest.raises(CampaignNotSendableError, match="no recipients"):
             assert_sendable(CampaignStatus.READY, 0)
+
+
+class TestHeaderMedia:
+    """A media header cannot be sent without an asset, and no retry can supply one.
+
+    Meta refuses a send whose components disagree with the approved template (132012,
+    "header: Format mismatch, expected IMAGE, received UNKNOWN"), permanently. Catching
+    it here names the problem once, instead of once per recipient at send time.
+    """
+
+    @pytest.mark.parametrize(
+        "header_type",
+        [
+            TemplateHeaderType.IMAGE,
+            TemplateHeaderType.VIDEO,
+            TemplateHeaderType.DOCUMENT,
+        ],
+    )
+    def test_a_media_header_without_a_url_is_refused(self, header_type: TemplateHeaderType) -> None:
+        with pytest.raises(TemplateMediaMissingError, match="needs a media URL"):
+            assert_header_media_available(header_type=header_type, media_url=None)
+
+    @pytest.mark.parametrize(
+        "header_type",
+        [TemplateHeaderType.IMAGE, TemplateHeaderType.VIDEO, TemplateHeaderType.DOCUMENT],
+    )
+    def test_a_media_header_with_a_url_passes(self, header_type: TemplateHeaderType) -> None:
+        assert_header_media_available(
+            header_type=header_type, media_url="https://cdn.example.com/asset.jpg"
+        )
+
+    @pytest.mark.parametrize("header_type", [TemplateHeaderType.NONE, TemplateHeaderType.TEXT])
+    def test_a_header_that_needs_no_media_always_passes(
+        self, header_type: TemplateHeaderType
+    ) -> None:
+        """A TEXT header carries the template's own text, and no header needs nothing."""
+        assert_header_media_available(header_type=header_type, media_url=None)
 
 
 class TestSuppression:

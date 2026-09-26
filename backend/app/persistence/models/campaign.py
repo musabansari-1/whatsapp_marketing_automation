@@ -21,7 +21,12 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.domain.enums import CampaignStatus, RecipientStatus, TemplateCategory
+from app.domain.enums import (
+    CampaignStatus,
+    RecipientStatus,
+    TemplateCategory,
+    TemplateHeaderType,
+)
 from app.persistence.base import Base
 from app.persistence.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
@@ -64,6 +69,27 @@ class WhatsAppTemplate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     variable_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     body_preview: Mapped[str | None] = mapped_column(Text)
+
+    # The header component Meta reported, kept because a send must reproduce it: Meta
+    # refuses a send whose components disagree with the approved template (132012,
+    # "header: Format mismatch"). Defaults to NONE, which is what a body-only template
+    # has, so every existing row is correct without being rewritten.
+    header_type: Mapped[TemplateHeaderType] = mapped_column(
+        Enum(TemplateHeaderType, name="template_header_type", native_enum=True),
+        nullable=False,
+        default=TemplateHeaderType.NONE,
+        server_default=TemplateHeaderType.NONE.value,
+    )
+
+    # The media a media header carries, and the asset the campaign is meant to deliver.
+    #
+    # **Application data, never synchronized.** Meta's template record holds only a
+    # *sample* image, which is a placeholder shown in the manager rather than what any
+    # particular broadcast should send, so the sync deliberately does not write this
+    # column. It is set explicitly, like ownership ([D57]), and NULL means "no media
+    # chosen" — which is why a media-header template with NULL is refused at send time
+    # instead of being sent without its header.
+    header_media_url: Mapped[str | None] = mapped_column(Text)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     campaigns: Mapped[list[Campaign]] = relationship(back_populates="template")

@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.campaign import TemplateAssignmentError, needs_assignment
+from app.domain.campaign import TemplateAssignmentError, TemplateNotFoundError, needs_assignment
 from app.integrations.whatsapp import ApprovedTemplate
 from app.persistence.models import Product, WhatsAppTemplate
 
@@ -76,6 +76,29 @@ async def assign_to_product(
     return template
 
 
+async def set_header_media(
+    session: AsyncSession, *, template_id: uuid.UUID, media_url: str | None
+) -> WhatsAppTemplate:
+    """Choose the media a template's header carries, or clear it with None.
+
+    The one way `header_media_url` is written, and it is explicit for the same reason
+    ownership is: the sample Meta stores beside an approved template is a placeholder in
+    the manager, not the asset a campaign should deliver, so nothing may infer this from
+    a sync, a product's defaults or a campaign's history.
+
+    Clearing it (None) is allowed and leaves a media-header template unsendable, which
+    the send path then refuses by name rather than discovering through a permanent
+    132012 against every recipient.
+    """
+    template = await session.get(WhatsAppTemplate, template_id, with_for_update=True)
+    if template is None:
+        raise TemplateNotFoundError("Template not found")
+
+    template.header_media_url = media_url
+    await session.flush()
+    return template
+
+
 async def list_owned(session: AsyncSession, *, product_id: uuid.UUID) -> Sequence[WhatsAppTemplate]:
     """Every template one product owns, whatever Meta's status."""
     result = await session.execute(
@@ -114,6 +137,12 @@ async def upsert_many(session: AsyncSession, templates: Sequence[ApprovedTemplat
     Leaving the column out of the update means a re-sync never reassigns or clears an
     ownership someone did establish; adding it to `set_` would silently overwrite them
     all on the next scheduled run. Ownership is assigned outside this path, or not at all.
+
+    `header_media_url` is excluded for the same reason, and more strongly: Meta's record
+    carries only a sample image, so a sync that wrote it would overwrite the asset an
+    operator chose with Meta's placeholder — silently changing what every later
+    campaign of this product sends. Only `header_type` is synchronized, because that is
+    Meta's to decide; the media is ours.
     """
     if not templates:
         return 0
@@ -129,6 +158,10 @@ async def upsert_many(session: AsyncSession, templates: Sequence[ApprovedTemplat
                 "category": template.category,
                 "variable_count": template.variable_count,
                 "body_preview": template.body_preview,
+                # Meta's own view of the shape. Corrected on every sync, so a template
+                # whose header was changed in the manager stops being sent as the old
+                # shape — which Meta refuses permanently.
+                "header_type": template.header_type,
                 "synced_at": now,
             }
             for template in templates
@@ -143,6 +176,7 @@ async def upsert_many(session: AsyncSession, templates: Sequence[ApprovedTemplat
             "category": statement.excluded.category,
             "variable_count": statement.excluded.variable_count,
             "body_preview": statement.excluded.body_preview,
+            "header_type": statement.excluded.header_type,
             "synced_at": statement.excluded.synced_at,
         },
     )

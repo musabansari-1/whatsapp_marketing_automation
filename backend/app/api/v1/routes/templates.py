@@ -23,14 +23,20 @@ import uuid
 from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import AdminUser, CurrentUser, DbSession
-from app.api.schemas import ProductTemplateResponse, WhatsAppTemplateResponse
+from app.api.schemas import (
+    ProductTemplateResponse,
+    SetTemplateHeaderMediaRequest,
+    WhatsAppTemplateResponse,
+)
 from app.api.scope import PRODUCT_PREFIX, ProductScope
 from app.core.logging import get_logger
 from app.domain.campaign import (
     TemplateAssignmentError,
     TemplateFacts,
+    TemplateMediaMissingError,
     TemplateNotApprovedError,
     TemplateOwnershipError,
+    assert_header_media_available,
     assert_template_owned_by,
     assert_template_usable,
 )
@@ -60,7 +66,10 @@ def usable_for_campaigns(template: WhatsAppTemplate, product: Product) -> bool:
         assert_template_owned_by(
             template_product_id=template.product_id, campaign_product_id=product.id
         )
-    except (TemplateNotApprovedError, TemplateOwnershipError):
+        assert_header_media_available(
+            header_type=template.header_type, media_url=template.header_media_url
+        )
+    except (TemplateNotApprovedError, TemplateOwnershipError, TemplateMediaMissingError):
         return False
     return True
 
@@ -116,6 +125,53 @@ async def assign_template(
         by_user_id=str(user.id),
     )
     return _with_usability(template, product)
+
+
+@router.put("/{template_id}/header-media", response_model=ProductTemplateResponse)
+async def set_template_header_media(
+    template_id: uuid.UUID,
+    payload: SetTemplateHeaderMediaRequest,
+    product: ProductScope,
+    user: AdminUser,
+    session: DbSession,
+) -> ProductTemplateResponse:
+    """Choose the media this product's template header carries. ADMIN-only.
+
+    A template with an IMAGE, VIDEO or DOCUMENT header cannot be sent by Meta unless
+    the send reproduces that header with an asset (132012, a permanent refusal). Meta's
+    own record holds only a *sample* image, so the asset has to be supplied here.
+
+    Ownership is required, not assumed: the media belongs to one product's brand, and
+    this template is that product's. 404 for a template this product does not own.
+
+    Clearing the media is allowed, and leaves a media-header template unsendable — the
+    campaign picker then reports it unusable rather than a broadcast failing on every
+    recipient.
+    """
+    template = await session.get(WhatsAppTemplate, template_id)
+    if template is None or template.product_id != product.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    if not payload.media_url:
+        logger.info(
+            "whatsapp_template_header_media_cleared",
+            template_id=str(template.id),
+            product_id=str(product.id),
+            by_user_id=str(user.id),
+        )
+    else:
+        logger.info(
+            "whatsapp_template_header_media_set",
+            template_id=str(template.id),
+            product_id=str(product.id),
+            by_user_id=str(user.id),
+            header_type=template.header_type.value,
+        )
+
+    updated = await template_repo.set_header_media(
+        session, template_id=template.id, media_url=payload.media_url
+    )
+    return _with_usability(updated, product)
 
 
 @global_router.get("/unassigned", response_model=list[WhatsAppTemplateResponse])

@@ -24,6 +24,7 @@ from app.domain.enums import (
     NotificationType,
     RecipientStatus,
     TemplateCategory,
+    TemplateHeaderType,
     UserRole,
 )
 
@@ -233,6 +234,12 @@ class WhatsAppTemplateResponse(BaseModel):
     provider_status: str
     variable_count: int
     body_preview: str | None
+    # The header Meta's template carries, and the media chosen for it. `header_type`
+    # is synchronized; `header_media_url` is set explicitly, because Meta's own sample
+    # is a placeholder rather than the asset a campaign should send. A media header
+    # with no URL is why a campaign would be refused.
+    header_type: TemplateHeaderType
+    header_media_url: str | None
 
 
 class ProductTemplateResponse(WhatsAppTemplateResponse):
@@ -243,6 +250,17 @@ class ProductTemplateResponse(WhatsAppTemplateResponse):
     """
 
     usable_for_campaigns: bool
+
+
+class SetTemplateHeaderMediaRequest(BaseModel):
+    """Choose the media a template's header carries.
+
+    `media_url` is nullable on purpose: sending null clears it, which leaves a
+    media-header template unsendable and is refused by name at campaign creation. That
+    is preferable to silently keeping an asset the operator believed they had removed.
+    """
+
+    media_url: str | None = Field(default=None, max_length=2048)
 
 
 class CreateCampaignRequest(BaseModel):

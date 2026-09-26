@@ -31,7 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.logging import get_logger
-from app.domain.campaign import is_unsent
+from app.domain.campaign import (
+    TemplateMediaMissingError,
+    assert_header_media_available,
+    is_unsent,
+)
 from app.domain.enums import (
     CampaignStatus,
     MessageDirection,
@@ -210,6 +214,30 @@ async def _process(
     if template is None:
         raise ValueError(f"Template {campaign.template_id} not found")
 
+    # A media header with no asset is refused here, by name, rather than sent without
+    # its header and refused by Meta (132012) once per recipient. The failure is
+    # identical and permanent either way; catching it before the send means the
+    # operator learns which template is missing its media from the campaign, and the
+    # recipients are not each charged a doomed attempt against the number's quota.
+    try:
+        assert_header_media_available(
+            header_type=template.header_type, media_url=template.header_media_url
+        )
+    except TemplateMediaMissingError as exc:
+        recipient.status = RecipientStatus.FAILED
+        recipient.error_code = "template_media_missing"
+        recipient.error_message = str(exc)[:1000]
+        recipient.failed_at = datetime.now(UTC)
+        await session.flush()
+        logger.warning(
+            "campaign_send_failed",
+            reason="template_media_missing",
+            header_type=template.header_type.value,
+            error=str(exc),
+        )
+        await _complete_campaign_if_finished(session, campaign)
+        return SendOutcome("failed_template_media_missing", str(recipient.id))
+
     idempotency_key = f"send-{recipient.id}"
 
     # If a previous attempt sent successfully but crashed before recording, the
@@ -254,6 +282,11 @@ async def _process(
                 language=template.language,
                 variables=_variables_for(template, lead),
                 idempotency_key=idempotency_key,
+                # The send mirrors the approved template's shape. Omitting these is
+                # what produced Meta's "header: Format mismatch, expected IMAGE,
+                # received UNKNOWN" and a permanent failure for every recipient.
+                header_type=template.header_type,
+                header_media_url=template.header_media_url,
             )
         )
     except Exception as exc:

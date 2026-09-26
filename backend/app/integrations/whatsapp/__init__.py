@@ -9,6 +9,7 @@ from app.integrations.whatsapp.provider import (
     OutboundTextMessage,
     SentMessage,
     TemplateCategory,
+    TemplateHeaderType,
     WhatsAppProvider,
 )
 
@@ -21,5 +22,6 @@ __all__ = [
     "OutboundTextMessage",
     "SentMessage",
     "TemplateCategory",
+    "TemplateHeaderType",
     "WhatsAppProvider",
 ]

@@ -40,8 +40,10 @@ from app.domain.campaign import (
     CampaignNotSendableError,
     CampaignStateError,
     TemplateFacts,
+    TemplateMediaMissingError,
     TemplateNotApprovedError,
     TemplateOwnershipError,
+    assert_header_media_available,
     assert_sendable,
     assert_template_owned_by,
     assert_template_usable,
@@ -109,7 +111,14 @@ async def create_campaign(
         assert_template_owned_by(
             template_product_id=template.product_id, campaign_product_id=product.id
         )
-    except (TemplateNotApprovedError, TemplateOwnershipError) as exc:
+        # A media-header template with no asset cannot be sent, and Meta's refusal
+        # (132012) is permanent and silent about the cause. Refusing at creation names
+        # the problem while there is still a human to fix it, rather than after a
+        # confirmed broadcast has failed on every recipient.
+        assert_header_media_available(
+            header_type=template.header_type, media_url=template.header_media_url
+        )
+    except (TemplateNotApprovedError, TemplateOwnershipError, TemplateMediaMissingError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc

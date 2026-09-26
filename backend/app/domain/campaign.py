@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from app.domain.enums import CampaignStatus, RecipientStatus
+from app.domain.enums import CampaignStatus, RecipientStatus, TemplateHeaderType
 
 # Meta's approval value. [D6] forbids inventing a local approval status, so this is
 # the value Meta reports, compared as-is.
@@ -127,6 +127,10 @@ class TemplateOwnershipError(Exception):
     """The template is not owned by the campaign's product (§28.8, [D57])."""
 
 
+class TemplateNotFoundError(Exception):
+    """No template row exists for the given id."""
+
+
 class TemplateAssignmentError(Exception):
     """A template cannot be given to that product ([D57])."""
 
@@ -183,6 +187,33 @@ def assert_sendable(status: CampaignStatus, sendable_recipients: int) -> None:
         )
     if sendable_recipients <= 0:
         raise CampaignNotSendableError("This campaign has no recipients left to send to")
+
+
+class TemplateMediaMissingError(Exception):
+    """The template's header needs media, and none has been chosen for it."""
+
+
+def assert_header_media_available(
+    *, header_type: TemplateHeaderType, media_url: str | None
+) -> None:
+    """Refuse a template whose media header has no asset to send.
+
+    Meta validates the components of a send against the approved template and refuses a
+    mismatch permanently (132012, "header: Format mismatch, expected IMAGE, received
+    UNKNOWN"). Omitting the header to avoid that mismatch is not an option — it is the
+    same rejection — and retrying never helps, because no attempt can supply media the
+    platform does not have.
+
+    So a media-header template with no URL is caught here, where the operator is told
+    which template and what is missing, instead of once per recipient at send time,
+    where the same permanent failure would be reported N times and look like a
+    provider outage. A TEXT or absent header needs nothing and always passes.
+    """
+    if header_type.needs_media and not media_url:
+        raise TemplateMediaMissingError(
+            f"This template has a {header_type.value} header, so it needs a media URL "
+            "before any campaign can send it"
+        )
 
 
 def recipient_status_for(*, suppressed: bool) -> RecipientStatus:

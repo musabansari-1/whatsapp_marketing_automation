@@ -20,7 +20,7 @@ import httpx
 
 from app.core.errors import NonRetryableProviderError, RetryableProviderError
 from app.core.logging import get_logger
-from app.domain.enums import MessageStatus, TemplateCategory
+from app.domain.enums import MessageStatus, TemplateCategory, TemplateHeaderType
 from app.integrations.whatsapp.provider import (
     ApprovedTemplate,
     OutboundTemplateMessage,
@@ -96,6 +96,16 @@ class MetaWhatsAppProvider(WhatsAppProvider):
         what a campaign can do.
         """
         components: list[dict[str, Any]] = []
+
+        # The header must mirror the approved template, and Meta rejects a send whose
+        # components disagree with it (132012, "header: Format mismatch, expected IMAGE,
+        # received UNKNOWN"). So a template with a media header is not sendable by
+        # omitting the header — which is what a body-only payload does, and why the
+        # campaign failed permanently on its first attempt.
+        header = _header_component(message)
+        if header is not None:
+            components.append(header)
+
         if message.variables:
             components.append(
                 {
@@ -243,6 +253,42 @@ class MetaWhatsAppProvider(WhatsAppProvider):
         )
 
 
+def _header_component(message: OutboundTemplateMessage) -> dict[str, Any] | None:
+    """The `header` component for a template send, or None when it needs none.
+
+    Meta validates the sent components against the approved template, so this mirrors
+    the template's header rather than choosing one. A media header carries a single
+    link parameter; a template with no header contributes nothing, which is what a
+    body-only send has always done.
+
+    A media header with no URL is refused here rather than sent. A silent omission is
+    exactly the 132012 this whole path exists to prevent, and it fails permanently on
+    every recipient, so it is far better raised before the request than after it.
+    """
+    if message.header_type is TemplateHeaderType.NONE:
+        return None
+
+    if message.header_type.needs_media:
+        if not message.header_media_url:
+            raise NonRetryableProviderError(
+                f"Template {message.template_name!r} has a "
+                f"{message.header_type.value} header, which needs a media URL, "
+                "and none was supplied",
+                provider="meta",
+            )
+        # Meta's parameter type is the lowercased header type: an IMAGE header takes an
+        # `image` parameter, a DOCUMENT header a `document` one.
+        media_key = message.header_type.value.lower()
+        return {
+            "type": "header",
+            "parameters": [{media_key: {"link": message.header_media_url}}],
+        }
+
+    # A TEXT header needs no media, and its text is the template's own, so the
+    # component is declared empty rather than invented.
+    return {"type": "header", "parameters": []}
+
+
 def _parse_template(raw: dict[str, Any]) -> ApprovedTemplate | None:
     """Convert one Meta template record.
 
@@ -256,10 +302,16 @@ def _parse_template(raw: dict[str, Any]) -> ApprovedTemplate | None:
         return None
 
     body = ""
+    header_type = TemplateHeaderType.NONE
+    header_sample_url: str | None = None
     for component in raw.get("components", []):
         if component.get("type") == "BODY":
             body = component.get("text", "")
-            break
+        elif component.get("type") == "HEADER":
+            # Recorded rather than dropped. A header that is not known here cannot be
+            # reproduced at send time, and Meta refuses the send for exactly that.
+            header_type = _parse_header_type(component.get("format"))
+            header_sample_url = _header_sample_url(component)
 
     return ApprovedTemplate(
         name=raw.get("name", ""),
@@ -272,4 +324,36 @@ def _parse_template(raw: dict[str, Any]) -> ApprovedTemplate | None:
         body_preview=body or None,
         # Carried through unchanged; nothing here decides approval ([D6]).
         provider_status=raw.get("status", ""),
+        header_type=header_type,
+        header_sample_url=header_sample_url,
     )
+
+
+def _parse_header_type(fmt: str | None) -> TemplateHeaderType:
+    """Map Meta's header `format` onto a modeled type, defaulting to NONE.
+
+    An unrecognized format is NONE rather than a guess. That understates the header,
+    so the send is refused later for lacking media rather than claiming a shape Meta
+    did not approve — the safe direction to be wrong in.
+    """
+    if not fmt:
+        return TemplateHeaderType.NONE
+    try:
+        return TemplateHeaderType(fmt.upper())
+    except ValueError:
+        logger.warning("whatsapp_template_header_unrecognized", header_format=fmt)
+        return TemplateHeaderType.NONE
+
+
+def _header_sample_url(component: dict[str, Any]) -> str | None:
+    """The example media link Meta stored for a media header, if it has one.
+
+    Reference only. It is never sent: the example attached to an approved template is
+    a sample shown in the manager, not the asset a campaign is meant to deliver.
+    """
+    for value in component.get("example", {}).values():
+        if isinstance(value, dict):
+            link = value.get("link")
+            if isinstance(link, str):
+                return link
+    return None
