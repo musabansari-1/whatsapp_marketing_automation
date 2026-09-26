@@ -146,6 +146,37 @@ class TestSending:
         assert header["type"] == "header"
         assert header["parameters"][0]["image"]["link"] == "https://cdn.example.com/sutainx.jpg"
 
+    async def test_the_header_parameter_carries_its_own_type(self) -> None:
+        """The regression behind staging's 2026-09-26 400.
+
+        Meta rejected the request with "violated JSON schema constraint 'required'
+        ... for 'template.components.0.parameters.0' ... missing: 'type'". The body
+        parameter always carried `type`; the header one did not, and nothing local
+        noticed until Meta parsed the whole request. A 400 here is permanent, so every
+        recipient of that campaign failed.
+        """
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return ok_send(request)
+
+        await make_provider(handler).send_template_message(
+            OutboundTemplateMessage(
+                to_e164=PHONE,
+                template_name="sutainx_test",
+                language="en",
+                header_type=TemplateHeaderType.IMAGE,
+                header_media_url="https://cdn.example.com/sutainx.jpg",
+            )
+        )
+
+        parameter = captured["template"]["components"][0]["parameters"][0]
+        assert parameter["type"] == "image"
+        assert parameter["image"]["link"] == "https://cdn.example.com/sutainx.jpg"
+
     async def test_the_header_precedes_the_body(self) -> None:
         """Order matters to Meta: header first, then body."""
         captured: dict[str, Any] = {}
@@ -194,6 +225,55 @@ class TestSending:
             )
         assert called is False
 
+    async def test_every_parameter_object_carries_a_type(self) -> None:
+        """A structural guard, not a shape assertion.
+
+        Meta validates the whole request and names the offending path, so a parameter
+        without `type` fails the send permanently for every recipient — twice now, once
+        for the header and once because nothing local noticed. This walks the built
+        payload rather than one field, so adding a component cannot reintroduce it.
+        """
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return ok_send(request)
+
+        # Every header kind, with and without body variables.
+        for header_type, variables in (
+            (TemplateHeaderType.NONE, ()),
+            (TemplateHeaderType.NONE, ("Rahul",)),
+            (TemplateHeaderType.TEXT, ("Rahul",)),
+            (TemplateHeaderType.IMAGE, ()),
+            (TemplateHeaderType.IMAGE, ("Rahul",)),
+            (TemplateHeaderType.DOCUMENT, ("Rahul",)),
+        ):
+            captured.clear()
+            await make_provider(handler).send_template_message(
+                OutboundTemplateMessage(
+                    to_e164=PHONE,
+                    template_name="t",
+                    language="en",
+                    variables=variables,
+                    header_type=header_type,
+                    header_media_url=(
+                        "https://cdn.example.com/a.jpg" if header_type.needs_media else None
+                    ),
+                )
+            )
+            for component in captured["template"].get("components", []):
+                assert component["type"], component
+                for parameter in component.get("parameters", []):
+                    assert "type" in parameter, (
+                        f"{component['type']} parameter has no 'type': {parameter}"
+                    )
+                    # The discriminator must name the key that actually holds the
+                    # value: `type: "image"` beside `image: {...}`, `type: "text"`
+                    # beside `text: "..."`. A mismatch is silently unreadable.
+                    assert parameter["type"] in parameter, parameter
+
     async def test_a_document_header_uses_the_document_parameter(self) -> None:
         """Meta's parameter key is the lowercased header type."""
         captured: dict[str, Any] = {}
@@ -217,8 +297,13 @@ class TestSending:
         header = captured["template"]["components"][0]
         assert "document" in header["parameters"][0]
 
-    async def test_a_text_header_needs_no_media(self) -> None:
-        """A TEXT header carries the template's own text, so nothing is required."""
+    async def test_a_text_header_sends_nothing(self) -> None:
+        """A TEXT header's text is part of the approved template, like the body text.
+
+        So there is no header component to declare. An empty `parameters` array was
+        tried first and is worse than useless: Meta rejects a parameter object with no
+        `type`, and an empty array is the same mistake in a quieter form.
+        """
         captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -236,7 +321,7 @@ class TestSending:
             )
         )
 
-        assert captured["template"]["components"][0]["type"] == "header"
+        assert "components" not in captured["template"]
 
     async def test_the_access_token_is_sent_as_a_bearer_header(self) -> None:
         seen: dict[str, str] = {}

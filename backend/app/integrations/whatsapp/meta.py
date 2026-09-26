@@ -257,36 +257,43 @@ def _header_component(message: OutboundTemplateMessage) -> dict[str, Any] | None
     """The `header` component for a template send, or None when it needs none.
 
     Meta validates the sent components against the approved template, so this mirrors
-    the template's header rather than choosing one. A media header carries a single
-    link parameter; a template with no header contributes nothing, which is what a
-    body-only send has always done.
+    the template's header rather than choosing one.
+
+    **Only a media header contributes anything.** A TEXT header's text is part of the
+    approved template — exactly like the body text, which has never been sent either —
+    so there is nothing to supply and nothing to declare. Emitting an empty `parameters`
+    array for one is not merely redundant: Meta rejects a parameter object that has no
+    `type`, and an empty array is the same class of mistake.
+
+    A media header parameter carries **both** the type discriminator and the media:
+    `{"type": "image", "image": {"link": ...}}`. Omitting `type` is a schema violation
+    the API rejects with a 400 (observed on staging 2026-09-26, campaign
+    `3c8bbc8d-6a19-4764-b80e-7d4e268eabfe`), and it is worth stating because the body
+    parameters below already carry `type` while this one originally did not — the
+    omission was invisible until Meta parsed the whole request.
 
     A media header with no URL is refused here rather than sent. A silent omission is
     exactly the 132012 this whole path exists to prevent, and it fails permanently on
     every recipient, so it is far better raised before the request than after it.
     """
-    if message.header_type is TemplateHeaderType.NONE:
+    if not message.header_type.needs_media:
         return None
 
-    if message.header_type.needs_media:
-        if not message.header_media_url:
-            raise NonRetryableProviderError(
-                f"Template {message.template_name!r} has a "
-                f"{message.header_type.value} header, which needs a media URL, "
-                "and none was supplied",
-                provider="meta",
-            )
-        # Meta's parameter type is the lowercased header type: an IMAGE header takes an
-        # `image` parameter, a DOCUMENT header a `document` one.
-        media_key = message.header_type.value.lower()
-        return {
-            "type": "header",
-            "parameters": [{media_key: {"link": message.header_media_url}}],
-        }
+    if not message.header_media_url:
+        raise NonRetryableProviderError(
+            f"Template {message.template_name!r} has a "
+            f"{message.header_type.value} header, which needs a media URL, "
+            "and none was supplied",
+            provider="meta",
+        )
 
-    # A TEXT header needs no media, and its text is the template's own, so the
-    # component is declared empty rather than invented.
-    return {"type": "header", "parameters": []}
+    # Meta's parameter type is the lowercased header type: an IMAGE header takes an
+    # `image` parameter, a DOCUMENT header a `document` one.
+    media_key = message.header_type.value.lower()
+    return {
+        "type": "header",
+        "parameters": [{"type": media_key, media_key: {"link": message.header_media_url}}],
+    }
 
 
 def _parse_template(raw: dict[str, Any]) -> ApprovedTemplate | None:
