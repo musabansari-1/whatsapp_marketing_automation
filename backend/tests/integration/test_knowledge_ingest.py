@@ -158,6 +158,15 @@ class TestIngestionPipeline:
         assert chunk_count(document_id) == result["chunks"]
         assert fetch_job(document_id).status is IngestionJobStatus.COMPLETED
 
+    def test_a_task_for_a_deleted_document_is_terminal(
+        self, ingest_env: FakeEmbeddingProvider
+    ) -> None:
+        """A document deleted after its task was queued must not retry forever: the
+        orphaned task converges instead of raising (§20)."""
+        result = run_ingest(str(uuid.uuid4()))
+
+        assert result["result"] == "deleted_before_ingest"
+
     def test_the_producing_model_is_recorded_on_each_chunk(
         self, ingest_env: FakeEmbeddingProvider
     ) -> None:

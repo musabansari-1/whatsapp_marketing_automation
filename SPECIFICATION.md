@@ -70,7 +70,7 @@ signup remain out of scope.
 ## 3. Users
 
 ### Internal user
-Uses the dashboard to upload audiences, create campaigns, trigger broadcasts, monitor campaigns, view leads/conversations/bookings, manage the knowledge base and receive dashboard notifications. Changing the knowledge base — creating one, uploading, archiving — is ADMIN-only for launch **[D61]**; reading it is open to every internal user.
+Uses the dashboard to upload audiences, create campaigns, trigger broadcasts, monitor campaigns, view leads/conversations/bookings, manage the knowledge base and receive dashboard notifications. Changing the knowledge base — creating one, uploading, archiving, permanently deleting a single document — is ADMIN-only for launch **[D61]** except deletion itself, which is **[D64]**; reading it is open to every internal user.
 
 Roles **[D2]**:
 
@@ -864,6 +864,20 @@ Three filters are mandatory on every search:
 Archiving a document stops retrieval but does not delete its chunks: answers already
 given cite chunk IDs in `ai_runs`, and deleting would break that trail.
 
+**[D64]**: one mistakenly uploaded document can be permanently deleted with
+`DELETE /knowledge-bases/{id}/documents/{document_id}` (ADMIN-only, product-scoped:
+a document outside the product answers 404). The row goes with its chunks and
+ingestion jobs through the existing cascades; past `ai_runs` entries keep chunk IDs
+that no longer resolve, which the dashboard warns about before calling — archiving
+stays the non-destructive way to withdraw a document. A document with unfinished
+ingestion (`PENDING`/`PROCESSING`) is refused (409), because its bytes are still
+travelling inside the queued task; and an ingestion task that arrives to find its
+document already gone returns a terminal result rather than raising, so the queue
+converges instead of retrying forever. There is no whole-base delete: removing a
+base is not needed to fix a mistaken upload, and deleting the last READY document
+leaves the product with a knowledge gap in readiness while activation itself never
+flips automatically.
+
 ### Untrusted-document handling
 
 Retrieved text is fenced inside explicit delimiters and attributed to its source
@@ -1439,6 +1453,8 @@ POST /knowledge-bases/{id}/documents
 GET /knowledge-bases/{id}/documents
 GET /knowledge-bases/{id}/documents/{document_id}
 POST /knowledge-bases/{id}/documents/{document_id}/archive
+DELETE /knowledge-bases/{id}/documents/{document_id} ([D64]: one mistakenly uploaded
+document, ADMIN-only; refused while its ingestion is unfinished)
 ```
 
 Analytics:
@@ -1542,6 +1558,7 @@ Knowledge Base:
 - upload documents
 - status
 - archive
+- delete one mistakenly uploaded document (permanent, [D64])
 - ingestion errors
 
 ### V1 implementation (Phase 13)
@@ -1557,7 +1574,7 @@ Campaigns       /campaigns   (Phase 5)
 Leads           /leads       list, filter and search; detail carries the transcript
 Conversations   /conversations  by most recent activity
 Bookings        /bookings    read-only, each in its own timezone
-Knowledge Base  /knowledge   create, upload, status, archive, ingestion errors
+Knowledge Base  /knowledge   create, upload, status, archive, delete one document ([D64]), ingestion errors
 Notifications   /notifications  per-user, with an unread count
 ```
 
@@ -2437,4 +2454,5 @@ assigned to a default product. Retrieval without a product is not expressible.
 | D60 | *Implemented 2026-09-12 (Phase 27).* **Production product configuration.** **Identities, permanent:** Academicae `academicae` (the existing row and fixed ID, no segments), SustainX `sustainx` (segments `industries`, `institutions`, `government-bodies`, `students`, `professionals-executives`), Life Herba `life-herba` (segments `healthcare-practitioners`, `wellness-centres`, `pharmacies`, `consumers`). Slugs are route identifiers and data; nothing branches on them. SustainX and Life Herba start inactive. **Configuration is data, applied by command** (`configure-products` with a JSON catalog, `backend/config/products.json`), never by a migration: idempotent; products and segments matched by slug and updated in place, never deleted or recreated; an absent key leaves a value alone and `null` clears it; unknown keys are refused; `is_active` cannot be configured; a catalog that would add a readiness blocker to an active product is refused. **No platform-wide fallback for anything a product owns:** `products.audience_column_schema` (JSONB, validated; uploads refused without one, and the development placeholder refused in production); the system prompt and qualification criteria (the Phase 22 sole-active-product legacy policy is removed); the WhatsApp phone number ID and business account (`WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_BUSINESS_ACCOUNT_ID` are retired, the provider builder requires the product's own, template sync reads each configured business account, and send confirmation refuses a product without a number); the calendar ([D43]). **Legacy import:** `import-legacy-config <slug>` copies the retired single-product variables into the product an operator names, using the built-in defaults where a variable was unset, and refuses to overwrite a differing value without `--overwrite`. **Readiness:** `product-readiness` judges each product — BLOCKER (identity, audience schema, AI policy, WhatsApp number and account, number or calendar shared with another product, per-product token override, calendar, slot policy) makes it NOT READY; GAP (no qualification criteria, no usable approved marketing template, no READY knowledge, failed documents, the placeholder schema outside production) makes it READY WITH GAPS. It never calls a provider and never activates anything; it exits non-zero only when an active product is not ready. **Activation is explicit:** `activate-product` refuses NOT READY and requires `--accept-gaps` for READY WITH GAPS. **Intended launch state (product owner, 2026-09-12, on approving Phase 27):** no product is active, Academicae included, until its real WhatsApp phone number ID and business account are configured; its Google Calendar is configured; its audience column schema is confirmed; its AI configuration is present; its templates are synced and assigned; its knowledge is uploaded and READY; `product-readiness` passes; and its activation is explicitly approved. The Phase-17 migration seeded Academicae active; revision `a1b2c3d4e5f6` sets that fixed-ID row inactive, and `configure-products` never flips `is_active`. |
 | D61 | *Decided 2026-09-12 for the first production release.* **D-01 (pause):** deferred as a non-launch-critical enhancement; cancellation remains the way to stop a campaign, and no pause state machine is introduced. The `PAUSED` status stays unreachable. **D-07 (knowledge permissions):** creating a knowledge base, uploading a document and archiving one are ADMIN-only; every internal user may read knowledge. Knowledge is what the assistant tells customers. **D-33 (analytics visibility):** every authenticated internal user — ADMIN and SALESPERSON — may view per-product, segment and combined analytics ([D53]); there is no product-specific analytics RBAC ([D46]). The original D-33 question, whether analytics beyond the Overview (trends, per-campaign comparison) is expected, is not answered by this decision, and nothing further is built for launch. None of the three conflicts with an earlier decision: **[D33]** names who may pause without requiring a pause to exist, and no earlier decision granted salespeople knowledge changes. |
 | D62 | *Decided and implemented 2026-09-22 (calendar resilience fix).* **Production calendar authentication is the worker's own service account, not a human OAuth grant.** The Phase 11 arrangement (an operations account's refresh token in Secret Manager, [D19]) stands but is demoted to a fallback: an OAuth consent screen in Testing status expires its refresh tokens after 7 days, which took staging booking down on a weekly expiry (2026-09-15 → 2026-09-22, SustainX `invalid_grant`), and leaving Testing requires Google's sensitive-scope review for `.../auth/calendar` — with personal-Gmail accounts no Internal mode exists to avoid it. In the new mode the worker mints its own tokens from the identity Cloud Run gives it (Application Default Credentials; `gcloud auth application-default login` locally), and each product's calendar is shared with that service account. There is no refresh token, so nothing expires, nothing is written back, and `[D19]`'s rotation handling stays for the OAuth path only. No cost is created: a service account is an IAM identity, not a user, and calendar sharing and Calendar API usage sit within free quotas. **Configuration:** `GOOGLE_CALENDAR_AUTH_MODE=service_account` (production) or `oauth_refresh_token` (fallback; still validates the four OAuth settings at startup, which service-account mode does not need). The mode is platform-wide, like the client it replaces; the calendar remains one per product ([D43]). Switching modes is a deploy variable flip and a calendar-share, not a migration, and keeps the unused OAuth credentials configured as the rollback. |
-| D63 | *Decided and implemented 2026-09-24 (audience upload fix).* **The header row of an audience file is located, not assumed to be row 1.** Academicae's production audience workbook carries a merged title in row 1 and a blank row in row 2, with headers in row 3; reading row 1 reported the file's required columns as missing. The parser offers each of the first `AUDIENCE_HEADER_SCAN_ROWS` (default 5) rows to a predicate built from the product's configured mapping — a candidate must carry **every** required column — and the first matching row is the header row; rows above it are preamble and never become data rows. Which worksheet is read is unchanged (the first), and only the header row's *position* is inferred: a file whose headers are deeper than the scan is refused with a message naming the sheet and the rows that were read. **[D25]**/**[D51]** unchanged: the mapping stays product configuration, and a file is still rejected whole when a required column is missing. |
+| D63 | *Decided and implemented 2026-09-24 (audience upload fix).* **The header row of an audience file is located, not assumed to be row 1.** Academicae's production audience workbook carries a merged title in row 1 and a blank row in row 2, with headers in row 3; reading row 1 reported the file's required columns as missing. The parser offers each of the first `AUDIENCE_HEADER_SCAN_ROWS` (default 5) rows to a predicate built from the product's configured mapping — a candidate must carry **every** required column — and the first matching row is the header row; rows above it are preamble and never become data rows. Which worksheet is read is unchanged (the first), and only the header row's *position* is inferred: a file whose headers are deeper than the scan is refused with a message naming the sheet and the rows that were read. **[D25]**/**[D51]** unchanged: the mapping stays product configuration, and a file is still rejected whole when a required column is missing.
+| D64 | *Decided and implemented 2026-09-27 (knowledge document delete).* **One mistakenly uploaded document can be permanently deleted; knowledge bases cannot.** `DELETE /knowledge-bases/{id}/documents/{document_id}` is ADMIN-only like the other knowledge changes (D-07, **[D61]**) and product-scoped (404 outside the product). A document with unfinished ingestion (`PENDING`/`PROCESSING`) is refused (409) because its bytes are still travelling inside the queued task; an orphaned ingestion task whose document is already gone returns a terminal result instead of raising, so Cloud Tasks converges rather than retrying forever. Deletion removes the row with its chunks and ingestion jobs through the existing cascades; past `ai_runs` entries keep chunk IDs that no longer resolve, which the dashboard's confirmation warns about — archiving stays the non-destructive withdrawal. Deleting the last READY document leaves the product with a knowledge gap in readiness; activation itself never flips automatically. |

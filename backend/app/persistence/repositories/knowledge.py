@@ -166,6 +166,18 @@ async def archive_document(session: AsyncSession, document: KnowledgeDocument) -
     await session.flush()
 
 
+async def delete_document(session: AsyncSession, document: KnowledgeDocument) -> None:
+    """Permanently remove one document with its chunks and ingestion jobs.
+
+    Unlike archiving, the chunks go too: the row's relationships cascade, so past
+    `ai_runs` entries keep chunk IDs that no longer resolve. The caller warns about
+    that and refuses documents with unfinished ingestion, because a queued task
+    carrying their bytes would otherwise have nothing to converge on.
+    """
+    await session.delete(document)
+    await session.flush()
+
+
 async def mark_processing(session: AsyncSession, document: KnowledgeDocument) -> None:
     document.status = DocumentStatus.PROCESSING
     document.error_message = None

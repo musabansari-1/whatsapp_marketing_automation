@@ -11,8 +11,9 @@ segment is shared across that product's segments ([D56]); a segment, when given,
 one of this product's.
 
 **Changing knowledge is ADMIN-only** (D-07, decided for launch in Phase 27). Knowledge is
-what the assistant quotes to customers, so creating a base, uploading a document and
-archiving one are administrative acts. Reading stays open to every internal user.
+what the assistant quotes to customers, so creating a base, uploading a document,
+archiving one and permanently deleting one are administrative acts. Reading stays open
+to every internal user.
 
 Knowledge is configuration, so an inactive product may still build it. That is how a
 product is prepared before it goes live.
@@ -34,6 +35,7 @@ from app.api.schemas import (
     CreateKnowledgeBaseRequest,
     KnowledgeBaseResponse,
     KnowledgeDocumentResponse,
+    MessageResponse,
 )
 from app.api.scope import PRODUCT_PREFIX, ProductScope, owned_by, segment_for_write
 from app.core.logging import get_logger
@@ -256,6 +258,44 @@ async def archive_document(
         )
 
     return KnowledgeDocumentResponse.model_validate(document)
+
+
+@router.delete(
+    "/{knowledge_base_id}/documents/{document_id}",
+    response_model=MessageResponse,
+)
+async def delete_document(
+    knowledge_base_id: uuid.UUID,
+    document_id: uuid.UUID,
+    user: AdminUser,
+    product: ProductScope,
+    session: DbSession,
+) -> MessageResponse:
+    """Permanently remove one mistakenly uploaded document. ADMIN-only (D-07).
+
+    Unlike archiving, the document's chunks and ingestion jobs go too, so past
+    assistant replies that cited them keep chunk IDs that no longer resolve — the
+    dashboard warns about this before calling. Documents with unfinished ingestion
+    are refused: their bytes are still travelling inside a queued task.
+    """
+    document = await _require_document(session, product, knowledge_base_id, document_id)
+
+    if document.status in (DocumentStatus.PENDING, DocumentStatus.PROCESSING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This document is still ingesting. Wait until it is READY or FAILED, "
+            "then delete it.",
+        )
+
+    await knowledge_repo.delete_document(session, document)
+    logger.info(
+        "knowledge_document_deleted",
+        document_id=str(document.id),
+        knowledge_base_id=str(knowledge_base_id),
+        product_id=str(product.id),
+        by_user_id=str(user.id),
+    )
+    return MessageResponse(detail="Document deleted")
 
 
 async def _require_knowledge_base(

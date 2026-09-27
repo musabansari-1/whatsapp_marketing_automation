@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import DocumentStatus
@@ -84,7 +84,8 @@ class TestAuthentication:
 
 class TestOnlyAdministratorsChangeKnowledge:
     """D-07, decided for launch in Phase 27: knowledge is what the assistant tells
-    customers, so creating, uploading and archiving are ADMIN-only. Reading stays open."""
+    customers, so creating, uploading, archiving and deleting are ADMIN-only.
+    Reading stays open."""
 
     def test_a_salesperson_cannot_create_a_knowledge_base(
         self, client: TestClient, seeded_users: dict[str, str]
@@ -331,6 +332,132 @@ class TestDocuments:
         login(client)
         base_id = create_base(client)
         assert client.get(f"{base_path()}/{base_id}/documents/{uuid.uuid4()}").status_code == 404
+
+
+class TestDeleteDocument:
+    """Per-document hard delete for mistaken uploads.
+
+    Unlike archiving, the row goes with its chunks and ingestion jobs. Past
+    `ai_runs` entries keep chunk IDs that no longer resolve (allowed with warning);
+    documents with unfinished ingestion are refused so a queued task keeps its row.
+    """
+
+    def test_admin_can_delete_an_archived_document_with_chunks_and_jobs(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client)
+        base_id = create_base(client)
+        document_id = upload(client, base_id).json()["id"]
+        assert (
+            client.post(f"{base_path()}/{base_id}/documents/{document_id}/archive").status_code
+            == 200
+        )
+
+        async def add_chunk(session: AsyncSession) -> None:
+            """One chunk without a vector: cascade coverage needs a row, not retrieval."""
+            session.add(
+                KnowledgeChunk(
+                    document_id=uuid.UUID(document_id),
+                    chunk_index=0,
+                    content="Our refund window is thirty days.",
+                )
+            )
+
+        run_db(add_chunk)
+
+        deleted = client.delete(f"{base_path()}/{base_id}/documents/{document_id}")
+        assert deleted.status_code == 200, deleted.text
+
+        assert client.get(f"{base_path()}/{base_id}/documents/{document_id}").status_code == 404
+        assert client.get(f"{base_path()}/{base_id}/documents?include_archived=true").json() == []
+        assert run_db(_chunk_count_for(document_id)) == 0
+        assert run_db(_job_for(document_id)) is None
+
+    def test_the_same_content_can_be_uploaded_again_after_delete(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        """The mistake-fix loop: wrong file in, delete, right file in. The content-hash
+        check must not remember a row that no longer exists."""
+        login(client)
+        base_id = create_base(client)
+        document_id = upload(client, base_id).json()["id"]
+        client.post(f"{base_path()}/{base_id}/documents/{document_id}/archive")
+        assert client.delete(f"{base_path()}/{base_id}/documents/{document_id}").status_code == 200
+
+        assert upload(client, base_id).status_code == 201
+
+    def test_a_pending_document_is_refused(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        """Its bytes are still travelling inside the queued ingestion task."""
+        login(client)
+        base_id = create_base(client)
+        document_id = upload(client, base_id).json()["id"]
+
+        assert client.delete(f"{base_path()}/{base_id}/documents/{document_id}").status_code == 409
+        assert client.get(f"{base_path()}/{base_id}/documents/{document_id}").status_code == 200
+
+    def test_a_salesperson_cannot_delete(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client)
+        base_id = create_base(client)
+        document_id = upload(client, base_id).json()["id"]
+        client.post(f"{base_path()}/{base_id}/documents/{document_id}/archive")
+
+        login(client, email=SALES_EMAIL)
+        assert client.delete(f"{base_path()}/{base_id}/documents/{document_id}").status_code == 403
+
+    def test_anonymous_cannot_delete(self, client: TestClient) -> None:
+        assert (
+            client.delete(f"{base_path()}/{uuid.uuid4()}/documents/{uuid.uuid4()}").status_code
+            == 401
+        )
+
+    def test_a_document_from_another_knowledge_base_is_not_deletable(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client)
+        first = create_base(client, "Sales")
+        second = create_base(client, "Support")
+        document_id = upload(client, first).json()["id"]
+        client.post(f"{base_path()}/{first}/documents/{document_id}/archive")
+
+        assert client.delete(f"{base_path()}/{second}/documents/{document_id}").status_code == 404
+
+    def test_a_missing_document_is_404(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client)
+        base_id = create_base(client)
+        assert client.delete(f"{base_path()}/{base_id}/documents/{uuid.uuid4()}").status_code == 404
+
+
+def _chunk_count_for(document_id: str) -> Any:
+    """Chunk rows remaining for one document, after its delete."""
+
+    async def count(session: AsyncSession) -> int:
+        from sqlalchemy import select
+
+        result = await session.execute(
+            select(func.count())
+            .select_from(KnowledgeChunk)
+            .where(KnowledgeChunk.document_id == uuid.UUID(document_id))
+        )
+        return int(result.scalar_one())
+
+    return count
+
+
+def _job_for(document_id: str) -> Any:
+    """The ingestion job for one document, if it still exists."""
+
+    async def job(session: AsyncSession) -> KnowledgeIngestionJob | None:
+        from app.persistence.repositories import knowledge as knowledge_repo
+
+        return await knowledge_repo.get_job_for_document(session, uuid.UUID(document_id))
+
+    return job
 
 
 class TestNoRetrievalEndpoint:

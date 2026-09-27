@@ -62,8 +62,11 @@ async def ingest_knowledge_document(task: TaskRequest) -> dict[str, int | str]:
     async with factory() as session:
         document = await knowledge_repo.get_document(session, uuid.UUID(str(document_id)))
         if document is None:
-            # Nothing to retry against: the document is gone.
-            raise ValueError(f"Knowledge document {document_id} not found")
+            # Deleted after the task was queued (per-document hard delete). Terminal:
+            # retrying would fail the same way forever, and there is no row to record
+            # anything on.
+            logger.info("knowledge_ingest_skipped", reason="document_deleted")
+            return {"result": "deleted_before_ingest", "document_id": str(document_id)}
 
         bind_log_context(document_id=str(document.id))
         job = await knowledge_repo.get_job_for_document(session, document.id)
@@ -104,7 +107,10 @@ async def ingest_knowledge_document(task: TaskRequest) -> dict[str, int | str]:
     async with factory() as session:
         document = await knowledge_repo.get_document(session, uuid.UUID(str(document_id)))
         if document is None:
-            raise ValueError(f"Knowledge document {document_id} disappeared mid-ingestion")
+            # Deleted while the embedding call was in flight. The vectors have
+            # nowhere to go; dropping them is the convergent outcome.
+            logger.info("knowledge_ingest_skipped", reason="document_deleted_mid_ingest")
+            return {"result": "deleted_during_ingest", "document_id": str(document_id)}
 
         stored = await knowledge_repo.replace_chunks(
             session,

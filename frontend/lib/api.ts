@@ -621,6 +621,13 @@ export function productApi(slug: string) {
         { method: 'POST' },
       ),
 
+    /** ADMIN-only. Permanently removes one document with its chunks and jobs. */
+    deleteDocument: (knowledgeBaseId: string, documentId: string) =>
+      request<{ detail: string }>(
+        `${base}/knowledge-bases/${knowledgeBaseId}/documents/${documentId}`,
+        { method: 'DELETE' },
+      ),
+
     getOverview: (segment?: string) =>
       request<Overview>(`${base}/analytics/overview${queryString({ segment })}`),
 

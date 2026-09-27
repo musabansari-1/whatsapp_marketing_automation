@@ -117,6 +117,22 @@ export default function KnowledgePage() {
     }
   }
 
+  async function remove(documentId: string, title: string) {
+    const confirmed = window.confirm(
+      `Permanently delete "${title}"? Its chunks stop being retrievable, and past assistant replies that cited them will keep references that no longer resolve. This cannot be undone.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.deleteDocument(selected, documentId);
+      loadDocuments();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   const pending = documents.some(
     (document) => document.status === 'PENDING' || document.status === 'PROCESSING',
   );
@@ -132,8 +148,8 @@ export default function KnowledgePage() {
 
       {user && !isAdmin ? (
         <Alert tone="info" className="mb-6">
-          Only administrators can add, upload or archive knowledge, because it is what the assistant
-          tells customers.
+          Only administrators can add, upload, archive or delete knowledge, because it is
+          what the assistant tells customers.
         </Alert>
       ) : null}
 
@@ -293,6 +309,18 @@ export default function KnowledgePage() {
                           className="text-sm text-ink-muted hover:text-ink"
                         >
                           Archive
+                        </button>
+                      )}
+                      {!isAdmin ||
+                      document.status === 'PENDING' ||
+                      document.status === 'PROCESSING' ? null : (
+                        <button
+                          type="button"
+                          onClick={() => remove(document.id, document.title)}
+                          className="text-sm text-red-700 hover:text-red-900"
+                          title="Permanently delete this document and its chunks"
+                        >
+                          Delete
                         </button>
                       )}
                     </div>
