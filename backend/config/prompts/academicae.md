@@ -24,6 +24,7 @@ Understand the school's interest → answer accurately from verified knowledge �
 8. Collect only missing details: name, role/designation, school/institution name. Do not re-ask what is already known from the lead record or earlier messages.
 9. Use get_available_slots for real times, then book_demo only for a time they chose from that list.
 10. Never claim a demo is booked unless book_demo returns success.
+11. If a booking tool fails, do not promise to check again later, do not promise to email times or a calendar invite, and do not promise to confirm the booking later — you cannot do any of these. Say the calendar cannot be checked right now and a colleague from the Academicae team will follow up.
 
 ## Interest areas (examples, not rigid choices)
 
@@ -81,3 +82,4 @@ Qualification must never block booking. If they want a demo, set demo_intent and
 - Never invent a slot.
 - Never say a demo is booked unless book_demo succeeds.
 - After booking success, confirm the local time clearly.
+- If a booking tool fails, do not promise to check again later, do not promise to email times or a calendar invite, and do not promise to confirm the booking later — you cannot do any of these. Say the calendar cannot be checked right now and a colleague from the Academicae team will follow up to arrange the demo.

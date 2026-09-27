@@ -59,6 +59,17 @@ logger = get_logger(__name__)
 # WhatsApp and stop being a choice.
 MAX_OFFERED_SLOTS = 5
 
+#: What a model is told when the calendar cannot answer — the failure this text exists
+#: for is a model promising to "email the slots" or "check again when the system is
+#: back", two things it cannot do. Staging showed exactly that promise reaching a
+#: customer on 2026-09-22 ([D62]). Written for the model to act on, not as an operator
+#: message.
+CALENDAR_UNAVAILABLE_GUIDANCE = (
+    "Do not offer or promise any time, and do not promise to check again later or to "
+    "email times — you cannot do either. Say the calendar cannot be checked right now "
+    "and a colleague will follow up to arrange a time."
+)
+
 
 class ToolError(Exception):
     """The tool could not run. Reported back to the model as a failed result."""
@@ -191,7 +202,10 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                         "Get demo times that are actually free. Only offer times this returns. "
                         "Never invent a time or promise one you have not checked. "
                         "When the customer names a later date, pass from_date (YYYY-MM-DD) so the "
-                        "search window covers it — do not invent availability outside this result."
+                        "search window covers it — do not invent availability outside this result. "
+                        "If the call fails, the calendar cannot be read: do not offer a time, "
+                        "do not promise to check again later, and do not promise to email times "
+                        "— say a colleague will follow up to arrange a time."
                     ),
                     parameters={
                         "type": "object",
@@ -225,7 +239,10 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                     description=(
                         "Book a demo at a time the customer chose from get_available_slots. "
                         "Only tell the customer the demo is booked if this returns ok: true. "
-                        "If it fails, the slot was taken and you must offer another."
+                        "If it fails because the slot was taken, offer another time. "
+                        "If it fails because the calendar cannot be confirmed, do not promise "
+                        "to retry, to check later, or to confirm by email — say a colleague "
+                        "will follow up to arrange a time."
                     ),
                     parameters={
                         "type": "object",
@@ -408,9 +425,12 @@ async def _get_available_slots(arguments: dict[str, Any], context: ToolContext) 
         raise ToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - any calendar failure is the same to the model
         # Reported as a tool failure rather than raised: the model can say it will
-        # follow up, which is better than the whole turn failing.
+        # follow up, which is better than the whole turn failing — and the guidance
+        # stops it promising email or a later check, which it cannot do.
         logger.warning("ai_slot_lookup_failed", error=str(exc))
-        raise ToolError("Could not check the calendar just now") from exc
+        raise ToolError(
+            f"Could not check the calendar just now. {CALENDAR_UNAVAILABLE_GUIDANCE}"
+        ) from exc
 
     return ToolResult(
         ok=True,
@@ -469,6 +489,7 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
                     "%A %d %B, %I:%M %p"
                 ),
                 "timezone": already.timezone,
+                "meeting_link": already.meeting_link,
             },
         )
 
@@ -482,7 +503,9 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
         busy = await calendar.list_busy_intervals(busy_window)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ai_booking_precheck_failed", error=str(exc))
-        raise ToolError("Could not confirm the calendar just now") from exc
+        raise ToolError(
+            f"Could not confirm the calendar just now. {CALENDAR_UNAVAILABLE_GUIDANCE}"
+        ) from exc
 
     if not is_slot_available(policy=policy, slot=slot, busy=busy, now=now):
         return ToolResult(
@@ -500,6 +523,7 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
                 description=_booking_description(context.lead),
                 attendee_emails=(context.lead.email,) if context.lead.email else (),
                 metadata={"lead_id": str(context.lead.id)},
+                create_meeting=True,
             )
         )
     except SlotUnavailableError:
@@ -510,7 +534,9 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("ai_booking_failed", error=str(exc))
-        raise ToolError("The booking could not be completed") from exc
+        raise ToolError(
+            f"The booking could not be completed. {CALENDAR_UNAVAILABLE_GUIDANCE}"
+        ) from exc
 
     context.booked_event_id = event.event_id
 
@@ -556,6 +582,7 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
                 "%A %d %B, %I:%M %p"
             ),
             "timezone": policy.timezone,
+            "meeting_link": event.meeting_link,
         },
     )
 
@@ -605,8 +632,7 @@ def _booking_capability(context: ToolContext) -> tuple[SlotPolicy, CalendarProvi
     """
     if context.calendar is None or context.slot_policy is None:
         raise ToolError(
-            "Booking is not available for this conversation. Do not offer or promise a "
-            "time; tell the customer a colleague will follow up."
+            "Booking is not available for this conversation. " + CALENDAR_UNAVAILABLE_GUIDANCE
         )
     return context.slot_policy, context.calendar
 
@@ -705,6 +731,7 @@ def _days(count: int) -> timedelta:
 
 
 __all__ = [
+    "CALENDAR_UNAVAILABLE_GUIDANCE",
     "MAX_OFFERED_SLOTS",
     "ToolContext",
     "ToolError",

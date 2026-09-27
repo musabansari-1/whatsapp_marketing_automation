@@ -322,7 +322,9 @@ class TestAvailableSlots:
         assert len(result.data["slots"]) <= ai_tools.MAX_OFFERED_SLOTS
 
     def test_a_calendar_failure_is_a_tool_failure_not_a_lost_turn(self) -> None:
-        """The model can say it will follow up, which beats failing the whole reply."""
+        """The model can say it will follow up, which beats failing the whole reply —
+        and the error must tell it what *not* to promise (it cannot check later or
+        email slots; a 2026-09-22 staging customer was promised exactly that)."""
         lead_id, conversation_id = seed()
         calendar = FakeCalendarProvider()
         calendar.fail_with = RuntimeError("calendar unreachable")
@@ -336,6 +338,10 @@ class TestAvailableSlots:
         )
 
         assert result.ok is False
+        error = result.error or ""
+        assert "do not promise to check again later" in error
+        assert "do not promise to email times" in error
+        assert "colleague will follow up" in error
 
 
 class TestBookDemo:
@@ -419,6 +425,11 @@ class TestBookDemo:
 
         assert result.ok is False
         assert "booked" not in result.data
+        # The write failed after the slot check passed: the model must not claim it is
+        # booked, and must not promise to confirm later or by email (D-22, 2026-09-22).
+        error = result.error or ""
+        assert "do not promise to check again later" in error
+        assert "colleague will follow up" in error
 
     def test_a_slot_lost_between_check_and_write_is_reported_honestly(self) -> None:
         """The race §12 narrows but cannot close: someone books between the re-check
@@ -656,3 +667,56 @@ class TestAgentGrounding:
 
         assert outcome.reply == "A colleague will follow up."
         assert outcome.used_fallback is True
+
+
+class TestReplyHygiene:
+    """§9/§21: what is delivered is the model's prose, never the tool call behind it.
+
+    Models do print the call they made at the customer — including lead-shaped keys the
+    prompts forbid exposing. `app.ai.reply_guard` removes it before the worker can send it;
+    these tests assert the wiring, not the stripping rules, which the unit tests in
+    `tests/test_reply_guard.py` cover.
+    """
+
+    def _run(self, text: str, *, fallback: str = "A colleague will follow up.") -> Any:
+        llm = FakeLLMProvider(default_text=text)
+        lead_id, conversation_id = seed()
+
+        async def call(session: AsyncSession) -> Any:
+            context = await a_context(session, lead_id, conversation_id)
+            return await respond_to_customer(
+                provider=llm,
+                system_prompt="You are a helpful assistant.",
+                history=[LLMMessage(role=Role.USER, content="My city is Pune.")],
+                retrieval=None,
+                context=context,
+                fallback_message=fallback,
+            )
+
+        return run_db(call)
+
+    def test_a_printed_tool_call_never_reaches_the_customer(self) -> None:
+        outcome = self._run(
+            'Noted, thanks!\n{"name": "update_lead", "arguments": {"facts": {"city": "Pune"}}}'
+        )
+
+        assert outcome.reply == "Noted, thanks!"
+        assert outcome.reply_sanitized is True
+        assert '"name"' not in outcome.reply
+
+    def test_a_reply_that_is_only_a_tool_call_becomes_the_fallback(self) -> None:
+        outcome = self._run(
+            '{"name": "update_lead", "arguments": {"facts": {"interested": true}}}',
+            fallback="Let me check and come back to you.",
+        )
+
+        assert outcome.reply == "Let me check and come back to you."
+        assert outcome.used_fallback is True
+        assert outcome.reply_sanitized is True
+
+    def test_a_clean_reply_is_not_marked_as_sanitized(self) -> None:
+        outcome = self._run("Thanks! Which city are you in?")
+
+        assert outcome.reply == "Thanks! Which city are you in?"
+        assert outcome.reply_sanitized is False
+        assert outcome.used_fallback is False
