@@ -114,11 +114,14 @@ class ProductDetailResponse(ProductResponse):
 
     `has_calendar` and `has_whatsapp_number` are presence flags only, so an empty Demos
     page can say "no calendar is configured" instead of showing an unexplained zero.
+    `has_meeting_url` says the same for time-only confirmations: without the product's
+    permanent meeting link, demos book with no join link.
     """
 
     segments: list[SegmentResponse]
     has_calendar: bool
     has_whatsapp_number: bool
+    has_meeting_url: bool = False
 
 
 class ProductRef(BaseModel):

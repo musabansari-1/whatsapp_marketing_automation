@@ -97,6 +97,12 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # different account needs a different token — not a different client.
     google_calendar_token_secret_name: Mapped[str | None] = mapped_column(String(255))
 
+    # The product's permanent meeting link (Option 2): created once in the operator's
+    # own Google account and attached to every booked demo, because a service account
+    # ([D62]) cannot generate Meet conferences itself. NULL means time-only
+    # confirmations — never another product's room. A URL, never a secret.
+    meeting_url: Mapped[str | None] = mapped_column(String(1024))
+
     # ---------------------------------------------------------------- slot policy ([D8], [D52])
     #
     # Sparse overrides of the global slot policy. NULL inherits the platform value, so a

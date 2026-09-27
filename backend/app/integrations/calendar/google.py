@@ -70,11 +70,18 @@ class GoogleCalendarProvider(CalendarProvider):
         timezone: str = "UTC",
         timeout_seconds: float = 20.0,
         client: httpx.AsyncClient | None = None,
+        static_meeting_link: str | None = None,
     ) -> None:
         self._calendar_id = calendar_id
         self._auth = auth
         self._timezone = timezone
         self._timeout = timeout_seconds
+        # The product's permanent meeting link (Option 2). When set, a booking that
+        # asks for a meeting gets this link in `location` and the description, and
+        # Google is never asked for a conference — a service account ([D62]) cannot
+        # create one (`400 Invalid conference type value`). None keeps the previous
+        # best-effort conference behaviour.
+        self._static_meeting_link = static_meeting_link
         # Injectable so tests supply a mock transport and no request reaches Google.
         self._client = client
 
@@ -152,7 +159,19 @@ class GoogleCalendarProvider(CalendarProvider):
             # Private extended properties: visible to this application, not to anyone
             # reading the event in the calendar UI.
             payload["extendedProperties"] = {"private": dict(request.metadata)}
-        if request.create_meeting:
+        # The product's permanent meeting link (Option 2) wins over a generated
+        # conference: Google is never asked for one, so a service account ([D62])
+        # cannot fail with `400 Invalid conference type value`. The link travels in
+        # `location` (shown in the Calendar UI) and the description (visible to the
+        # sales team), and is returned as the event's join link.
+        use_static_link = request.create_meeting and self._static_meeting_link
+        if use_static_link:
+            # Narrowed by the condition above; written without `assert` because
+            # `python -O` strips asserts and ruff flags them outside tests.
+            static_link = self._static_meeting_link or ""
+            payload["location"] = static_link
+            payload["description"] = _with_static_link(payload.get("description"), static_link)
+        elif request.create_meeting:
             # Stable requestId: a retried create for the same booking must not ask
             # Google for a second Meet conference on a different id.
             payload["conferenceData"] = {
@@ -165,8 +184,9 @@ class GoogleCalendarProvider(CalendarProvider):
         # Google emails the attendee itself; the platform sends its own WhatsApp
         # confirmation, so sendUpdates stays off to avoid two of them.
         params: dict[str, str] = {"sendUpdates": "none"}
-        if request.create_meeting:
+        if request.create_meeting and not use_static_link:
             # Without conferenceDataVersion, Google silently ignores conferenceData.
+            # A static link needs neither: there is no conference to version.
             params["conferenceDataVersion"] = "1"
 
         try:
@@ -174,7 +194,7 @@ class GoogleCalendarProvider(CalendarProvider):
                 f"{CALENDAR_API}/calendars/{self._calendar_id}/events",
                 payload=payload,
                 params=params,
-                wants_meeting=request.create_meeting,
+                wants_meeting=request.create_meeting and not use_static_link,
             )
         except _AlreadyExistsError:
             # The retry's own earlier success. Fetching it is what makes a redelivered
@@ -182,6 +202,7 @@ class GoogleCalendarProvider(CalendarProvider):
             existing = await self.get_event(request.event_id)
             if existing is not None:
                 logger.info("calendar_event_already_created", event_id=request.event_id)
+                existing = self._with_static_meeting(existing, request)
                 self._note_missing_meeting(existing, wants_meeting=request.create_meeting)
                 return existing
             # Deleted between the conflict and the read, or belongs to another
@@ -191,6 +212,7 @@ class GoogleCalendarProvider(CalendarProvider):
             ) from None
 
         event = _parse_event(body, fallback_timezone=request.timezone)
+        event = self._with_static_meeting(event, request)
         self._note_missing_meeting(event, wants_meeting=request.create_meeting)
         return event
 
@@ -247,6 +269,25 @@ class GoogleCalendarProvider(CalendarProvider):
                 calendar_id=self._calendar_id,
                 event_id=event.event_id,
             )
+
+    def _with_static_meeting(self, event: CalendarEvent, request: EventRequest) -> CalendarEvent:
+        """Overlay the product's permanent link on an event that asked for a meeting.
+
+        The read-back path (`get_event` after a 409) parses what Google stored, which
+        carries no `hangoutLink` for a static link — the link lives in `location`
+        and the description. Overlaying here keeps a retried booking converging on
+        the same join link the first attempt shared, without re-reading either field.
+        """
+        if request.create_meeting and self._static_meeting_link and not event.meeting_link:
+            return CalendarEvent(
+                event_id=event.event_id,
+                interval=event.interval,
+                timezone=event.timezone,
+                summary=event.summary,
+                attendee_emails=event.attendee_emails,
+                meeting_link=self._static_meeting_link,
+            )
+        return event
 
     async def get_event(self, event_id: str) -> CalendarEvent | None:
         encoded = _encode_event_id(event_id)
@@ -441,6 +482,21 @@ def _meeting_link_from_event(body: dict[str, Any]) -> str | None:
         if isinstance(uri, str) and uri.strip():
             return uri.strip()
     return None
+
+
+def _with_static_link(description: str | None, static_link: str) -> str:
+    """The event description with the product's permanent link appended.
+
+    Idempotent on the link itself: a retried create rebuilds the payload from the
+    same request, so a description that already carries the link is left alone
+    rather than growing a second copy.
+    """
+    line = f"Join with Google Meet: {static_link}"
+    if not description:
+        return line
+    if static_link in description:
+        return description
+    return f"{description}\n\n{line}"
 
 
 def _parse_event(body: dict[str, Any], *, fallback_timezone: str) -> CalendarEvent:

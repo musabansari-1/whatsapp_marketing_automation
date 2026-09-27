@@ -48,6 +48,7 @@ async def get_product(product: ProductScope, session: DbSession) -> ProductDetai
         segments=[SegmentResponse.model_validate(segment) for segment in segments],
         has_calendar=bool(product.google_calendar_id),
         has_whatsapp_number=bool(product.whatsapp_phone_number_id),
+        has_meeting_url=bool(product.meeting_url),
     )
 
 

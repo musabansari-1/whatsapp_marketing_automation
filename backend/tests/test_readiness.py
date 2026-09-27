@@ -87,6 +87,7 @@ def configured(**changes: Any) -> ProductFacts:
         whatsapp_business_account_id="shared-account",
         whatsapp_access_token_secret_name=None,
         google_calendar_id="synthetic@calendar.example",
+        meeting_url="https://meet.google.com/synthetic-room",
         slot_overrides=SlotOverrides(),
         segment_slugs=("alpha", "beta"),
         product_ai=AIRow(
@@ -319,6 +320,38 @@ class TestCalendarAndSlots:
             )
         )
         assert "slots.policy_invalid" not in blockers(report)
+
+
+class TestMeetingLink:
+    """The product's permanent meeting link (Option 2, [D65])."""
+
+    def test_a_missing_link_is_a_gap_not_a_blocker(self) -> None:
+        report = judge(configured(meeting_url=None))
+
+        assert "calendar.meeting_link_missing" not in blockers(report)
+        assert "calendar.meeting_link_missing" in gaps(report)
+        assert report.verdict is Verdict.READY_WITH_GAPS
+
+    def test_a_configured_link_is_ready(self) -> None:
+        assert judge(configured()).verdict is Verdict.READY
+
+    def test_a_shared_link_blocks(self) -> None:
+        report = judge(configured(meeting_url_also_on=("other-product",)))
+
+        assert blockers(report) == {"calendar.meeting_link_shared"}
+
+    def test_registration_without_a_calendar_needs_no_link(self) -> None:
+        report = judge(
+            configured(
+                google_calendar_id=None,
+                meeting_url=None,
+                conversion_mode="external_registration",
+                registration_url="https://example.com/join",
+            )
+        )
+
+        assert "calendar.meeting_link_missing" not in gaps(report)
+        assert "calendar.meeting_link_shared" not in blockers(report)
 
     def test_a_valid_override_is_ready(self) -> None:
         report = judge(configured(slot_overrides=SlotOverrides(demo_duration_minutes=45)))

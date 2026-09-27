@@ -894,3 +894,105 @@ class TestFailureClassification:
 
         with pytest.raises(NonRetryableProviderError, match="usable time range"):
             await provider.create_event(an_event_request())
+
+
+STATIC_LINK = "https://meet.google.com/static-room-abc"
+
+
+def make_static_provider(handler: Any) -> GoogleCalendarProvider:
+    provider, _ = make_provider(handler)
+    provider._static_meeting_link = STATIC_LINK  # noqa: SLF001 - the test sets what the registry would
+    return provider
+
+
+class TestStaticMeetingLink:
+    """The product's permanent meeting link (Option 2, [D65])."""
+
+    @pytest.mark.asyncio
+    async def test_no_conference_is_requested_and_the_static_link_is_returned(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            import json
+
+            seen["params"] = dict(request.url.params)
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                200, json=event_body(event_id=seen["body"]["id"], hangoutLink=None)
+            )
+
+        event = await make_static_provider(handler).create_event(an_event_request())
+
+        assert "conferenceData" not in seen["body"]
+        assert "conferenceDataVersion" not in seen["params"]
+        assert seen["body"]["location"] == STATIC_LINK
+        assert STATIC_LINK in seen["body"]["description"]
+        assert event.meeting_link == STATIC_LINK
+
+    @pytest.mark.asyncio
+    async def test_a_calendar_that_refuses_conferences_is_never_asked(self) -> None:
+        """With a static link there is no first failing attempt: one call books."""
+        calls = {"count": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            import json
+
+            calls["count"] += 1
+            body = json.loads(request.content)
+            assert "conferenceData" not in body
+            return httpx.Response(200, json=event_body(event_id=body["id"], hangoutLink=None))
+
+        event = await make_static_provider(handler).create_event(an_event_request())
+
+        assert calls["count"] == 1
+        assert event.meeting_link == STATIC_LINK
+
+    @pytest.mark.asyncio
+    async def test_create_meeting_false_sends_no_link(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            import json
+
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                200, json=event_body(event_id=seen["body"]["id"], hangoutLink=None)
+            )
+
+        request = EventRequest(
+            event_id="demo-abc-123",
+            interval=TimeInterval(start=START, end=START + timedelta(minutes=30)),
+            timezone="Asia/Kolkata",
+            summary="Demo",
+            create_meeting=False,
+        )
+        event = await make_static_provider(handler).create_event(request)
+
+        assert "location" not in seen["body"]
+        assert event.meeting_link is None
+
+    @pytest.mark.asyncio
+    async def test_a_retry_converges_on_the_static_link(self) -> None:
+        """A 409 read-back carries no hangoutLink; the retry still shares one link."""
+        first = True
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal first
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            if request.method == "GET":
+                return httpx.Response(200, json=event_body(hangoutLink=None))
+            if first:
+                first = False
+                return httpx.Response(409, json={"error": {"message": "duplicate"}})
+            raise AssertionError("the retry must read, not recreate")
+
+        event = await make_static_provider(handler).create_event(an_event_request())
+
+        assert event.meeting_link == STATIC_LINK

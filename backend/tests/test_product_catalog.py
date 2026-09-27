@@ -239,6 +239,39 @@ class TestMistakesAreRefused:
         assert product.ai_configuration.qualification_mode == "ai_judgement"
 
 
+class TestMeetingUrl:
+    """The product's permanent meeting link (Option 2, [D65])."""
+
+    def test_an_https_meeting_url_is_accepted(self) -> None:
+        product = ProductEntry.model_validate(
+            entry(meeting_url="https://meet.google.com/abc-defg-hij")
+        )
+        assert product.meeting_url == "https://meet.google.com/abc-defg-hij"
+
+    def test_a_non_https_meeting_url_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="https://"):
+            ProductEntry.model_validate(entry(meeting_url="meet.google.com/abc-defg-hij"))
+
+    def test_a_blank_meeting_url_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="blank"):
+            ProductEntry.model_validate(entry(meeting_url="  "))
+
+    def test_a_null_meeting_url_clears(self) -> None:
+        clearing = ProductEntry.model_validate(entry(meeting_url=None))
+        assert "meeting_url" in clearing.model_fields_set
+
+    def test_two_products_may_not_share_a_meeting_url(self) -> None:
+        with pytest.raises(ValidationError, match="meeting_url repeated"):
+            ProductCatalog.model_validate(
+                {
+                    "products": [
+                        entry(slug="one", meeting_url="https://meet.google.com/abc-defg-hij"),
+                        entry(slug="two", meeting_url="https://meet.google.com/abc-defg-hij"),
+                    ]
+                }
+            )
+
+
 class TestAbsentIsNotNull:
     def test_an_absent_key_is_left_alone_and_a_null_clears(self) -> None:
         """The distinction that lets a catalog describe only what is known."""

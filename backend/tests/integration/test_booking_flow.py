@@ -239,6 +239,21 @@ class TestBookingRecord:
 
         assert bookings()[0].timezone == "Asia/Kolkata"
 
+    def test_a_static_meeting_link_is_shared_with_the_customer(
+        self, booking_env: FakeWhatsAppProvider
+    ) -> None:
+        """Option 2 ([D65]): the product's permanent link reaches the booking row."""
+        lead_id, conversation_id = seed()
+        calendar = FakeCalendarProvider(
+            static_meeting_link="https://meet.google.com/static-room-abc"
+        )
+
+        result = book(lead_id, conversation_id, calendar=calendar)
+
+        assert result.ok
+        assert result.data["meeting_link"] == "https://meet.google.com/static-room-abc"
+        assert bookings()[0].meeting_link == "https://meet.google.com/static-room-abc"
+
     def test_booking_twice_records_one_row(self, booking_env: FakeWhatsAppProvider) -> None:
         """§20: a redelivered turn must converge. The event ID is derived from the
         conversation and slot, so the second attempt finds the first's event."""

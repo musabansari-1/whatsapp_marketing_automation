@@ -77,6 +77,13 @@ export default function BookingsPage() {
           for it. Nothing falls back to another product&apos;s calendar.
         </Alert>
       ) : null}
+      {product.has_calendar && product.has_meeting_url === false ? (
+        <Alert tone="warning" className="mb-6">
+          No meeting link is configured for {product.display_name}, so demos confirm with the
+          time only and no join link. Configure the product&apos;s permanent meeting link to
+          attach one to every demo.
+        </Alert>
+      ) : null}
 
       {error ? <Alert className="mb-6">{error}</Alert> : null}
 

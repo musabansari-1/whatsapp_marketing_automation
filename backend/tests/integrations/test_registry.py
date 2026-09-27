@@ -68,6 +68,16 @@ class TestFakeSelection:
         assert calendar.calendar_id == "p@calendar.example"
         assert not hasattr(build_providers(settings), "calendar")
 
+    def test_the_calendar_carries_the_product_meeting_link(self, settings: Settings) -> None:
+        """Option 2 ([D65]): the product's permanent link reaches its calendar."""
+        product = a_product("p@calendar.example")
+        product.meeting_url = "https://meet.google.com/static-room-abc"
+
+        calendar = build_calendar_provider(settings, product=product)
+
+        assert isinstance(calendar, FakeCalendarProvider)
+        assert calendar.static_meeting_link == "https://meet.google.com/static-room-abc"
+
     def test_whatsapp_is_built_per_product(self, settings: Settings) -> None:
         """[D40]: a number belongs to a product, so the product-blind bundle carries no
         WhatsApp provider and the builder requires the product."""

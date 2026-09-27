@@ -153,6 +153,17 @@ async def slugs_sharing_calendar(session: AsyncSession, product: Product) -> tup
     )
 
 
+async def slugs_sharing_meeting_url(session: AsyncSession, product: Product) -> tuple[str, ...]:
+    """Other products holding this product's meeting link, active or not.
+
+    A shared room would put two products' demos in one call, so the check mirrors
+    the calendar one ([D43]).
+    """
+    if not product.meeting_url:
+        return ()
+    return await _other_slugs(session, product, Product.meeting_url == product.meeting_url)
+
+
 async def _other_slugs(
     session: AsyncSession, product: Product, condition: ColumnElement[bool]
 ) -> tuple[str, ...]:
@@ -182,6 +193,7 @@ __all__ = [
     "count_products",
     "list_whatsapp_business_accounts",
     "slugs_sharing_calendar",
+    "slugs_sharing_meeting_url",
     "slugs_sharing_phone_number",
     "get_by_slug",
     "get_product",

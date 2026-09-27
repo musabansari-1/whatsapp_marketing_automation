@@ -113,9 +113,14 @@ class ProductFacts:
     #: How interest converts. Default is calendar booking so existing products stay safe.
     conversion_mode: str = DEFAULT_CONVERSION_MODE.value
     registration_url: str | None = None
+    #: The product's permanent meeting link (Option 2). None means time-only bookings.
+    meeting_url: str | None = None
     #: Other products holding the same phone number ID, or the same calendar, by slug.
     phone_number_also_on: tuple[str, ...] = ()
     calendar_also_on: tuple[str, ...] = ()
+    #: Other products holding the same meeting link, by slug. A shared room would put
+    #: two products' demos in one call.
+    meeting_url_also_on: tuple[str, ...] = ()
     #: Owned templates a campaign could use: Meta-approved and MARKETING ([D6], [D57]).
     usable_marketing_templates: int = 0
     ready_documents: int = 0
@@ -388,8 +393,9 @@ def _calendar(facts: ProductFacts) -> list[Finding]:
                 )
             ]
         return []
+    findings: list[Finding] = []
     if facts.calendar_also_on:
-        return [
+        findings.append(
             _blocker(
                 "calendar.shared",
                 Area.CALENDAR,
@@ -397,8 +403,28 @@ def _calendar(facts: ProductFacts) -> list[Finding]:
                 f"{', '.join(facts.calendar_also_on)}. Each product books into its own "
                 "calendar ([D43]).",
             )
-        ]
-    return []
+        )
+    if facts.meeting_url_also_on:
+        findings.append(
+            _blocker(
+                "calendar.meeting_link_shared",
+                Area.CALENDAR,
+                f"The meeting link is also configured on "
+                f"{', '.join(facts.meeting_url_also_on)}. Each product holds its own "
+                "permanent room, or two products' demos land in one call.",
+            )
+        )
+    elif uses_calendar_booking(facts.conversion_mode) and not facts.meeting_url:
+        findings.append(
+            _gap(
+                "calendar.meeting_link_missing",
+                Area.CALENDAR,
+                "No meeting link is configured, so booked demos confirm with the time "
+                "only. Configure the product's permanent Google Meet link to attach "
+                "and share one with every demo.",
+            )
+        )
+    return findings
 
 
 def _slots(facts: ProductFacts, platform: PlatformInputs) -> list[Finding]:

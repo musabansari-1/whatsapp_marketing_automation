@@ -271,7 +271,8 @@ def build_calendar_provider(
     WhatsApp number a message leaves from.
 
     What varies by product: the calendar ID, optionally the refresh-token *secret name*
-    (for a calendar in a different Google account), and the timezone, from its resolved
+    (for a calendar in a different Google account), the permanent meeting link
+    (`meeting_url`, Option 2), and the timezone, from its resolved
     slot policy. What is shared: the OAuth client and the Secret Manager project, because
     one operations account holds access to every product's calendar.
 
@@ -289,13 +290,17 @@ def build_calendar_provider(
 
     match settings.calendar_provider:
         case CalendarProviderName.FAKE:
-            return FakeCalendarProvider(calendar_id=product.google_calendar_id)
+            return FakeCalendarProvider(
+                calendar_id=product.google_calendar_id,
+                static_meeting_link=product.meeting_url,
+            )
         case CalendarProviderName.GOOGLE:
             return GoogleCalendarProvider(
                 calendar_id=product.google_calendar_id,
                 auth=auth or build_calendar_auth(settings, product=product),
                 timezone=resolve_slot_policy(settings, product).timezone,
                 timeout_seconds=settings.google_calendar_timeout_seconds,
+                static_meeting_link=product.meeting_url,
             )
 
 

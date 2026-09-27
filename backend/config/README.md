@@ -68,6 +68,7 @@ explicitly approved. `--accept-gaps` is not a way around missing templates or kn
 | `whatsapp_phone_number_id` | the product's own number under the WABA; unique per product |
 | `whatsapp_business_account_id` | the WABA; may be shared by every product |
 | `google_calendar_id` | the product's own calendar; unique per product |
+| `meeting_url` | the product's permanent meeting link (Option 2, [D65]): one `https://` URL created in the operator's own Google account, attached to every booked demo; absent means time-only confirmations; unique per product |
 | `google_calendar_token_secret_name` | only for a calendar in a different Google account |
 | `demo_duration_minutes`, `demo_buffer_minutes`, `demo_working_days`, `demo_working_hours_start`, `demo_working_hours_end`, `demo_booking_horizon_days`, `demo_min_lead_days`, `demo_timezone` | slot-policy overrides; omit to inherit the platform value. `demo_booking_horizon_days` may be `"unbounded"` (stored as `-1`); `null` still clears/inherits. `demo_min_lead_days` is 0 = today still offerable, 1 = earliest tomorrow |
 | `conversion_mode` | `calendar_booking` (default) or `external_registration`. Registration-only products do not need a Google Calendar for readiness |

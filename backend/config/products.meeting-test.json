@@ -1,0 +1,19 @@
+{
+  "products": [
+    {
+      "slug": "academicae",
+      "display_name": "Academicae",
+      "meeting_url": "https://meet.google.com/qxk-dwrt-zbm"
+    },
+    {
+      "slug": "sustainx",
+      "display_name": "SustainX",
+      "meeting_url": "https://meet.google.com/fhj-pqvn-xkd"
+    },
+    {
+      "slug": "life-herba",
+      "display_name": "Life Herba",
+      "meeting_url": "https://meet.google.com/ztr-hkqm-wps"
+    }
+  ]
+}

@@ -27,10 +27,15 @@ class FakeCalendarProvider(CalendarProvider):
         busy: list[TimeInterval] | None = None,
         fail_with: Exception | None = None,
         calendar_id: str | None = None,
+        static_meeting_link: str | None = None,
     ) -> None:
         # Which calendar this stands in for. Carried so a test can see which product's
         # calendar a turn was given ([D43]); the fake itself behaves the same either way.
         self.calendar_id = calendar_id
+        # The product's permanent meeting link (Option 2). When set, a booking that
+        # asks for a meeting gets this link instead of a generated fake one — the
+        # same contract the Google provider keeps.
+        self.static_meeting_link = static_meeting_link
         self.busy: list[TimeInterval] = list(busy or [])
         self.fail_with = fail_with
         self.events: dict[str, CalendarEvent] = {}
@@ -60,11 +65,11 @@ class FakeCalendarProvider(CalendarProvider):
                     f"interval {request.interval.start.isoformat()} is no longer available"
                 )
 
-        meeting_link = (
-            f"https://meet.google.com/fake-{request.event_id}"
-            if request.create_meeting
-            else None
-        )
+        meeting_link = None
+        if request.create_meeting:
+            meeting_link = (
+                self.static_meeting_link or f"https://meet.google.com/fake-{request.event_id}"
+            )
         event = CalendarEvent(
             event_id=request.event_id,
             interval=request.interval,

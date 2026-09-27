@@ -50,6 +50,7 @@ async def gather_facts(session: AsyncSession, product: Product) -> ProductFacts:
         whatsapp_business_account_id=product.whatsapp_business_account_id,
         whatsapp_access_token_secret_name=product.whatsapp_access_token_secret_name,
         google_calendar_id=product.google_calendar_id,
+        meeting_url=product.meeting_url,
         slot_overrides=product,
         segment_slugs=tuple(segment.slug for segment in segments),
         product_ai=await ai_config_repo.get_product_default(session, product.id),
@@ -58,6 +59,7 @@ async def gather_facts(session: AsyncSession, product: Product) -> ProductFacts:
         registration_url=product.registration_url,
         phone_number_also_on=await product_repo.slugs_sharing_phone_number(session, product),
         calendar_also_on=await product_repo.slugs_sharing_calendar(session, product),
+        meeting_url_also_on=await product_repo.slugs_sharing_meeting_url(session, product),
         usable_marketing_templates=sum(
             1
             for template in await template_repo.list_owned(session, product_id=product.id)

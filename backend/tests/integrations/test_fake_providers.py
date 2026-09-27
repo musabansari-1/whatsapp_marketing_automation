@@ -238,6 +238,36 @@ class TestFakeCalendar:
         )
         assert event.meeting_link is None
 
+    async def test_static_meeting_link_is_returned_when_configured(self) -> None:
+        """Option 2 ([D65]): the product's permanent link, not a generated fake one."""
+        calendar = FakeCalendarProvider(
+            static_meeting_link="https://meet.google.com/static-room-abc"
+        )
+        event = await calendar.create_event(
+            EventRequest(
+                event_id="evt-1",
+                interval=_interval(10),
+                timezone="Asia/Kolkata",
+                summary="Demo",
+            )
+        )
+        assert event.meeting_link == "https://meet.google.com/static-room-abc"
+
+    async def test_static_meeting_link_respects_create_meeting_false(self) -> None:
+        calendar = FakeCalendarProvider(
+            static_meeting_link="https://meet.google.com/static-room-abc"
+        )
+        event = await calendar.create_event(
+            EventRequest(
+                event_id="evt-1",
+                interval=_interval(10),
+                timezone="Asia/Kolkata",
+                summary="Demo",
+                create_meeting=False,
+            )
+        )
+        assert event.meeting_link is None
+
     async def test_rejects_an_overlapping_slot(self, fake_calendar: FakeCalendarProvider) -> None:
         """§12: handle the race where another booking takes the slot."""
         fake_calendar.mark_busy(_interval(10))

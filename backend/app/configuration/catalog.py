@@ -79,6 +79,7 @@ PRODUCT_FIELDS: tuple[str, ...] = (
     "demo_timezone",
     "conversion_mode",
     "registration_url",
+    "meeting_url",
 )
 
 #: `ai_configurations` columns a catalog may set. Every one nullable: NULL inherits.
@@ -119,6 +120,18 @@ def _optional_text(value: str | None) -> str | None:
     if value is not None and not value.strip():
         raise ValueError("must not be blank; use null to clear a value")
     return value
+
+
+def _optional_https_url(value: str | None) -> str | None:
+    """A configured URL, or None to clear it.
+
+    Requires `https://`: a Meet link pasted without its scheme is a typo, and an
+    `http://` link is one a browser would warn on inside a calendar event.
+    """
+    checked = _optional_text(value)
+    if checked is not None and not checked.startswith("https://"):
+        raise ValueError("must be an https:// URL, such as a Google Meet link")
+    return checked
 
 
 class _Strict(BaseModel):
@@ -215,6 +228,10 @@ class ProductEntry(_Strict):
     demo_timezone: str | None = None
     conversion_mode: str | None = None
     registration_url: str | None = None
+    #: The product's permanent meeting link (Option 2): created once in the
+    #: operator's own Google account and attached to every booked demo. Absent
+    #: means time-only confirmations; never another product's link.
+    meeting_url: str | None = None
 
     ai_configuration: AIConfigurationEntry | None = None
     #: Segment slug → sparse override. `null` removes that segment's override.
@@ -253,6 +270,11 @@ class ProductEntry(_Strict):
     @classmethod
     def _not_blank(cls, value: str | None) -> str | None:
         return _optional_text(value)
+
+    @field_validator("meeting_url")
+    @classmethod
+    def _https_meeting_url(cls, value: str | None) -> str | None:
+        return _optional_https_url(value)
 
     @field_validator("conversion_mode")
     @classmethod
@@ -322,6 +344,10 @@ class ProductCatalog(_Strict):
         _refuse_repeats(
             "google_calendar_id",
             [p.google_calendar_id for p in self.products if p.google_calendar_id],
+        )
+        _refuse_repeats(
+            "meeting_url",
+            [p.meeting_url for p in self.products if p.meeting_url],
         )
         return self
 
@@ -451,7 +477,7 @@ async def apply_product(session: AsyncSession, entry: ProductEntry) -> list[str]
         if field not in entry.model_fields_set:
             continue
         value = getattr(entry, field)
-        if field in ("whatsapp_phone_number_id", "google_calendar_id") and value:
+        if field in ("whatsapp_phone_number_id", "google_calendar_id", "meeting_url") and value:
             await _refuse_if_claimed(session, product, field, value)
         changes.extend(_set(product, field, value, label))
 

@@ -44,6 +44,8 @@ export interface ProductDetail extends Product {
   /** Presence only, so an empty page can explain itself. */
   has_calendar: boolean;
   has_whatsapp_number: boolean;
+  /** Presence only: without it, demos book with the time and no join link. */
+  has_meeting_url: boolean;
 }
 
 export interface ProductRef {

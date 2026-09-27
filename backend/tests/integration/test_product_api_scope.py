@@ -280,6 +280,7 @@ class TestProducts:
         assert body["slug"] == "s-segmented"
         assert {s["slug"] for s in body["segments"]} == {"government", "industry"}
         assert body["has_calendar"] is False
+        assert body["has_meeting_url"] is False
 
     def test_a_product_with_no_segments_works_normally(self, admin: TestClient) -> None:
         make_product("s-plain")
