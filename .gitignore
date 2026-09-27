@@ -49,3 +49,8 @@ yarn-error.log*
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# ---------- Operator scratch ----------
+# Deploy logs, one-off staging scripts and their grep output. Transient by nature,
+# and a deploy log is not something a later reader can learn from in the repo.
+.freebuff/
