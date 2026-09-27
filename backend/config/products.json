@@ -87,35 +87,35 @@
           "display_name": "Healthcare Practitioners",
           "display_order": 10,
           "cta_label": "Join as Doctor / Practitioner",
-          "cta_instruction": "Open LifeHerba and select the practitioner / Join as Doctor registration option."
+          "cta_instruction": "Go to the Life Herba website at the Registration URL to download the Life Herba app, then open the app and select the practitioner / Join as Doctor registration option inside the app."
         },
         {
           "slug": "wellness-centres",
           "display_name": "Wellness Centres",
           "display_order": 20,
           "cta_label": "Join as Wellness Centre",
-          "cta_instruction": "Open LifeHerba and select the Join as Wellness Centre registration option."
+          "cta_instruction": "Go to the Life Herba website at the Registration URL to download the Life Herba app, then open the app and select the Join as Wellness Centre registration option inside the app."
         },
         {
           "slug": "pharmacies",
           "display_name": "Pharmacies",
           "display_order": 30,
           "cta_label": "Join as Pharmacy",
-          "cta_instruction": "Open LifeHerba and select the Join as Pharmacy registration option."
+          "cta_instruction": "Go to the Life Herba website at the Registration URL to download the Life Herba app, then open the app and select the Join as Pharmacy registration option inside the app."
         },
         {
           "slug": "consumers",
           "display_name": "Consumers",
           "display_order": 40,
           "cta_label": "Register on LifeHerba",
-          "cta_instruction": "Open LifeHerba and complete the normal / general user registration."
+          "cta_instruction": "Go to the Life Herba website at the Registration URL to download the Life Herba app, then open the app and complete the normal / general user registration inside the app."
         }
       ],
       "ai_configuration": {
         "system_prompt_file": "prompts/life-herba.md",
         "qualification_mode": "ai_judgement",
         "qualification_required_fields": [],
-        "fallback_message": "I don't have verified information on that yet. Please check lifeherbagroup.com or ask the Life Herba team for help with that detail."
+        "fallback_message": "I don't have verified information on that yet. Please check lifeherbagroup.com, or call the Life Herba team on this same Life Herba number if you'd like to talk to someone."
       },
       "segment_ai_overrides": {
         "healthcare-practitioners": {
