@@ -975,11 +975,19 @@ Rules:
 - Persist calendar event ID.
 - Never claim booking success before provider confirmation.
 
-Calendar booking creates a **Google Meet** on the product calendar event. The event
-may include customer name, email (when known), date/time, timezone, duration and the
-Meet join link. Email remains optional for booking: when present the lead is added as
-an attendee, but Google invite emails stay off (`sendUpdates=none`). The customer
-receives the Meet join link in the WhatsApp confirmation message.
+Calendar booking creates a **Google Meet** on the product calendar event *where the
+calendar supports it*. The event may include customer name, email (when known),
+date/time, timezone, duration and the Meet join link. Email is carried only where
+the calendar identity can invite attendees: service-account authentication
+([D62]) cannot, so under it the customer is not added as an attendee and Google
+sends them nothing.
+
+When the calendar refuses a conference (`Invalid conference type value`) or omits
+attendees, booking still succeeds: the event holds the time, the customer's email
+goes into the event description so the team can reach them, and the customer
+receives a time-only confirmation. **A booking without a join link must never be
+reported as a failure.** The team shares the joining details separately. Google
+invite emails stay off (`sendUpdates=none`) in every path.
 
 ### Booking failure
 

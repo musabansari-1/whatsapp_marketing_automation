@@ -23,6 +23,7 @@ double-booking the sales team.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -42,6 +43,12 @@ from app.integrations.calendar.provider import (
 logger = get_logger(__name__)
 
 CALENDAR_API = "https://www.googleapis.com/calendar/v3"
+
+#: Google's refusal to attach a conference to an event on a calendar that cannot host
+#: one: ``400 Invalid conference type value``. Matched on the word rather than the whole
+#: sentence, because Google words it differently for other conference types and the
+#: meaning — "this calendar refuses conferences" — is what the fallback acts on.
+_CONFERENCE_REJECTED = re.compile(r"conference", re.IGNORECASE)
 
 
 class GoogleCalendarProvider(CalendarProvider):
@@ -163,11 +170,11 @@ class GoogleCalendarProvider(CalendarProvider):
             params["conferenceDataVersion"] = "1"
 
         try:
-            body = await self._request(
-                "POST",
+            body = await self._post_event(
                 f"{CALENDAR_API}/calendars/{self._calendar_id}/events",
-                json=payload,
+                payload=payload,
                 params=params,
+                wants_meeting=request.create_meeting,
             )
         except _AlreadyExistsError:
             # The retry's own earlier success. Fetching it is what makes a redelivered
@@ -175,11 +182,7 @@ class GoogleCalendarProvider(CalendarProvider):
             existing = await self.get_event(request.event_id)
             if existing is not None:
                 logger.info("calendar_event_already_created", event_id=request.event_id)
-                if request.create_meeting and not existing.meeting_link:
-                    raise NonRetryableProviderError(
-                        "Calendar event exists but has no Google Meet link",
-                        provider=self.name,
-                    ) from None
+                self._note_missing_meeting(existing, wants_meeting=request.create_meeting)
                 return existing
             # Deleted between the conflict and the read, or belongs to another
             # calendar. Either way the slot is not ours to claim.
@@ -188,14 +191,62 @@ class GoogleCalendarProvider(CalendarProvider):
             ) from None
 
         event = _parse_event(body, fallback_timezone=request.timezone)
-        if request.create_meeting and not event.meeting_link:
-            # Meet is part of the booking path, not best-effort: a time-only event
-            # must not be reported as a successful demo booking.
-            raise NonRetryableProviderError(
-                "Google did not return a Meet join link for the booking",
-                provider=self.name,
-            )
+        self._note_missing_meeting(event, wants_meeting=request.create_meeting)
         return event
+
+    async def _post_event(
+        self,
+        url: str,
+        *,
+        payload: dict[str, Any],
+        params: dict[str, str],
+        wants_meeting: bool,
+    ) -> Any:
+        """Create the event, dropping the Meet request if this calendar refuses one.
+
+        Not every calendar can host a conference. A secondary calendar in a personal
+        Google account has no conference solutions at all, and Google answers the
+        insert with ``400 Invalid conference type value`` — on staging 2026-09-27 that
+        failed *every* booking, because a booking without a join link was treated as
+        no booking. It is still a booking: the customer has a time, the team has a
+        diary entry, and the join link is the team's to send. So the request is made
+        once more without the conference, and the missing link is reported through
+        `calendar_meet_unavailable` rather than raised at the customer.
+        """
+        try:
+            return await self._request("POST", url, json=payload, params=params)
+        except NonRetryableProviderError as exc:
+            if not (wants_meeting and _CONFERENCE_REJECTED.search(str(exc))):
+                raise
+            logger.warning(
+                "calendar_meet_unavailable",
+                calendar_id=self._calendar_id,
+                detail=str(exc),
+            )
+            # conferenceDataVersion is only meaningful alongside conferenceData; both
+            # go, so the retry is an ordinary time-only event.
+            return await self._request(
+                "POST",
+                url,
+                json={key: value for key, value in payload.items() if key != "conferenceData"},
+                params={
+                    key: value for key, value in params.items() if key != "conferenceDataVersion"
+                },
+            )
+
+    def _note_missing_meeting(self, event: CalendarEvent, *, wants_meeting: bool) -> None:
+        """Record that a booking went through without a join link, and carry on.
+
+        A meeting that was asked for and not returned is worth seeing — it is how a
+        calendar that *could* host Meet would announce it had stopped — but it is not
+        worth failing a confirmed booking over.
+        """
+        if wants_meeting and not event.meeting_link:
+            logger.warning(
+                "calendar_meet_missing",
+                calendar_id=self._calendar_id,
+                event_id=event.event_id,
+            )
 
     async def get_event(self, event_id: str) -> CalendarEvent | None:
         encoded = _encode_event_id(event_id)

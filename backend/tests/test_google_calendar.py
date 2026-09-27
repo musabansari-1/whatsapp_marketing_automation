@@ -606,21 +606,93 @@ class TestEventCreation:
         assert event.meeting_link == "https://meet.google.com/abc-defg-hij"
 
     @pytest.mark.asyncio
-    async def test_html_link_alone_is_not_a_meet_url(self) -> None:
-        """The calendar event page is not a join link."""
-        encoded = _encode_event_id("demo-abc-123")
-        provider, _ = make_provider(
-            routed(
-                event=event_body(
-                    event_id=encoded,
-                    hangoutLink=None,
-                    conferenceData={"entryPoints": []},
+    async def test_a_calendar_that_refuses_meet_still_books(self) -> None:
+        """The staging 2026-09-27 failure: Google answers `400 Invalid conference type
+        value` on a calendar with no conference solutions, and every booking failed.
+
+        Meet is asked for once and dropped if refused — the booking is what the customer
+        is waiting for, and the join link is the team's to send. A regression here
+        returns the "couldn't be checked" reply to every customer again.
+        """
+        attempts: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            body = json.loads(request.content)
+            attempts.append(body)
+            if "conferenceData" in body:
+                return httpx.Response(
+                    400,
+                    json={"error": {"message": "Invalid conference type value. invalid"}},
                 )
-            )
+            return httpx.Response(200, json=event_body(event_id=body["id"], hangoutLink=None))
+
+        provider, _ = make_provider(handler)
+        event = await provider.create_event(an_event_request())
+
+        assert len(attempts) == 2
+        assert "conferenceData" in attempts[0]
+        assert "conferenceData" not in attempts[1]
+        # The event is real — it is only the join link that is absent.
+        assert event.event_id == "demo-abc-123"
+        assert event.meeting_link is None
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_meet_retry_does_not_send_conference_data_version(self) -> None:
+        seen_params: list[dict[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            seen_params.append(dict(request.url.params))
+            body = json.loads(request.content)
+            if "conferenceData" in body:
+                return httpx.Response(
+                    400, json={"error": {"message": "Invalid conference type value. invalid"}}
+                )
+            return httpx.Response(200, json=event_body(event_id=body["id"], hangoutLink=None))
+
+        provider, _ = make_provider(handler)
+        await provider.create_event(an_event_request())
+
+        assert "conferenceDataVersion" in seen_params[0]
+        assert "conferenceDataVersion" not in seen_params[1]
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_400_is_not_retried(self) -> None:
+        """Only a conference refusal earns the second attempt: retrying a genuine
+        validation error would book against a request Google just rejected."""
+        attempts = {"count": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            attempts["count"] += 1
+            return httpx.Response(400, json={"error": {"message": "Invalid start time"}})
+
+        provider, _ = make_provider(handler)
+
+        with pytest.raises(NonRetryableProviderError, match="Invalid start time"):
+            await provider.create_event(an_event_request())
+
+        assert attempts["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_meeting_less_success_is_not_a_failure(self) -> None:
+        """A calendar that simply does not return a link books normally — it is
+        recorded, not raised."""
+        provider, _ = make_provider(
+            routed(event=event_body(hangoutLink=None, conferenceData={"entryPoints": []}))
         )
 
-        with pytest.raises(NonRetryableProviderError, match="Meet join link"):
-            await provider.create_event(an_event_request())
+        event = await provider.create_event(an_event_request())
+
+        assert event.meeting_link is None
 
     @pytest.mark.asyncio
     async def test_video_entrypoint_is_used_when_hangout_link_absent(self) -> None:

@@ -45,6 +45,15 @@ class TestBookingFailureGuidance:
             assert "the calendar cannot be checked right now" in prompt, slug
             assert prompt.count("will follow up") >= 2, slug  # flow + booking rules
 
+    def test_both_booking_products_never_invent_a_meet_link(self) -> None:
+        """The join link only exists when the calendar could host a conference; a
+        secondary calendar in a personal-Google account has none. The model must
+        not promise or produce one from an empty `meeting_link`."""
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "Only mention a Meet join link" in prompt, slug
+            assert "Never invent or guess a link" in prompt, slug
+
     def test_life_herba_needs_no_calendar_guidance(self) -> None:
         """It converts by external registration: booking tools are not offered, so the
         rule belongs nowhere near its prompts."""
