@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.ai import tools as ai_tools
+from app.ai.reply_guard import clean_customer_reply
 from app.core.logging import get_logger
 from app.domain.rag import RetrievalResult
 from app.integrations.llm import (
@@ -67,8 +68,9 @@ NO_KNOWLEDGE_NOTICE = (
 class AgentOutcome:
     """What the turn produced.
 
-    `used_fallback` and `tool_calls` are recorded rather than inferred so `ai_runs`
-    can show what actually happened (§21).
+    `used_fallback`, `reply_sanitized` and `tool_calls` are recorded rather than inferred so
+    `ai_runs` can show what actually happened (§21). `reply_sanitized` means the model
+    printed tool plumbing at the customer and `app.ai.reply_guard` removed it.
     """
 
     reply: str
@@ -78,6 +80,7 @@ class AgentOutcome:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     retrieved_chunk_ids: list[str] = field(default_factory=list)
     used_fallback: bool = False
+    reply_sanitized: bool = False
     booked_event_id: str | None = None
     proposed_status: Any = None
     rounds: int = 1
@@ -137,13 +140,22 @@ async def respond_to_customer(
     else:
         round_number = max_rounds
 
-    reply = (completion.text if completion else "").strip()
+    raw_reply = (completion.text if completion else "").strip()
+    # A model sometimes prints the tool call it made at the customer. Removed before it can
+    # be sent, and recorded so an operator can see how often the model does it (§21).
+    reply = clean_customer_reply(raw_reply)
+    reply_sanitized = reply != raw_reply
     used_fallback = False
+
+    if reply_sanitized:
+        logger.warning(
+            "ai_reply_tool_payload_removed", removed_chars=len(raw_reply) - len(reply)
+        )
 
     if not reply:
         # A turn that produces nothing to say is worse than the approved fallback:
         # the customer is left on read. [D21] makes the wording configuration.
-        reply = fallback_message
+        reply = clean_customer_reply(fallback_message) or fallback_message
         used_fallback = True
         logger.warning("ai_empty_reply_used_fallback")
 
@@ -155,6 +167,7 @@ async def respond_to_customer(
         tool_calls=executed,
         retrieved_chunk_ids=[chunk.chunk_id for chunk in retrieval.chunks] if retrieval else [],
         used_fallback=used_fallback,
+        reply_sanitized=reply_sanitized,
         booked_event_id=context.booked_event_id,
         proposed_status=context.proposed_status,
         rounds=round_number,

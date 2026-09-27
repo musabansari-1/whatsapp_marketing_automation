@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import tools as ai_tools
 from app.ai.agent import AgentOutcome, respond_to_customer
+from app.ai.reply_guard import clean_customer_reply
 from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.errors import ProviderError
@@ -314,7 +315,14 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         return TurnOutcome("llm_failed", str(conversation_id)).as_dict()
 
     latency_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
-    reply_text = outcome.reply.strip()
+    # Second gate, at the last point before delivery. The agent already strips tool
+    # plumbing from its reply, so this normally changes nothing; it exists because
+    # "the customer must never receive a JSON payload" is a delivery guarantee, and a
+    # guarantee that depends on every future caller remembering to sanitize is not one.
+    reply_text = clean_customer_reply(outcome.reply).strip()
+
+    if reply_text != outcome.reply.strip():
+        logger.warning("conversation_reply_sanitized_at_send", conversation_id=str(conversation_id))
 
     if not reply_text:
         # The agent substitutes the approved fallback for an empty completion, so
@@ -658,10 +666,18 @@ def _build_run(
         latency_ms=latency_ms,
         tool_calls=_run_tool_calls(outcome),
         # Which chunks grounded the answer (§21). Without this, a wrong answer cannot
-        # be traced back to the document that caused it.
+        # be traced back to the document that caused it. `reply_sanitized` rides along
+        # because a model printing tool plumbing at a customer is a prompt or model
+        # problem an operator needs to see, even though the turn itself succeeded.
         retrieved_chunk_ids=(
-            {"chunk_ids": outcome.retrieved_chunk_ids, "used_fallback": outcome.used_fallback}
-            if outcome.retrieved_chunk_ids or outcome.used_fallback
+            {
+                "chunk_ids": outcome.retrieved_chunk_ids,
+                "used_fallback": outcome.used_fallback,
+                "reply_sanitized": outcome.reply_sanitized,
+            }
+            if outcome.retrieved_chunk_ids
+            or outcome.used_fallback
+            or outcome.reply_sanitized
             else None
         ),
     )
