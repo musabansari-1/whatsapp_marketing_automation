@@ -54,6 +54,17 @@ class TestBookingFailureGuidance:
             assert "Only mention a Meet join link" in prompt, slug
             assert "Never invent or guess a link" in prompt, slug
 
+    def test_both_booking_products_never_claim_an_emailed_invite(self) -> None:
+        """Staging 2026-09-27: after a successful SustainX booking the model told
+        the customer "the calendar invite has been sent" to their email. Nothing
+        sends email — the customer is not added to the event (service-account
+        auth cannot invite) and `sendUpdates` stays `none` — so the success path
+        needs the same honesty as the failure path."""
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "Never tell the customer a calendar invite or confirmation was emailed" in prompt, slug
+            assert "confirmations go over WhatsApp" in prompt, slug
+
     def test_life_herba_needs_no_calendar_guidance(self) -> None:
         """It converts by external registration: booking tools are not offered, so the
         rule belongs nowhere near its prompts."""
