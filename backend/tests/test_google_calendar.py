@@ -738,6 +738,56 @@ class TestFailureClassification:
             await provider.create_event(an_event_request())
 
     @pytest.mark.asyncio
+    async def test_a_service_account_never_sends_attendees_but_keeps_everything_else(
+        self,
+    ) -> None:
+        """The production 403 ([D62], staging 2026-09-27): a service account without
+        Domain-Wide Delegation cannot invite anyone, and every event we send on a
+        lead with an email carries an attendee — so every such booking fails.
+
+        The fix is capability, not payload inspection: the identity knows what it
+        may do, and the provider trusts it. A regression here would silently return
+        the "couldn't be checked" reply to every email-bearing customer, because the
+        failure surfaces only in Google's rejection, never in a validation.
+        """
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=event_body(event_id=seen["id"]))
+
+        provider, _ = make_service_account_provider(
+            handler, credentials=FakeServiceAccountCredentials()
+        )
+        request = EventRequest(
+            event_id="demo-1",
+            interval=TimeInterval(start=START, end=START + timedelta(minutes=30)),
+            timezone="Asia/Kolkata",
+            summary="Demo",
+            description="Email: asha@example.com",
+            attendee_emails=("asha@example.com",),
+            metadata={"lead_id": "lead-1"},
+        )
+        event = await provider.create_event(request)
+
+        assert "attendees" not in seen
+        assert seen["description"]
+        assert seen["extendedProperties"]["private"]["lead_id"] == "lead-1"
+        assert event.meeting_link == "https://meet.google.com/abc-defg-hij"
+
+    @pytest.mark.asyncio
+    async def test_a_service_account_identity_reports_it_cannot_invite(self) -> None:
+        auth = ServiceAccountAuthenticator(credentials=FakeServiceAccountCredentials())
+        assert auth.supports_attendees is False
+
+    @pytest.mark.asyncio
+    async def test_the_oauth_identity_keeps_the_customer_invite(self) -> None:
+        provider, _ = make_provider(routed())
+        assert provider._auth.supports_attendees is True  # noqa: SLF001
+
+    @pytest.mark.asyncio
     async def test_a_server_error_is_retryable(self) -> None:
         provider, _ = make_provider(routed(event={"error": {"message": "oops"}}, event_status=503))
 

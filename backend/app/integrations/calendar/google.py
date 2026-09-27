@@ -128,8 +128,19 @@ class GoogleCalendarProvider(CalendarProvider):
         }
         if request.description:
             payload["description"] = request.description
-        if request.attendee_emails:
+        if request.attendee_emails and self._auth.supports_attendees:
             payload["attendees"] = [{"email": email} for email in request.attendee_emails]
+        elif request.attendee_emails:
+            # A service account without Domain-Wide Delegation gets a 403 for any
+            # event carrying `attendees` (`forbiddenForServiceAccounts`), which
+            # would fail every booking for a lead with an email. The invite is
+            # dropped — never attempted — while the contact address stays in the
+            # description, where the sales team still sees it.
+            logger.info(
+                "calendar_attendees_omitted",
+                calendar_id=self._calendar_id,
+                attendee_count=len(request.attendee_emails),
+            )
         if request.metadata:
             # Private extended properties: visible to this application, not to anyone
             # reading the event in the calendar UI.

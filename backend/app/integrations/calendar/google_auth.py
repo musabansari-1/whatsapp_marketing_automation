@@ -57,9 +57,25 @@ class CalendarAuthenticator(ABC):
 
     The provider asks for a token before each call and never sees how one is obtained:
     no expiry arithmetic, no ceremony, no secret handling outside this module.
+
+    The one capability the provider *must* know is whether the identity may invite
+    attendees: a service account without Domain-Wide Delegation gets a 403
+    (`forbiddenForServiceAccounts`) from any event carrying `attendees`, which would
+    turn every booking for a lead with an email into a failure. The authenticator
+    knows the identity; the provider does not. So the authenticator says it.
     """
 
     name: str
+
+    @property
+    @abstractmethod
+    def supports_attendees(self) -> bool:
+        """False when inviting an attendee is rejected for this identity.
+
+        The OAuth path keeps its customer invite. The service-account path must
+        omit attendees, because it cannot ask for Domain-Wide Delegation on the
+        client's Workspace — and must not fail or fake the booking instead.
+        """
 
     @abstractmethod
     async def access_token(self) -> str:
@@ -80,6 +96,15 @@ class ServiceAccountAuthenticator(CalendarAuthenticator):
     """
 
     name = "google_service_account"
+
+    @property
+    def supports_attendees(self) -> bool:
+        # A service account is not a Workspace user, and inviting an attendee
+        # means sending mail as one. Google allows that only with Domain-Wide
+        # Delegation, which the platform must not demand of the client's
+        # Workspace. So attendees are omitted under this identity — never
+        # attempted, and never the reason a booking fails.
+        return False
 
     def __init__(
         self,
@@ -210,6 +235,13 @@ class OAuthRefreshTokenAuthenticator(CalendarAuthenticator):
     """
 
     name = "google_oauth_refresh_token"
+
+    @property
+    def supports_attendees(self) -> bool:
+        # An operations account is a real Workspace/Google user, which is exactly
+        # the identity Google expects an invite to come from. So the customer
+        # stays on the event in the OAuth path.
+        return True
 
     def __init__(
         self,

@@ -638,12 +638,24 @@ def _booking_capability(context: ToolContext) -> tuple[SlotPolicy, CalendarProvi
 
 
 def _booking_description(lead: Any) -> str:
-    parts = [f"Demo booked from a WhatsApp conversation with {lead.phone_e164}."]
+    name = lead.full_name or lead.phone_e164
+    phone = lead.phone_e164
+    parts = []
     if lead.company:
         parts.append(f"Company: {lead.company}")
     if lead.designation:
         parts.append(f"Role: {lead.designation}")
-    return "\n".join(parts)
+    if lead.city:
+        parts.append(f"City: {lead.city}")
+    email = lead.email
+    if email:
+        # The contact channel when the calendar identity cannot carry an invite
+        # (service account without Domain-Wide Delegation): the team reaches the
+        # customer here, and the customer is not told to expect a calendar email.
+        parts.append(f"Email: {email}")
+        parts.append("Booked by WhatsApp AI: please share the Google Meet link on WhatsApp.")
+    contact = f"Demo booked from a WhatsApp conversation with {name} ({phone})."
+    return "\n".join([contact, *parts])
 
 
 def _availability_window(
