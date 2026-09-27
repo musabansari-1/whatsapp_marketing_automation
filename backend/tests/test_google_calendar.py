@@ -114,14 +114,16 @@ def token_response(**extra: Any) -> dict[str, Any]:
 
 
 def event_body(event_id: str = "abc", **extra: Any) -> dict[str, Any]:
-    return {
+    body = {
         "id": event_id,
         "summary": "Demo",
         "start": {"dateTime": "2026-09-02T10:00:00Z", "timeZone": "Asia/Kolkata"},
         "end": {"dateTime": "2026-09-02T10:30:00Z", "timeZone": "Asia/Kolkata"},
         "htmlLink": "https://calendar.google.com/event?eid=abc",
-        **extra,
+        "hangoutLink": "https://meet.google.com/abc-defg-hij",
     }
+    body.update(extra)
+    return body
 
 
 def routed(
@@ -579,6 +581,100 @@ class TestEventCreation:
         await provider.create_event(an_event_request())
 
         assert seen["params"]["sendUpdates"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_a_meet_conference_is_requested(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            import json
+
+            seen["params"] = dict(request.url.params)
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json=event_body(event_id=seen["body"]["id"]))
+
+        provider, _ = make_provider(handler)
+        event = await provider.create_event(an_event_request())
+
+        assert seen["params"]["conferenceDataVersion"] == "1"
+        assert seen["params"]["sendUpdates"] == "none"
+        create_request = seen["body"]["conferenceData"]["createRequest"]
+        assert create_request["conferenceSolutionKey"] == {"type": "hangoutsMeet"}
+        assert create_request["requestId"] == _encode_event_id("demo-abc-123")
+        assert event.meeting_link == "https://meet.google.com/abc-defg-hij"
+
+    @pytest.mark.asyncio
+    async def test_html_link_alone_is_not_a_meet_url(self) -> None:
+        """The calendar event page is not a join link."""
+        encoded = _encode_event_id("demo-abc-123")
+        provider, _ = make_provider(
+            routed(
+                event=event_body(
+                    event_id=encoded,
+                    hangoutLink=None,
+                    conferenceData={"entryPoints": []},
+                )
+            )
+        )
+
+        with pytest.raises(NonRetryableProviderError, match="Meet join link"):
+            await provider.create_event(an_event_request())
+
+    @pytest.mark.asyncio
+    async def test_video_entrypoint_is_used_when_hangout_link_absent(self) -> None:
+        encoded = _encode_event_id("demo-abc-123")
+        provider, _ = make_provider(
+            routed(
+                event=event_body(
+                    event_id=encoded,
+                    hangoutLink=None,
+                    conferenceData={
+                        "entryPoints": [
+                            {"entryPointType": "phone", "uri": "tel:+123"},
+                            {
+                                "entryPointType": "video",
+                                "uri": "https://meet.google.com/from-entry",
+                            },
+                        ]
+                    },
+                )
+            )
+        )
+
+        event = await provider.create_event(an_event_request())
+        assert event.meeting_link == "https://meet.google.com/from-entry"
+
+    @pytest.mark.asyncio
+    async def test_meet_can_be_skipped(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json=token_response())
+            import json
+
+            seen["params"] = dict(request.url.params)
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json=event_body(event_id=seen["body"]["id"], hangoutLink=None),
+            )
+
+        provider, _ = make_provider(handler)
+        request = EventRequest(
+            event_id="demo-abc-123",
+            interval=TimeInterval(start=START, end=START + timedelta(minutes=30)),
+            timezone="Asia/Kolkata",
+            summary="Demo",
+            create_meeting=False,
+        )
+        event = await provider.create_event(request)
+
+        assert "conferenceDataVersion" not in seen["params"]
+        assert "conferenceData" not in seen["body"]
+        assert event.meeting_link is None
 
 
 class TestEventReading:

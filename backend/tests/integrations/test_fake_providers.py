@@ -213,7 +213,30 @@ class TestFakeCalendar:
             )
         )
         assert event.event_id == "evt-1"
+        assert event.meeting_link == "https://meet.google.com/fake-evt-1"
         assert fake_calendar.event_count == 1
+
+    async def test_meet_link_is_stable_on_replay(
+        self, fake_calendar: FakeCalendarProvider
+    ) -> None:
+        request = EventRequest(
+            event_id="evt-1", interval=_interval(10), timezone="Asia/Kolkata", summary="Demo"
+        )
+        first = await fake_calendar.create_event(request)
+        second = await fake_calendar.create_event(request)
+        assert first.meeting_link == second.meeting_link == "https://meet.google.com/fake-evt-1"
+
+    async def test_meet_can_be_skipped(self, fake_calendar: FakeCalendarProvider) -> None:
+        event = await fake_calendar.create_event(
+            EventRequest(
+                event_id="evt-1",
+                interval=_interval(10),
+                timezone="Asia/Kolkata",
+                summary="Demo",
+                create_meeting=False,
+            )
+        )
+        assert event.meeting_link is None
 
     async def test_rejects_an_overlapping_slot(self, fake_calendar: FakeCalendarProvider) -> None:
         """§12: handle the race where another booking takes the slot."""

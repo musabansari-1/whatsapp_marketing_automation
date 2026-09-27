@@ -122,7 +122,9 @@ export default function BookingsPage() {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      Open in calendar
+                      {booking.meeting_link.includes("meet.google.com")
+                        ? "Join Meet"
+                        : "Open in calendar"}
                     </a>
                   ) : null}
                 </div>

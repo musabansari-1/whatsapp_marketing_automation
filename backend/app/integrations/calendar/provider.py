@@ -54,6 +54,8 @@ class EventRequest:
     """A booking request.
 
     `event_id` is client-generated so retries converge on one event.
+    `create_meeting` asks the provider for a Google Meet (or fake join URL). Booking
+    defaults this on; a later product gate can flip it without another contract change.
     """
 
     event_id: str
@@ -63,6 +65,7 @@ class EventRequest:
     description: str | None = None
     attendee_emails: tuple[str, ...] = ()
     metadata: dict[str, str] = field(default_factory=dict)
+    create_meeting: bool = True
 
 
 class SlotUnavailableError(Exception):

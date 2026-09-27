@@ -229,7 +229,10 @@ def _notification_message(booking: Booking, lead: Lead) -> str:
     when = _local_time(booking)
     who = lead.full_name or lead.phone_e164
     company = f" ({lead.company})" if lead.company else ""
-    return f"{who}{company} booked a demo for {when}."
+    message = f"{who}{company} booked a demo for {when}."
+    if booking.meeting_link:
+        message = f"{message} Meet: {booking.meeting_link}"
+    return message
 
 
 def _confirmation_message(settings: Settings, booking: Booking) -> str:
@@ -237,14 +240,24 @@ def _confirmation_message(settings: Settings, booking: Booking) -> str:
 
     Configurable copy ([D21]). The template is formatted defensively: an operator
     editing it must not be able to break booking confirmations with a stray brace.
+    When Meet is missing, fall back to time-only copy so we never send
+    "Join here: " with an empty URL.
     """
+    local = _local_time(booking)
+    if not booking.meeting_link:
+        return f"Your demo is confirmed for {local} ({booking.timezone})."
     try:
         return settings.msg_booking_confirmation.format(
-            start_time=_local_time(booking), timezone=booking.timezone
+            start_time=local,
+            timezone=booking.timezone,
+            meeting_link=booking.meeting_link,
         )
     except (KeyError, IndexError, ValueError):
         logger.warning("booking_confirmation_template_invalid")
-        return f"Your demo is confirmed for {_local_time(booking)} ({booking.timezone})."
+        return (
+            f"Your demo is confirmed for {local} ({booking.timezone}). "
+            f"Join here: {booking.meeting_link}"
+        )
 
 
 def _local_time(booking: Booking) -> str:

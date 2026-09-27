@@ -60,12 +60,18 @@ class FakeCalendarProvider(CalendarProvider):
                     f"interval {request.interval.start.isoformat()} is no longer available"
                 )
 
+        meeting_link = (
+            f"https://meet.google.com/fake-{request.event_id}"
+            if request.create_meeting
+            else None
+        )
         event = CalendarEvent(
             event_id=request.event_id,
             interval=request.interval,
             timezone=request.timezone,
             summary=request.summary,
             attendee_emails=request.attendee_emails,
+            meeting_link=meeting_link,
         )
         self.events[event.event_id] = event
         self.created_requests.append(request)

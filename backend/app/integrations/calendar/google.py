@@ -134,15 +134,29 @@ class GoogleCalendarProvider(CalendarProvider):
             # Private extended properties: visible to this application, not to anyone
             # reading the event in the calendar UI.
             payload["extendedProperties"] = {"private": dict(request.metadata)}
+        if request.create_meeting:
+            # Stable requestId: a retried create for the same booking must not ask
+            # Google for a second Meet conference on a different id.
+            payload["conferenceData"] = {
+                "createRequest": {
+                    "requestId": event_id,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+
+        # Google emails the attendee itself; the platform sends its own WhatsApp
+        # confirmation, so sendUpdates stays off to avoid two of them.
+        params: dict[str, str] = {"sendUpdates": "none"}
+        if request.create_meeting:
+            # Without conferenceDataVersion, Google silently ignores conferenceData.
+            params["conferenceDataVersion"] = "1"
 
         try:
             body = await self._request(
                 "POST",
                 f"{CALENDAR_API}/calendars/{self._calendar_id}/events",
                 json=payload,
-                # Google emails the attendee itself; the platform sends its own
-                # WhatsApp confirmation, so this stays off to avoid two of them.
-                params={"sendUpdates": "none"},
+                params=params,
             )
         except _AlreadyExistsError:
             # The retry's own earlier success. Fetching it is what makes a redelivered
@@ -150,6 +164,11 @@ class GoogleCalendarProvider(CalendarProvider):
             existing = await self.get_event(request.event_id)
             if existing is not None:
                 logger.info("calendar_event_already_created", event_id=request.event_id)
+                if request.create_meeting and not existing.meeting_link:
+                    raise NonRetryableProviderError(
+                        "Calendar event exists but has no Google Meet link",
+                        provider=self.name,
+                    ) from None
                 return existing
             # Deleted between the conflict and the read, or belongs to another
             # calendar. Either way the slot is not ours to claim.
@@ -157,7 +176,15 @@ class GoogleCalendarProvider(CalendarProvider):
                 f"Event {request.event_id} conflicts but cannot be read back"
             ) from None
 
-        return _parse_event(body, fallback_timezone=request.timezone)
+        event = _parse_event(body, fallback_timezone=request.timezone)
+        if request.create_meeting and not event.meeting_link:
+            # Meet is part of the booking path, not best-effort: a time-only event
+            # must not be reported as a successful demo booking.
+            raise NonRetryableProviderError(
+                "Google did not return a Meet join link for the booking",
+                provider=self.name,
+            )
+        return event
 
     async def get_event(self, event_id: str) -> CalendarEvent | None:
         encoded = _encode_event_id(event_id)
@@ -336,6 +363,24 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def _meeting_link_from_event(body: dict[str, Any]) -> str | None:
+    """A real Meet join URL, never the calendar event page (`htmlLink`)."""
+    hangout = body.get("hangoutLink")
+    if isinstance(hangout, str) and hangout.strip():
+        return hangout.strip()
+
+    conference = body.get("conferenceData") or {}
+    for entry in conference.get("entryPoints") or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("entryPointType") != "video":
+            continue
+        uri = entry.get("uri")
+        if isinstance(uri, str) and uri.strip():
+            return uri.strip()
+    return None
+
+
 def _parse_event(body: dict[str, Any], *, fallback_timezone: str) -> CalendarEvent:
     start = _parse_time((body.get("start") or {}).get("dateTime"))
     end = _parse_time((body.get("end") or {}).get("dateTime"))
@@ -360,7 +405,7 @@ def _parse_event(body: dict[str, Any], *, fallback_timezone: str) -> CalendarEve
         timezone=(body.get("start") or {}).get("timeZone") or fallback_timezone,
         summary=body.get("summary") or "",
         attendee_emails=attendees,
-        meeting_link=body.get("hangoutLink") or body.get("htmlLink"),
+        meeting_link=_meeting_link_from_event(body),
     )
 
 

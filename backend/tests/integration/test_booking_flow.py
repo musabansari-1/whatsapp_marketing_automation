@@ -227,6 +227,9 @@ class TestBookingRecord:
         assert rows[0].status is BookingStatus.CONFIRMED
         assert rows[0].calendar_event_id == result.data["event_id"]
         assert rows[0].confirmed_at is not None
+        assert rows[0].meeting_link
+        assert result.data["meeting_link"] == rows[0].meeting_link
+        assert calendar.created_requests[0].create_meeting is True
 
     def test_the_booking_carries_its_own_timezone(self, booking_env: FakeWhatsAppProvider) -> None:
         """[D8]: a later policy change must not retroactively reinterpret it."""
@@ -341,11 +344,14 @@ class TestNotificationFanOut:
     ) -> None:
         lead_id, conversation_id = seed(users=1)
         book(lead_id, conversation_id, calendar=FakeCalendarProvider())
-        run_notify(str(bookings()[0].id))
+        booking = bookings()[0]
+        run_notify(str(booking.id))
 
         message = notifications()[0].message
         assert "Asha Rao" in message
         assert "Northwind" in message
+        assert booking.meeting_link
+        assert booking.meeting_link in message
 
     def test_the_notification_links_to_the_booking(self, booking_env: FakeWhatsAppProvider) -> None:
         """§13 relates a notification to what it is about, so the dashboard can link."""
@@ -381,6 +387,19 @@ class TestCustomerConfirmation:
 
         assert len(booking_env.sent_texts) == 1
         assert booking_env.sent_texts[0].to_e164 == PHONE
+
+    def test_the_confirmation_includes_the_meet_link(
+        self, booking_env: FakeWhatsAppProvider
+    ) -> None:
+        lead_id, conversation_id = seed(users=1)
+        book(lead_id, conversation_id, calendar=FakeCalendarProvider())
+        booking = bookings()[0]
+
+        run_notify(str(booking.id))
+
+        assert booking.meeting_link
+        assert booking.meeting_link in booking_env.sent_texts[0].body
+        assert "meet.google.com" in booking_env.sent_texts[0].body
 
     def test_the_wording_is_configurable(self, booking_env: FakeWhatsAppProvider) -> None:
         """[D21]: customer-facing copy is never hard-coded."""
