@@ -229,6 +229,9 @@ class TestBookingRecord:
         assert rows[0].confirmed_at is not None
         assert rows[0].meeting_link
         assert result.data["meeting_link"] == rows[0].meeting_link
+        # The platform has no email path, stated as data so the model does not
+        # infer a sent invite from the lead's email (staging 2026-09-28).
+        assert result.data["email_sent"] is False
         assert calendar.created_requests[0].create_meeting is True
 
     def test_the_booking_carries_its_own_timezone(self, booking_env: FakeWhatsAppProvider) -> None:

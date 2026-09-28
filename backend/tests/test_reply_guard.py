@@ -196,3 +196,62 @@ class TestLabelledToolCallsAreRemoved:
         # itself and does not insert a paragraph break where it stood.
         text = "Let me check.\n(book_demo)\nYour demo is booked."
         assert clean_customer_reply(text) == "Let me check.\nYour demo is booked."
+
+
+class TestEmailedInviteClaimsAreRemoved:
+    """The falsehood that reached a real customer: after a successful booking the model
+    said a calendar invite had been emailed to them. The platform has no email path, so
+    the claim is unconditionally false — and the Sep 2026-09-28 staging message proves
+    the prompt rule alone does not hold it. The guard is the deterministic layer."""
+
+    def test_a_standalone_claim_is_dropped(self) -> None:
+        assert clean_customer_reply("A calendar invite has been sent to test@test.com.") == ""
+
+    def test_the_true_half_of_a_mixed_sentence_survives(self) -> None:
+        # The staging shape: the Meet link is true, the emailed invite is not.
+        text = (
+            "Your SustainX presentation is booked for Tuesday 29 September, 9:00 AM IST. "
+            "The Google Meet link is https://meet.google.com/fhj-pqvn-xkd and the calendar "
+            "invite has been sent to test@test.com."
+        )
+        assert clean_customer_reply(text) == (
+            "Your SustainX presentation is booked for Tuesday 29 September, 9:00 AM IST. "
+            "The Google Meet link is https://meet.google.com/fhj-pqvn-xkd."
+        )
+
+    def test_a_claim_between_two_true_sentences_leaves_both(self) -> None:
+        text = (
+            "Your demo is booked for Tuesday 9:00 AM. "
+            "I have emailed you the calendar invite. "
+            "Let me know if you need anything else."
+        )
+        assert clean_customer_reply(text) == (
+            "Your demo is booked for Tuesday 9:00 AM. Let me know if you need anything else."
+        )
+
+    @pytest.mark.parametrize(
+        "claim",
+        [
+            "Please check your inbox for the calendar invite.",
+            "You will receive the invitation by email shortly.",
+            "I have sent the invite to your email address.",
+        ],
+    )
+    def test_phrasing_variants_are_caught(self, claim: str) -> None:
+        assert clean_customer_reply(f"Your demo is booked. {claim}") == "Your demo is booked."
+
+    def test_a_negated_claim_is_left_alone(self) -> None:
+        # "No invite will be emailed" is true. Removing it would punish honesty, and a
+        # negation the patterns miss still passes — the prompts remain the first layer.
+        text = "Your demo is booked. No invite will be emailed — confirmations come over WhatsApp."
+        assert clean_customer_reply(text) == text
+
+    def test_a_whatsapp_invite_without_an_email_channel_survives(self) -> None:
+        # Bare "send you the invite" with no email channel may mean WhatsApp, which is
+        # true. Only the emailed variants are matched, never this.
+        text = "I will send you the invite here on WhatsApp."
+        assert clean_customer_reply(text) == text
+
+    def test_team_contact_by_email_is_not_an_invite_claim(self) -> None:
+        text = "Our team will contact you by email shortly to arrange your offline demo."
+        assert clean_customer_reply(text) == text

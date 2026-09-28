@@ -10,17 +10,29 @@ On a WhatsApp thread that is a defect, not a style choice. It puts internal qual
 field names in front of a customer — including the labels the prompts explicitly forbid
 showing ("Do not expose these labels to the user") — and it reads as a broken product.
 
+A second defect rides along once a booking exists: the model tells the customer a
+calendar invite was emailed to them (staging 2026-09-28, after the prompts already
+forbade it). The platform has no email path at all — no attendee is ever added and
+`sendUpdates` stays `none` — so that claim is unconditionally false, and removing it
+can never delete a true statement.
+
 This module is the last gate before a turn is sent. It is pure and model-agnostic, and
-deliberately narrow in what it *keeps*: prose the model composed is never rewritten. Two
+deliberately narrow in what it *keeps*: prose the model composed is never rewritten. Three
 rules decide what goes:
 
 - anything that reads as tool plumbing — a tool name, or a key like `arguments`, `facts`,
   `lead` or `qualification_judgement` — is removed wherever it appears;
 - a JSON object or array sitting alone on its own line is removed even when its keys are
-  unrecognised, because a serialised blob is not a reply whatever it contains.
+  unrecognised, because a serialised blob is not a reply whatever it contains;
+- a sentence claiming an emailed calendar invite is removed, as is a trailing
+  "and …" clause making that claim — while the true half of a mixed sentence (the
+  time, the Meet link) survives.
 
 Unparseable text and JSON embedded in the middle of a sentence are left alone: half-
-deleting something is worse than letting a human see it.
+deleting something is worse than letting a human see it. The same caution applies to
+the invite rule: a sentence carrying a negation ("no invite will be emailed") is left
+alone, and novel phrasings the patterns do not recognise still pass — the prompts and
+the tool result remain the first two layers.
 
 Delivery is not re-tried here. When nothing survives the strip the caller falls back to
 the approved wording ([D21]) exactly as it does for an empty completion.
@@ -101,9 +113,39 @@ _TOOL_LABEL_LINE = re.compile(
     re.IGNORECASE,
 )
 
-#: Tokens that, quoted, only ever appear in a tool call or a lead record. Narrower than
-#: `_PAYLOAD_KEYS` on purpose: a quoted `"lead"` or `"ok"` can be ordinary English, and
-#: treating those as payloads would cost the customer a reply for nothing.
+#: An invite claimed sent or delivered through email. The platform has no email path,
+#: so any such claim is false — but only the emailed variants are matched. A bare
+#: "send you the invite" with no channel may mean WhatsApp, which is true, and must
+#: survive; likewise anything carrying a negation ("no invite will be emailed").
+_INVITE_EMAILED = re.compile(
+    r"invit\w*.{0,50}\b(e-?mailed|sent|received)\b"
+    r"|\b(e-?mailed|sent|received).{0,50}invit\w*",
+    re.IGNORECASE | re.DOTALL,
+)
+_INVITE_BY_EMAIL = re.compile(
+    r"invit\w*.{0,50}\b(inbox|by e-?mail|via e-?mail|to your e-?mail|in your e-?mail)\b"
+    r"|\binbox\b.{0,50}invit\w*",
+    re.IGNORECASE | re.DOTALL,
+)
+_NEGATED = re.compile(
+    r"\b(no|not|never|n't|without|don't|doesn't|didn't|won't|can't|cannot|isn't|aren't)\b",
+    re.IGNORECASE,
+)
+
+#: A trailing "and …" clause making the claim, so the true half of a mixed sentence
+#: survives: "The Meet link is … and the invite was emailed" keeps the link. Anchored
+#: to the clause carrying the emailed/sent verb, so a legit "and the invite link is
+#: below" is never touched.
+_TRAILING_INVITE_CLAUSE = re.compile(
+    r",?\s+and\s+(?:the\s+|a\s+)?(?:calendar\s+)?invit\w*"
+    r"(?=[\s\S]{0,80}\b(e-?mailed|sent|received)\b)[\s\S]*?(?=[.!?]$)",
+    re.IGNORECASE,
+)
+
+#: Sentence boundaries for the claim scan. URLs carry periods without trailing space,
+#: so only punctuation followed by whitespace (or the end) splits.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
 _STRONG_PLUMBING = _TOOL_NAMES | frozenset(
     {
         "arguments",
@@ -162,6 +204,7 @@ def clean_customer_reply(text: str) -> str:
     cleaned = _strip_payload_spans(cleaned)
     cleaned = _cut_blob_lines(cleaned)
     cleaned = _drop_tool_label_lines(cleaned)
+    cleaned = _without_emailed_invite_claims(cleaned)
 
     if _has_json_residue(cleaned):
         # What is left is still a payload: a blob that was cut off mid-object, or quoted
@@ -227,6 +270,46 @@ def _drop_tool_label_lines(text: str) -> str:
     The pattern is anchored to the line, so a name mentioned inside a sentence is untouched.
     """
     return "\n".join(line for line in text.splitlines() if not _TOOL_LABEL_LINE.match(line))
+
+
+def _without_emailed_invite_claims(text: str) -> str:
+    """Remove sentences claiming a calendar invite was emailed.
+
+    The claim is unconditionally false — the platform has no email path — so only the
+    shape of the match matters, never its content. A trailing "and …" clause making
+    the claim is cut while the true half of the sentence survives; a sentence that is
+    nothing but the claim goes whole. Anything carrying a negation is left alone, as
+    is any phrasing the patterns do not recognise: the prompts and the tool result
+    remain the first two layers for those.
+
+    Spacing is preserved exactly when nothing matches, so clean replies are returned
+    as written; any removal routes through the shared tidy-up downstream.
+    """
+    sentences = _SENTENCE_SPLIT.split(text)
+    separators = _SENTENCE_SPLIT.findall(text)
+    kept: list[str] = []
+    changed = False
+    for index, sentence in enumerate(sentences):
+        prefix = separators[index - 1] if index else ""
+        if not sentence.strip():
+            kept.append(prefix + sentence)
+            continue
+        stripped, count = _TRAILING_INVITE_CLAUSE.subn("", sentence)
+        if count:
+            kept.append(prefix + stripped)
+            changed = True
+        elif _claims_emailed_invite(sentence):
+            changed = True
+        else:
+            kept.append(prefix + sentence)
+    return "".join(kept) if changed else text
+
+
+def _claims_emailed_invite(sentence: str) -> bool:
+    """Whether this sentence states an invite went out by email."""
+    if _NEGATED.search(sentence):
+        return False
+    return bool(_INVITE_EMAILED.search(sentence) or _INVITE_BY_EMAIL.search(sentence))
 
 
 def _has_json_residue(text: str) -> bool:

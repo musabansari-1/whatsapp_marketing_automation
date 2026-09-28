@@ -68,9 +68,9 @@ MAX_SLOT_RESULTS = 100
 #: customer on 2026-09-22 ([D62]). Written for the model to act on, not as an operator
 #: message.
 CALENDAR_UNAVAILABLE_GUIDANCE = (
-    "Do not offer or promise any time, and do not promise to check again later or to "
-    "email times — you cannot do either. Say the calendar cannot be checked right now "
-    "and a colleague will follow up to arrange a time."
+    "Do not offer or promise any time, and do not promise to check again later, "
+    "do not promise to email times — you cannot do either. Say the calendar cannot "
+    "be checked right now and a colleague will follow up to arrange a time."
 )
 
 
@@ -256,6 +256,8 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                     description=(
                         "Book a demo at a time the customer chose from get_available_slots. "
                         "Only tell the customer the demo is booked if this returns ok: true. "
+                        "email_sent in the result is always false — nothing is emailed, so "
+                        "confirm over WhatsApp and never claim an invite was sent. "
                         "If it fails because the slot was taken, offer another time. "
                         "If it fails because the calendar cannot be confirmed, do not promise "
                         "to retry, to check later, or to confirm by email — say a colleague "
@@ -525,6 +527,10 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
                 ),
                 "timezone": already.timezone,
                 "meeting_link": already.meeting_link,
+                # The platform has no email path: no attendee is ever added and
+                # Google is never asked to send updates. Stated as data, because
+                # the model otherwise infers a sent invite from the lead's email.
+                "email_sent": False,
             },
         )
 
@@ -618,6 +624,10 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
             ),
             "timezone": policy.timezone,
             "meeting_link": event.meeting_link,
+            # The platform has no email path: no attendee is ever added and
+            # Google is never asked to send updates. Stated as data, because
+            # the model otherwise infers a sent invite from the lead's email.
+            "email_sent": False,
         },
     )
 
