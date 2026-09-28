@@ -104,6 +104,7 @@ EXPECTED_TASKS=(
   process_conversation_turn
   ingest_knowledge_document
   notify_booking
+  notify_offline_demo
   sync_crm_contact
   sync_whatsapp_templates
   sweep_unanswered_messages

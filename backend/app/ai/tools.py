@@ -104,6 +104,10 @@ class ToolContext:
     # Set only when a booking was newly recorded, so a retried turn does not notify
     # the team twice about the same demo.
     notify_booking_id: uuid.UUID | None = None
+    # Set only when this turn newly recorded an offline demo request ([D66]), so
+    # the team hears about it once. A request is not a booking: no calendar event,
+    # no time, no second message to the customer.
+    notify_offline_demo: bool = False
     proposed_status: Any = None
 
 
@@ -169,6 +173,8 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                             "interested, demo_intent, not_interested, "
                             "qualification_judgement "
                             "(QUALIFIED | NEEDS_MORE_CONTEXT | NOT_QUALIFIED), "
+                            "offline_demo_requested (true when the customer chose "
+                            "an offline demo instead of booking a time), "
                             "registration_intent, team_size, budget or use_case. You "
                             "cannot set lead status — record facts only."
                         ),
@@ -351,7 +357,13 @@ async def _update_lead(arguments: dict[str, Any], context: ToolContext) -> ToolR
 
     facts = arguments.get("facts")
     if isinstance(facts, dict) and facts:
+        # Read before the merge: only a newly introduced offline request notifies
+        # the team. A repeat collaborates with the fan-out's own collapse rather
+        # than re-announcing ([D66]).
+        had_offline_request = bool((lead.qualification_data or {}).get("offline_demo_requested"))
         await conversation_repo.merge_qualification_data(context.session, lead, facts)
+        if facts.get("offline_demo_requested") is True and not had_offline_request:
+            context.notify_offline_demo = True
 
     # The rules run on the merged facts, and their conclusion is proposed rather than
     # applied: the caller decides, after the turn, through the §10 table.

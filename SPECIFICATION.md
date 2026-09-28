@@ -1027,6 +1027,26 @@ If Calendar succeeds but a downstream notification fails:
 - failed notification retries
 - no duplicate calendar event
 
+### Offline demo requests ([D66])
+
+A customer may choose an offline (in-person) demo instead of booking a time. The
+model asks online or offline once interest is confirmed; offline is a handoff,
+not a booking:
+
+- The model records `offline_demo_requested: true` via `update_lead` and tells
+  the customer the product's team will contact them to arrange it. It never
+  promises a time or venue, never says a demo is booked, and offers no slots.
+- The turn enqueues `notify_offline_demo`, which fans out a `DEMO_BOOKED`
+  notification titled "Offline demo requested — {product}", naming the customer
+  and their phone and linked to the lead. Team-only: the customer was already
+  told in the reply, and a second message would double-text them (Phase 9: one
+  reply per inbound message).
+- No calendar event and no `bookings` row: there is no time (`start_time` is NOT
+  NULL, and a dummy time would block the diary dishonestly). The request lives
+  as the lead fact plus the notification, and the lead's status does not change.
+- A repeated request collapses rather than re-announcing: the fan-out's unique
+  constraint on (user, type, entity) inserts nothing the second time.
+
 ### V1 implementation (Phase 11)
 
 The §12 sequence, and where each step lives:
@@ -2469,3 +2489,4 @@ assigned to a default product. Retrieval without a product is not expressible.
 | D63 | *Decided and implemented 2026-09-24 (audience upload fix).* **The header row of an audience file is located, not assumed to be row 1.** Academicae's production audience workbook carries a merged title in row 1 and a blank row in row 2, with headers in row 3; reading row 1 reported the file's required columns as missing. The parser offers each of the first `AUDIENCE_HEADER_SCAN_ROWS` (default 5) rows to a predicate built from the product's configured mapping — a candidate must carry **every** required column — and the first matching row is the header row; rows above it are preamble and never become data rows. Which worksheet is read is unchanged (the first), and only the header row's *position* is inferred: a file whose headers are deeper than the scan is refused with a message naming the sheet and the rows that were read. **[D25]**/**[D51]** unchanged: the mapping stays product configuration, and a file is still rejected whole when a required column is missing.
 | D64 | *Decided and implemented 2026-09-27 (knowledge document delete).* **One mistakenly uploaded document can be permanently deleted; knowledge bases cannot.** `DELETE /knowledge-bases/{id}/documents/{document_id}` is ADMIN-only like the other knowledge changes (D-07, **[D61]**) and product-scoped (404 outside the product). A document with unfinished ingestion (`PENDING`/`PROCESSING`) is refused (409) because its bytes are still travelling inside the queued task; an orphaned ingestion task whose document is already gone returns a terminal result instead of raising, so Cloud Tasks converges rather than retrying forever. Deletion removes the row with its chunks and ingestion jobs through the existing cascades; past `ai_runs` entries keep chunk IDs that no longer resolve, which the dashboard's confirmation warns about — archiving stays the non-destructive withdrawal. Deleting the last READY document leaves the product with a knowledge gap in readiness; activation itself never flips automatically. |
 | D65 | *Decided and implemented 2026-09-27 (static meeting link, Option 2).* **Each product may hold one permanent meeting link; the platform never generates a conference for it.** A service account ([D62]) is an IAM identity, not a Meet-licensed user, so Google answers `conferenceData.createRequest` with `400 Invalid conference type value` — and a secondary calendar in a personal account has no conference solutions at all. The operator creates one permanent Google Meet link in their own account per product and configures it as `products.meeting_url` via `configure-products` (catalog key `meeting_url`, an `https://` URL; absent leaves the product alone, `null` clears it). When set, the calendar provider sends no `conferenceData` and no `conferenceDataVersion`, puts the link in the event's `location` and description, and returns it as the event's join link; the booking, the customer's WhatsApp confirmation and the dashboard notification carry it like any generated link. Absent keeps the previous behaviour: a generated conference where the calendar supports it, else a time-only booking that is still a success. The link is product data, never a platform setting and never a secret; one link belongs to one product (a shared room is a readiness BLOCKER, and the catalog refuses it); missing it on a booking product is a readiness GAP, never a BLOCKER. |
+| D66 | *Decided 2026-09-27 (offline demos).* **Choosing offline is a handoff, not a booking.** Every demo-booking product offers both modes: the model asks online (video) or offline (in person) once the customer agrees, before offering slots. Online follows the existing booking flow unchanged. Offline records `offline_demo_requested: true` via `update_lead` and reassures the customer the team will contact them; it creates no calendar event and no booking row (there is no time, and a dummy one would block the diary dishonestly), changes no lead status, and sends the customer nothing beyond the turn's reply. The team hears about it through the existing `DEMO_BOOKED` fan-out with an "Offline demo requested" title naming the customer and phone, linked to the lead; a repeat request collapses at the fan-out's unique constraint. |

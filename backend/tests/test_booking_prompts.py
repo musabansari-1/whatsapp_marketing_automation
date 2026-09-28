@@ -62,8 +62,34 @@ class TestBookingFailureGuidance:
         needs the same honesty as the failure path."""
         for slug in ("academicae", "sustainx"):
             prompt = _product(slug).ai_configuration.system_prompt or ""
-            assert "Never tell the customer a calendar invite or confirmation was emailed" in prompt, slug
+            assert (
+                "Never tell the customer a calendar invite or confirmation was emailed" in prompt
+            ), slug
             assert "confirmations go over WhatsApp" in prompt, slug
+
+
+class TestOfflineDemoHandoff:
+    """Choosing offline is a handoff, not a booking ([D66]): no time, no calendar
+    event, no booking row. The model records the request as a fact and reassures;
+    the backend notifies the team."""
+
+    def test_both_booking_products_ask_online_or_offline_first(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "online video call or an offline in-person demo" in prompt, slug
+
+    def test_both_booking_products_record_offline_as_a_fact(self) -> None:
+        for slug, team in (("academicae", "Academicae"), ("sustainx", "SustainX")):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert '"offline_demo_requested": true' in prompt, slug
+            assert f"our {team} team will contact them shortly" in prompt, slug
+
+    def test_offline_promises_no_time_venue_or_booking(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "Never promise a time or venue" in prompt, slug
+            assert "never say a demo is booked" in prompt, slug
+            assert "do not offer slots" in prompt, slug
 
     def test_life_herba_needs_no_calendar_guidance(self) -> None:
         """It converts by external registration: booking tools are not offered, so the

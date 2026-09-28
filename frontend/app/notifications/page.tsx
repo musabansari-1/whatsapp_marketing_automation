@@ -154,6 +154,19 @@ export default function NotificationsPage() {
                         Open demos
                       </Link>
                     ) : null}
+                    {notification.product &&
+                    notification.related_entity_type === 'lead' &&
+                    notification.related_entity_id ? (
+                      <Link
+                        href={productHref(
+                          notification.product.slug,
+                          `/leads/${notification.related_entity_id}`,
+                        )}
+                        className="font-semibold text-ink-muted hover:text-ink"
+                      >
+                        Open lead
+                      </Link>
+                    ) : null}
                   </div>
                 </div>
                 {notification.is_read ? null : (

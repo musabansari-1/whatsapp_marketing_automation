@@ -429,6 +429,13 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
     if tool_context.notify_booking_id is not None:
         await _queue_booking_notification(settings, tool_context.notify_booking_id)
 
+    # An offline demo request is not a booking — no event, no time — but the team
+    # still has to hear about it ([D66]). Enqueued only when this turn newly
+    # recorded the request, so a repeat collaborates with the fan-out's collapse
+    # rather than re-announcing.
+    if tool_context.notify_offline_demo:
+        await _queue_offline_demo_notification(settings, lead_id)
+
     # The lead has engaged, and the turn may have recorded facts or moved its status.
     # Best-effort by design: §14 forbids a CRM problem breaking the conversation, and
     # `queue_crm_sync` swallows its own failures.
@@ -457,6 +464,30 @@ async def _queue_booking_notification(settings: Settings, booking_id: uuid.UUID)
     except Exception as exc:  # noqa: BLE001 - a booking is not worth losing over this
         logger.warning(
             "booking_notification_enqueue_failed", booking_id=str(booking_id), error=str(exc)
+        )
+
+
+async def _queue_offline_demo_notification(settings: Settings, lead_id: uuid.UUID) -> None:
+    """Hand a new offline demo request to the notification task ([D66]).
+
+    Same failure contract as a booking notification: the request is recorded and
+    committed, and failing the turn here would re-run the whole conversation —
+    including a second reply to the customer — to fix a notification.
+    """
+    try:
+        await build_queue_provider(settings).enqueue(
+            TaskRequest(
+                task_type=TaskType.NOTIFY_OFFLINE_DEMO,
+                # Deterministic per lead, so a redelivered turn collapses into one
+                # task; a repeat request collaborates with the fan-out's own
+                # collapse rather than re-announcing.
+                task_id=f"notify-offline-demo-{lead_id}",
+                payload={"lead_id": str(lead_id)},
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - a request is not worth losing over this
+        logger.warning(
+            "offline_demo_notification_enqueue_failed", lead_id=str(lead_id), error=str(exc)
         )
 
 

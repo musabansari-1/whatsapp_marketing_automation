@@ -11,6 +11,7 @@ from app.worker.handlers.campaign_send import send_campaign_message
 from app.worker.handlers.conversation import process_conversation_turn
 from app.worker.handlers.crm_sync import queue_crm_sync, sync_crm_contact
 from app.worker.handlers.knowledge_ingest import ingest_knowledge_document
+from app.worker.handlers.offline_demo import notify_offline_demo
 from app.worker.handlers.sweeps import (
     sweep_expired_sessions,
     sweep_rate_limit_counters,
@@ -36,6 +37,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
         TaskType.INGEST_KNOWLEDGE_DOCUMENT: ingest_knowledge_document,
         TaskType.PROCESS_CONVERSATION_TURN: process_conversation_turn,
         TaskType.NOTIFY_BOOKING: notify_booking,
+        TaskType.NOTIFY_OFFLINE_DEMO: notify_offline_demo,
         TaskType.SYNC_CRM_CONTACT: sync_crm_contact,
         TaskType.SWEEP_UNANSWERED_MESSAGES: sweep_unanswered_messages,
         TaskType.SWEEP_RATE_LIMIT_COUNTERS: sweep_rate_limit_counters,
@@ -50,6 +52,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
 __all__ = [
     "ingest_knowledge_document",
     "notify_booking",
+    "notify_offline_demo",
     "queue_crm_sync",
     "process_conversation_turn",
     "process_inbound_webhook",

@@ -39,6 +39,10 @@ class TaskType(StrEnum):
     # because §12 says a confirmed booking stays confirmed while a failed
     # notification retries — so notifying must never be able to undo or delay it.
     NOTIFY_BOOKING = "notify_booking"
+    # Telling the team about an offline demo request ([D66]). Its own task for the
+    # same reason as NOTIFY_BOOKING, but team-only: the customer was already told
+    # in the turn's reply, and a second message would double-text them.
+    NOTIFY_OFFLINE_DEMO = "notify_offline_demo"
     INGEST_KNOWLEDGE_DOCUMENT = "ingest_knowledge_document"
     GENERATE_EMBEDDINGS = "generate_embeddings"
     SYNC_CRM_CONTACT = "sync_crm_contact"
