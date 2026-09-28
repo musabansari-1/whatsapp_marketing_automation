@@ -149,6 +149,14 @@ class TestTheShippedCatalog:
         raw = json.loads(SHIPPED_CATALOG.read_text(encoding="utf-8"))
         assert all("is_active" not in product for product in raw["products"])
 
+    def test_booking_products_hold_their_confirmed_meeting_links(self) -> None:
+        """Option 2 ([D65]): owner-confirmed permanent rooms, one per product, and
+        none on the registration-only product that books nothing."""
+        products = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}
+        assert products["sustainx"].meeting_url == "https://meet.google.com/tgh-myvg-gco"
+        assert products["academicae"].meeting_url == "https://meet.google.com/gyr-qhay-mzb"
+        assert products["life-herba"].meeting_url is None
+
 
 class TestMistakesAreRefused:
     def test_activation_is_not_configuration(self) -> None:

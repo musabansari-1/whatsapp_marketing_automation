@@ -8,6 +8,7 @@
       "whatsapp_phone_number_id": "1334068749786023",
       "whatsapp_business_account_id": "1055996760528305",
       "google_calendar_id": "947d2eaa29ce474e8e05bf391018bccd4327900948effa367c1b319200339af8@group.calendar.google.com",
+      "meeting_url": "https://meet.google.com/gyr-qhay-mzb",
       "audience_column_schema": [
         { "source": "School Name", "field": "name", "required": true },
         { "source": "Phone", "field": "phone", "required": true },
@@ -45,6 +46,7 @@
       "whatsapp_phone_number_id": "1355444384311332",
       "whatsapp_business_account_id": "1107203798409996",
       "google_calendar_id": "15ab1950b41e20b63b6bd2ef1aad5506808ac502c9722c11267733d882e101b1@group.calendar.google.com",
+      "meeting_url": "https://meet.google.com/tgh-myvg-gco",
       "audience_column_schema": [
         { "source": "Contact Name", "field": "name", "required": true },
         { "source": "Phone", "field": "phone", "required": true },
