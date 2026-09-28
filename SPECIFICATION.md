@@ -983,6 +983,9 @@ Send WhatsApp confirmation
 
 Rules:
 - Never invent availability.
+- Offer the whole of the first day with availability, opening to closing — never
+  the first few chronological slots, which hide the afternoon. A named date shows
+  that date's whole day; only an explicit multi-day window can name more days.
 - Respect timezone.
 - Recheck immediately before booking.
 - Handle race conditions.

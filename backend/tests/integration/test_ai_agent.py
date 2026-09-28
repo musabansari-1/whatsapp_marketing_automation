@@ -308,18 +308,52 @@ class TestAvailableSlots:
         offered = [slot["start_time"] for slot in result.data["slots"]]
         assert all("T04:30" not in start for start in offered)  # 10:00 IST
 
-    def test_the_number_offered_is_capped(self) -> None:
-        """A wall of times is not a choice on WhatsApp."""
+    def test_the_default_offering_is_the_whole_first_day(self) -> None:
+        """Start to end, not the first few chronological slots — capping the default
+        hid every afternoon behind the mornings."""
         lead_id, conversation_id = seed()
 
         result = run_tool(
             "get_available_slots",
-            {"limit": 50},
+            {},
             lead_id=lead_id,
             conversation_id=conversation_id,
         )
 
-        assert len(result.data["slots"]) <= ai_tools.MAX_OFFERED_SLOTS
+        assert result.ok
+        offered = [slot["start_time"] for slot in result.data["slots"]]
+        # The fixture policy runs 10:00–18:00 at 30 minutes: sixteen slots, opening
+        # to closing (10:00 IST is 04:30 UTC).
+        assert len(offered) == 16
+        assert offered[0].endswith("T04:30:00+00:00")
+        assert offered[-1].endswith("T12:00:00+00:00")
+
+    def test_an_explicit_limit_still_caps(self) -> None:
+        lead_id, conversation_id = seed()
+
+        result = run_tool(
+            "get_available_slots",
+            {"limit": 3},
+            lead_id=lead_id,
+            conversation_id=conversation_id,
+        )
+
+        assert len(result.data["slots"]) == 3
+
+    def test_an_explicit_wide_request_binds_at_the_ceiling(self) -> None:
+        """Only an explicit multi-day window with no limit can approach this; the
+        default single-day offering never does. A turn with hundreds of slots
+        would be unusable and unreadable."""
+        lead_id, conversation_id = seed()
+
+        result = run_tool(
+            "get_available_slots",
+            {"days": 14},
+            lead_id=lead_id,
+            conversation_id=conversation_id,
+        )
+
+        assert len(result.data["slots"]) == ai_tools.MAX_SLOT_RESULTS
 
     def test_a_calendar_failure_is_a_tool_failure_not_a_lost_turn(self) -> None:
         """The model can say it will follow up, which beats failing the whole reply —

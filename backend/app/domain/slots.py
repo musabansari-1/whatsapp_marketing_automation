@@ -184,22 +184,80 @@ def available_slots(
         if day.weekday() not in policy.working_days:
             continue
 
-        for candidate in _day_candidates(day, policy, step, duration):
-            if candidate.start <= moment:
-                # Already past, or starting this instant. Offering it would produce a
-                # booking nobody can attend.
-                continue
-            if any(candidate.overlaps(interval) for interval in padded):
-                continue
+        slots.extend(_day_slots(policy, padded, moment, day, step, duration))
+        if limit is not None and len(slots) >= limit:
+            return slots[:limit]
 
-            slots.append(
-                TimeInterval(
-                    start=candidate.start.astimezone(UTC), end=candidate.end.astimezone(UTC)
-                )
+    return slots
+
+
+def first_day_with_slots(
+    *,
+    policy: SlotPolicy,
+    busy: list[TimeInterval],
+    now: datetime | None = None,
+    start_day: date | None = None,
+    window_days: int | None = None,
+) -> list[TimeInterval]:
+    """Every slot of the first day that has any, start to end.
+
+    The default offering: a whole day the customer can choose across, rather than
+    the first few chronological slots (which cluster in the morning and hide the
+    afternoon). A fully booked first day spills to the next day with availability
+    instead of returning nothing; an empty window returns nothing, and the caller
+    widens it explicitly.
+    """
+    moment = (now or datetime.now(UTC)).astimezone(policy.zone)
+    padded = [_pad(interval, policy.buffer_minutes) for interval in busy]
+
+    duration = timedelta(minutes=policy.duration_minutes)
+    step = duration
+
+    first_day = earliest_bookable_date(policy, moment)
+    start = start_day or first_day
+    if start < first_day:
+        start = first_day
+
+    window = window_days if window_days is not None else _resolve_search_days(policy, None)
+    last_allowed = _last_bookable_date(policy, moment.date())
+
+    for day_offset in range(window):
+        day = start + timedelta(days=day_offset)
+        if last_allowed is not None and day > last_allowed:
+            break
+        if day.weekday() not in policy.working_days:
+            continue
+
+        day_slots = _day_slots(policy, padded, moment, day, step, duration)
+        if day_slots:
+            return day_slots
+
+    return []
+
+
+def _day_slots(
+    policy: SlotPolicy,
+    padded_busy: list[TimeInterval],
+    moment: datetime,
+    day: date,
+    step: timedelta,
+    duration: timedelta,
+) -> list[TimeInterval]:
+    """One day's offerable slots, earliest first, in UTC like the rest."""
+    slots: list[TimeInterval] = []
+    for candidate in _day_candidates(day, policy, step, duration):
+        if candidate.start <= moment:
+            # Already past, or starting this instant. Offering it would produce a
+            # booking nobody can attend.
+            continue
+        if any(candidate.overlaps(interval) for interval in padded_busy):
+            continue
+
+        slots.append(
+            TimeInterval(
+                start=candidate.start.astimezone(UTC), end=candidate.end.astimezone(UTC)
             )
-            if limit is not None and len(slots) >= limit:
-                return slots
-
+        )
     return slots
 
 
@@ -319,6 +377,7 @@ __all__ = [
     "SlotPolicySettings",
     "available_slots",
     "earliest_bookable_date",
+    "first_day_with_slots",
     "is_slot_available",
     "parse_clock_time",
     "parse_working_days",

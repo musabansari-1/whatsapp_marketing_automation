@@ -17,6 +17,7 @@ from app.domain.slots import (
     SlotPolicy,
     SlotPolicyError,
     available_slots,
+    first_day_with_slots,
     is_slot_available,
     parse_clock_time,
     parse_working_days,
@@ -228,6 +229,51 @@ class TestAvailability:
         assert slots[0].start.astimezone(IST).hour == 10
         # 10:00 IST is 04:30 UTC, which is what makes this worth asserting.
         assert slots[0].start.hour == 4
+
+
+class TestFirstDayWithSlots:
+    """The default offering: one whole day, opening to closing, so afternoons are
+    choosable instead of being cut off by an earliest-first cap."""
+
+    def test_returns_the_whole_first_day(self) -> None:
+        slots = first_day_with_slots(policy=a_policy(), busy=[], now=WEDNESDAY_9AM)
+
+        starts = [slot.start.astimezone(IST) for slot in slots]
+        assert len(slots) == 16
+        assert starts[0] == local(2026, 9, 2, 10, 0)
+        assert starts[-1] == local(2026, 9, 2, 17, 30)
+
+    def test_matches_what_a_single_day_search_returns(self) -> None:
+        """Same content as asking for that date outright — one code path, not two."""
+        policy = a_policy()
+        day = WEDNESDAY_9AM.date()
+
+        assert first_day_with_slots(policy=policy, busy=[], now=WEDNESDAY_9AM) == available_slots(
+            policy=policy, busy=[], now=WEDNESDAY_9AM, search_from=day, search_days=1
+        )
+
+    def test_a_fully_booked_first_day_spills_to_the_next_with_availability(self) -> None:
+        policy = a_policy(buffer=0)
+        all_day = busy(local(2026, 9, 2, 10, 0), 8 * 60)
+
+        slots = first_day_with_slots(policy=policy, busy=[all_day], now=WEDNESDAY_9AM)
+
+        assert slots
+        assert {slot.start.astimezone(IST).date() for slot in slots} == {
+            local(2026, 9, 3, 10).date()
+        }
+        assert len(slots) == 16
+
+    def test_an_exhausted_window_returns_nothing(self) -> None:
+        policy = a_policy(buffer=0)
+        all_day = busy(local(2026, 9, 2, 10, 0), 8 * 60)
+
+        assert (
+            first_day_with_slots(
+                policy=policy, busy=[all_day], now=WEDNESDAY_9AM, window_days=1
+            )
+            == []
+        )
 
 
 class TestSlotRecheck:

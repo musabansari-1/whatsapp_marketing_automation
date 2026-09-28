@@ -41,6 +41,7 @@ from app.domain.slots import (
     SlotPolicyError,
     available_slots,
     earliest_bookable_date,
+    first_day_with_slots,
     is_slot_available,
 )
 from app.integrations.calendar import (
@@ -55,9 +56,11 @@ from app.persistence.repositories import conversations as conversation_repo
 
 logger = get_logger(__name__)
 
-# How many slots a customer is offered. More than a handful read as a wall of text on
-# WhatsApp and stop being a choice.
-MAX_OFFERED_SLOTS = 5
+# Safety ceiling for explicit wide slot requests. Defaults never approach it: the
+# default offering is one day's slots (a dozen at most), and only an explicit
+# `days` window with no `limit` can reach this — where silently truncating would
+# hide availability, but an unbounded turn would be worse.
+MAX_SLOT_RESULTS = 100
 
 #: What a model is told when the calendar cannot answer — the failure this text exists
 #: for is a model promising to "email the slots" or "check again when the system is
@@ -205,10 +208,13 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                 ToolSpec(
                     name=AuthorizedTool.GET_AVAILABLE_SLOTS,
                     description=(
-                        "Get demo times that are actually free. Only offer times this returns. "
+                        "Get demo times that are actually free: every slot of the first "
+                        "day with availability, from opening to closing. Only offer times "
+                        "this returns. "
                         "Never invent a time or promise one you have not checked. "
-                        "When the customer names a later date, pass from_date (YYYY-MM-DD) so the "
-                        "search window covers it — do not invent availability outside this result. "
+                        "When the customer names a later date, pass from_date (YYYY-MM-DD) "
+                        "to see that date's whole day — do not invent availability outside "
+                        "this result. "
                         "If the call fails, the calendar cannot be read: do not offer a time, "
                         "do not promise to check again later, and do not promise to email times "
                         "— say a colleague will follow up to arrange a time."
@@ -219,21 +225,26 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                             "limit": {
                                 "type": "integer",
                                 "description": (
-                                    f"How many slots to return, at most {MAX_OFFERED_SLOTS}."
+                                    "Optional maximum slots to return "
+                                    f"(at most {MAX_SLOT_RESULTS}). By default every "
+                                    "slot of the day is returned."
                                 ),
                             },
                             "from_date": {
                                 "type": "string",
                                 "description": (
-                                    "Optional local calendar date (YYYY-MM-DD) to start searching. "
-                                    "Earlier than the product's minimum lead is clamped forward."
+                                    "Optional local calendar date (YYYY-MM-DD) whose whole day "
+                                    "to show. Earlier than the product's minimum lead is "
+                                    "clamped forward."
                                 ),
                             },
                             "days": {
                                 "type": "integer",
                                 "description": (
                                     "Optional number of calendar days to search from from_date "
-                                    f"(default {DEFAULT_SLOT_SEARCH_DAYS}, max {MAX_SLOT_SEARCH_DAYS})."
+                                    f"(default {DEFAULT_SLOT_SEARCH_DAYS}, max {MAX_SLOT_SEARCH_DAYS}). "
+                                    "Only needed for a multi-day view; a single date needs "
+                                    "no days value."
                                 ),
                             },
                         },
@@ -403,13 +414,20 @@ async def _get_available_slots(arguments: dict[str, Any], context: ToolContext) 
     team's actual diary rather than a guess. §12's sequence starts here: retrieve real
     slots, then show those slots, and never invent one.
 
+    By default the whole of the first day with availability is returned, opening to
+    closing — mornings never hide the afternoon. A named date shows that date's whole
+    day; an explicit multi-day window is the only path that can name many days, and
+    only it can approach the safety ceiling.
+
     The search window is always finite — even when the product horizon is unbounded —
     so this never tries to materialise an infinite list of slots.
     """
     policy, calendar = _booking_capability(context)
-    limit = _positive_int(
-        arguments.get("limit"), default=MAX_OFFERED_SLOTS, maximum=MAX_OFFERED_SLOTS
-    )
+    limit = None
+    if arguments.get("limit") is not None:
+        limit = _positive_int(
+            arguments.get("limit"), default=MAX_SLOT_RESULTS, maximum=MAX_SLOT_RESULTS
+        )
     now = context.now or datetime.now(UTC)
     search_from = _optional_date(arguments.get("from_date"))
     search_days = None
@@ -425,14 +443,19 @@ async def _get_available_slots(arguments: dict[str, Any], context: ToolContext) 
             policy, now=now, search_from=search_from, search_days=search_days
         )
         busy = await calendar.list_busy_intervals(window)
-        slots = available_slots(
-            policy=policy,
-            busy=busy,
-            now=now,
-            limit=limit,
-            search_from=search_from,
-            search_days=search_days,
-        )
+        if search_from is None and search_days is None:
+            slots = first_day_with_slots(policy=policy, busy=busy, now=now)
+            if limit is not None:
+                slots = slots[:limit]
+        else:
+            slots = available_slots(
+                policy=policy,
+                busy=busy,
+                now=now,
+                limit=limit if limit is not None else MAX_SLOT_RESULTS,
+                search_from=search_from,
+                search_days=search_days,
+            )
     except SlotPolicyError as exc:
         raise ToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - any calendar failure is the same to the model
@@ -756,7 +779,7 @@ def _days(count: int) -> timedelta:
 
 __all__ = [
     "CALENDAR_UNAVAILABLE_GUIDANCE",
-    "MAX_OFFERED_SLOTS",
+    "MAX_SLOT_RESULTS",
     "ToolContext",
     "ToolError",
     "ToolResult",
