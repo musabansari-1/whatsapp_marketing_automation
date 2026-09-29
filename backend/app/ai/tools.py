@@ -150,7 +150,9 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
             name=AuthorizedTool.GET_LEAD,
             description=(
                 "Get what is known about the customer you are talking to, including "
-                "information already collected earlier in this conversation."
+                "information already collected earlier in this conversation. Customer "
+                "basics are already listed under Customer record in your instructions "
+                "— call this only if you need more than what is listed there."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
         ),

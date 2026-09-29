@@ -519,7 +519,7 @@ One customer turn runs:
 ```text
 retrieve knowledge (§11)
  ↓
-assemble: system prompt + fenced knowledge + recent transcript
+assemble: system prompt + fenced knowledge + customer record + recent transcript
  ↓
 ask the model, offering the six authorized tools
  ↓

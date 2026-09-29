@@ -280,6 +280,61 @@ def with_audience_segment_context(
     return f"{prompt}\n\n{block}" if prompt else block
 
 
+def with_lead_context(
+    system_prompt: str,
+    *,
+    full_name: str | None,
+    phone_e164: str,
+    email: str | None,
+    company: str | None,
+    designation: str | None,
+    city: str | None,
+    status: str,
+    known_facts: dict[str, object],
+) -> str:
+    """Append what is already known about this customer.
+
+    The backend loaded the lead before the turn, so handing the model its summary
+    saves the `get_lead` round most turns spend just to learn a name and an email.
+    The tool stays for anything beyond what is listed here. Mirrors the tool's own
+    shape (name/email/company/designation/city/status/known facts) so the two
+    sources can never disagree about what "known" means. Empty values are omitted;
+    facts render sorted so the block is stable turn to turn.
+    """
+    lines = ["## Customer record (already known)", ""]
+    name = (full_name or "").strip()
+    if name:
+        lines.append(f"- Name: {name}")
+    lines.append(f"- Phone: {phone_e164}")
+    email_address = (email or "").strip()
+    if email_address:
+        lines.append(f"- Email: {email_address}")
+    employer = (company or "").strip()
+    if employer:
+        lines.append(f"- Company: {employer}")
+    role = (designation or "").strip()
+    if role:
+        lines.append(f"- Designation: {role}")
+    town = (city or "").strip()
+    if town:
+        lines.append(f"- City: {town}")
+    lines.append(f"- Status: {status}")
+    facts = {key: value for key, value in known_facts.items() if value is not None}
+    if facts:
+        rendered = ", ".join(f"{key}={value}" for key, value in sorted(facts.items()))
+        lines.append(f"- Known facts: {rendered}")
+    lines.extend(
+        [
+            "",
+            "These details are already known — do not re-ask for them. Call get_lead",
+            "only if you need more than what is listed here.",
+        ]
+    )
+    prompt = system_prompt.rstrip()
+    block = "\n".join(lines)
+    return f"{prompt}\n\n{block}" if prompt else block
+
+
 __all__ = [
     "AIConfigurationError",
     "ConfigurationRow",
@@ -287,4 +342,5 @@ __all__ = [
     "ResolvedAIConfig",
     "resolve",
     "with_audience_segment_context",
+    "with_lead_context",
 ]

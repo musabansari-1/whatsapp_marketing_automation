@@ -25,6 +25,7 @@ from app.domain.ai_config import (
     PlatformDefaults,
     resolve,
     with_audience_segment_context,
+    with_lead_context,
 )
 from app.domain.qualification import QualificationMode
 
@@ -185,6 +186,60 @@ class TestAudienceSegmentContext:
     def test_omits_block_when_there_is_no_segment(self) -> None:
         assert with_audience_segment_context("Base.", segment_display_name=None) == "Base."
         assert with_audience_segment_context("Base.", segment_display_name="  ") == "Base."
+
+
+class TestLeadContext:
+    """The lead summary riding along saves the `get_lead` round most turns spend just
+    to learn a name and an email. Same shape as the tool's own record, so the two
+    sources cannot disagree about what "known" means."""
+
+    def _lead(self, **overrides: Any) -> Any:
+        fields: dict[str, Any] = {
+            "full_name": "Asha Rao",
+            "phone_e164": "+919876543210",
+            "email": "asha@example.com",
+            "company": "Northwind",
+            "designation": "Principal",
+            "city": "Pune",
+            "status": "QUALIFIED",
+            "known_facts": {"interested": True, "demo_intent": True},
+        }
+        fields.update(overrides)
+        return fields
+
+    def test_appends_every_known_detail(self) -> None:
+        text = with_lead_context("Base prompt.", **self._lead())
+
+        assert text.startswith("Base prompt.")
+        for expected in (
+            "- Name: Asha Rao",
+            "- Phone: +919876543210",
+            "- Email: asha@example.com",
+            "- Company: Northwind",
+            "- Status: QUALIFIED",
+            "- Known facts: demo_intent=True, interested=True",
+            "Call get_lead",
+        ):
+            assert expected in text, expected
+
+    def test_omits_empty_values_but_keeps_phone_and_status(self) -> None:
+        text = with_lead_context(
+            "Base.",
+            **self._lead(
+                full_name="  ",
+                email=None,
+                company=None,
+                designation=None,
+                city=None,
+                known_facts={},
+            ),
+        )
+
+        assert "- Phone: +919876543210" in text
+        assert "- Status: QUALIFIED" in text
+        assert "Name:" not in text
+        assert "Email:" not in text
+        assert "Known facts:" not in text
 
     def test_the_life_herba_shape_differs_only_where_stated(self) -> None:
         product = Row(

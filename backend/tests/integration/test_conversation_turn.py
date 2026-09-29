@@ -299,7 +299,12 @@ class TestHappyPath:
 
         run_turn(message_id)
 
-        assert llm.requests[0].messages[0].content == product_prompt()
+        content = llm.requests[0].messages[0].content
+        assert content.startswith(product_prompt())
+        # The lead summary rides along so most turns never spend a `get_lead`
+        # round learning a name and an email.
+        assert "## Customer record (already known)" in content
+        assert "Call get_lead" in content
 
     def test_a_product_without_policy_does_not_answer(
         self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]

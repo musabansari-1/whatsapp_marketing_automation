@@ -91,6 +91,22 @@ class TestOfflineDemoHandoff:
             assert "never say a demo is booked" in prompt, slug
             assert "do not offer slots" in prompt, slug
 
+
+class TestLeadContextAndBatching:
+    """One fewer model round per turn: the lead summary rides in the prompt, and
+    independent tools go out together."""
+
+    def test_both_booking_products_read_the_customer_record_first(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "Customer record" in prompt, slug
+            assert "call get_lead only" in prompt, slug
+
+    def test_both_booking_products_batch_independent_tools(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "in the same round instead of one after the other" in prompt, slug
+
     def test_life_herba_needs_no_calendar_guidance(self) -> None:
         """It converts by external registration: booking tools are not offered, so the
         rule belongs nowhere near its prompts."""

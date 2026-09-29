@@ -49,6 +49,7 @@ from app.domain.ai_config import (
     AIConfigurationError,
     ResolvedAIConfig,
     with_audience_segment_context,
+    with_lead_context,
 )
 from app.domain.conversation import LeadStateError, can_transition_conversation
 from app.domain.conversion import uses_calendar_booking, with_conversion_guidance
@@ -280,6 +281,20 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             system_prompt = with_audience_segment_context(
                 system_prompt,
                 segment_display_name=None if segment is None else segment.display_name,
+            )
+            # The lead was loaded before the turn, so its summary rides along and
+            # most turns never spend a `get_lead` round learning a name and an
+            # email. The tool stays for anything beyond what is listed here.
+            system_prompt = with_lead_context(
+                system_prompt,
+                full_name=lead.full_name,
+                phone_e164=lead.phone_e164,
+                email=lead.email,
+                company=lead.company,
+                designation=lead.designation,
+                city=lead.city,
+                status=lead.status.value,
+                known_facts=dict(lead.qualification_data or {}),
             )
             tool_context = ai_tools.ToolContext(
                 session=session,
