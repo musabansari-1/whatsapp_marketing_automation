@@ -49,14 +49,22 @@ schedule() {
     action="update"
   fi
 
+  # `create` and `update` take different flag names for headers (`--headers` vs
+  # `--update-headers`); the `=` form works for both. Passing create-style flags
+  # to update aborts the whole script before the remaining jobs are scheduled.
+  local headers_flag="--headers=Content-Type=application/json"
+  if [ "$action" = "update" ]; then
+    headers_flag="--update-headers=Content-Type=application/json"
+  fi
+
   gcloud scheduler jobs "$action" http "$name" \
     --location "$REGION" --project "$PROJECT_ID" \
     --schedule "$cron" \
     --time-zone "$SCHEDULER_TIMEZONE" \
     --uri "$TASK_ENDPOINT" \
     --http-method POST \
-    --headers "Content-Type=application/json" \
-    --message-body "$body" \
+    "$headers_flag" \
+    --message-body="$body" \
     --oidc-service-account-email "$INVOKER_SA" \
     --oidc-token-audience "$SWEEP_AUDIENCE" \
     --description "$description" \
