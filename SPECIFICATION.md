@@ -419,6 +419,11 @@ Webhook handling:
 
 Webhooks must persist/queue work and return quickly.
 
+Only messages carrying text are queued for a conversation turn. A sticker, photo,
+reaction or other content without text is stored for the transcript but never
+answered: it carries nothing to reply to, and a full model turn would burn context
+and quota to talk to it — then talk, which is worse.
+
 Respect eligibility, opt-outs, invalid numbers and applicable provider messaging rules.
 
 Automated tests must never send real WhatsApp messages.

@@ -161,6 +161,20 @@ def inbound(
     }
 
 
+def inbound_media(
+    message: dict[str, Any],
+    message_id: str = "wamid.m1",
+    sender: str = "919876543210",
+) -> dict[str, Any]:
+    """A non-text delivery: sticker, photo, reaction. Same envelope as `inbound`,
+    but the message carries no text for the parser to read."""
+    payload = inbound("placeholder", message_id="placeholder", sender=sender)
+    embedded = payload["entry"][0]["changes"][0]["value"]["messages"][0]
+    embedded.clear()
+    embedded.update({"id": message_id, "from": sender, "timestamp": "1788000000", **message})
+    return payload
+
+
 def status_update(message_id: str, status: str) -> dict[str, Any]:
     return {
         "object": "whatsapp_business_account",
@@ -699,6 +713,55 @@ class TestConversationTurnQueueing:
             return len((await session.execute(select(Message))).scalars().all())
 
         assert run_db(messages) == 1
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            {"type": "sticker", "sticker": {"mime_type": "image/webp", "id": "s1"}},
+            {"type": "image", "image": {"mime_type": "image/jpeg", "id": "i1"}},
+            {
+                "type": "reaction",
+                "reaction": {"message_id": "wamid.0", "emoji": "\U0001f44d"},
+            },
+        ],
+        ids=["sticker", "photo", "reaction"],
+    )
+    def test_a_message_without_text_is_stored_but_queues_no_turn(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch, message: dict[str, Any]
+    ) -> None:
+        """A sticker, photo or reaction carries nothing to answer. Storing it keeps
+        the transcript complete, but a full model turn would burn context and quota
+        to reply to it — then reply, which is worse."""
+        queued = capture_queue(monkeypatch)
+
+        post_webhook(webhook_client, inbound_media(message, message_id="wamid.m1"))
+        process_all()
+
+        assert queued == []
+
+        async def bodies(session: AsyncSession) -> list[str | None]:
+            rows = (await session.execute(select(Message.body))).scalars().all()
+            return list(rows)
+
+        assert run_db(bodies) == [None]
+
+    def test_a_text_beside_a_sticker_still_queues_its_turn(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gate is per message, not per delivery: Meta batches, and the text
+        half of a mixed delivery still needs its reply."""
+        queued = capture_queue(monkeypatch)
+
+        post_webhook(webhook_client, inbound("Hello", message_id="wamid.a"))
+        process_all()
+        post_webhook(
+            webhook_client,
+            inbound_media({"type": "sticker", "sticker": {"id": "s1"}}, message_id="wamid.b"),
+        )
+        process_all()
+
+        assert len(queued) == 1
+        assert len({task.task_id for task in queued}) == 1
 
 
 def capture_queue(monkeypatch: pytest.MonkeyPatch) -> list[TaskRequest]:

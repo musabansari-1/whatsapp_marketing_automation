@@ -199,6 +199,19 @@ async def _apply_inbound(
             # to the AI would reply to someone who just asked us to stop.
             continue
 
+        if not event.text:
+            # Stored above for the transcript, but never queued: a sticker, photo,
+            # reaction or other content without text carries nothing to answer, and
+            # a full model turn would burn context and quota to reply to it — then
+            # reply, which is worse. The row stays so the transcript is complete.
+            logger.info(
+                "inbound_message_without_text_skipped",
+                message_type=event.message_type,
+                conversation_id=str(conversation.id),
+                provider_message_id=event.provider_message_id,
+            )
+            continue
+
         needs_reply.append(str(message.id))
 
     if unroutable:
