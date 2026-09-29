@@ -1,7 +1,7 @@
 # Local development stack.
 #
 # Contains the API, the worker and a pgvector-enabled PostgreSQL. The frontend is not
-# here: it runs via `npm run dev` and deploys to Vercel ([D12]).
+# here: it runs via `npm run dev` and deploys to Cloudflare Workers via OpenNext ([D12]).
 #
 # Cloud Tasks has no local emulator, so the queue provider defaults to the in-process
 # inline implementation here. Real Cloud Tasks arrives in Phase 7.

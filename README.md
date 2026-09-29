@@ -691,7 +691,7 @@ than silently do nothing.
 ## Deployment target
 
 ```text
-Browser → Vercel (Next.js + BFF proxy) → Cloud Run API → PostgreSQL/Neon
+Browser → Cloudflare Workers (Next.js + BFF proxy) → Cloud Run API → PostgreSQL/Neon
                                          Cloud Run API → Cloud Tasks → Cloud Run Worker
 Meta webhook ─────────────────────────→ Cloud Run API   (bypasses the BFF)
 ```

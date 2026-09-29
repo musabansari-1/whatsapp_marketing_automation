@@ -253,5 +253,7 @@ Next:
   ./deploy/schedule-sweeps.sh    the sweeps need the worker URL, so they come after this
   ./deploy/smoke-test.sh         verify
 
-Vercel needs INTERNAL_API_BASE_URL=$API_URL so the BFF proxy can reach the API ([D13]).
+The dashboard (Cloudflare Workers) needs INTERNAL_API_BASE_URL=$API_URL as a Worker
+secret so the BFF proxy can reach the API ([D13]): from frontend/,
+echo "$API_URL" | npx wrangler secret put INTERNAL_API_BASE_URL
 EOF

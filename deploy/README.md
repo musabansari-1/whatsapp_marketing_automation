@@ -2,7 +2,7 @@
 
 Everything needed to run this platform, as scripts and procedure. **Nothing here has
 been executed.** Running it requires a Google Cloud project, a Neon database and a
-Vercel account, and §23's instruction is explicit: *do not send real messages or deploy
+Cloudflare account, and §23's instruction is explicit: *do not send real messages or deploy
 production until explicitly approved.*
 
 The scripts are idempotent. A run interrupted by a missing permission can be repeated,
@@ -27,8 +27,9 @@ STAGING_READINESS.md   what must exist before a real-provider deployment
 STAGING_E2E_PLAN.md    the 26 scenarios to run once it does
 ```
 
-Vercel is separate and simpler: connect the repository, set `INTERNAL_API_BASE_URL` to
-the Cloud Run API URL, deploy. The frontend is **not** deployed to Cloud Run ([D12]).
+Cloudflare Workers is separate: from `frontend/`, `npm run deploy:cf` (OpenNext
+adapter), with `INTERNAL_API_BASE_URL` set as a Worker *secret* — never a var —
+pointing at the Cloud Run API URL. The frontend is **not** deployed to Cloud Run ([D12]).
 
 ## Two different first deployments
 
@@ -59,7 +60,7 @@ reaches a real person.
 | Artifact Registry | Container images | `setup-infrastructure.sh` |
 | Service accounts ×3 | API, worker, invoker | `setup-infrastructure.sh` |
 | Neon PostgreSQL + pgvector | Source of truth (§15) | **Manual** — outside GCP |
-| Vercel project | Frontend and BFF proxy ([D12], [D13]) | **Manual** |
+| Cloudflare Workers project (`wa-web`) | Frontend and BFF proxy ([D12], [D13]) | **Manual** |
 
 **Three service accounts, not one.** The API is publicly reachable — §19 is explicit
 that the webhook path keeps it that way — so it should not carry the worker's ability to

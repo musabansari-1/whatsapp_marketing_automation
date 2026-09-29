@@ -1843,7 +1843,7 @@ The browser communicates with the application through the frontend origin only. 
 ```text
 Browser
   ↓
-Vercel / Next.js
+Cloudflare Workers / Next.js
   ↓
 Next.js server-side API proxy
   ↓
@@ -1997,7 +1997,7 @@ merge.
 ```text
 Browser
   ↓
-Vercel / Next.js
+Cloudflare Workers / Next.js
   ↓
 Next.js server-side API proxy (BFF)
   ↓
@@ -2024,7 +2024,7 @@ Worker
 ```
 
 Hosting:
-- Next.js frontend → Vercel
+- Next.js frontend → Cloudflare Workers (OpenNext adapter)
 - FastAPI API → Google Cloud Run
 - Worker → Google Cloud Run
 - Background jobs → Google Cloud Tasks
@@ -2065,7 +2065,7 @@ deliberate act. The smoke test prints the provider configuration and warns on ea
 that is real.
 
 The runbook is `deploy/README.md`. **Nothing in `deploy/` has been executed** — that
-needs a Google Cloud project, a Neon database and a Vercel account, and production
+needs a Google Cloud project, a Neon database and a Cloudflare account, and production
 deployment is gated on explicit approval.
 
 ## 24. Environment Configuration
@@ -2297,7 +2297,7 @@ Unless explicitly changed:
 | D9 | AI extracts structured information; backend applies explicit qualification rules. Required fields configurable. No lead scoring in V1. |
 | D10 | OpenRouter gateway, model configurable via `OPENROUTER_MODEL`, low-cost capable model for V1, fake LLM in tests, approved fallback on insufficient retrieval. |
 | D11 | CRM dedupe identity: normalized WhatsApp phone primary, email secondary. Async, retryable. CRM failure never breaks core flows. |
-| D12 | Next.js → Vercel. API and worker → Cloud Run. Frontend not on Cloud Run in V1. |
+| D12 | Next.js → Vercel. API and worker → Cloud Run. Frontend not on Cloud Run in V1. Hosting since moved to Cloudflare Workers (OpenNext adapter, 2026-09-29): the constraints stand — same-origin BFF, never Cloud Run — only the host changed. |
 
 ### Architectural items resolved 2026-08-17 (second pass)
 

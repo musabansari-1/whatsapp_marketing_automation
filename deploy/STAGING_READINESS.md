@@ -29,7 +29,7 @@ goes, and how to prove it arrived.
 | ☐ | Google Cloud project — **staging separate from production** | Us/client | `deploy/config.sh` |
 | ☐ | Billing on that project | Client | Cloud Run, Tasks, Scheduler, Secret Manager all bill |
 | ☐ | Neon PostgreSQL + `CREATE EXTENSION vector` | Us | Connection string → secret `database-url` |
-| ☐ | Vercel project | Us | `INTERNAL_API_BASE_URL` → the Cloud Run API URL |
+| ☐ | Cloudflare Workers project (`wa-web`) | Us | `INTERNAL_API_BASE_URL` as a Worker secret → the Cloud Run API URL |
 | ☐ | Test WhatsApp numbers we control | Us | The only numbers any real staging send may target |
 
 ### 1.2 Shared secrets and platform settings

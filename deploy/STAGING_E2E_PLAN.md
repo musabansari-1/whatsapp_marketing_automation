@@ -40,11 +40,11 @@ Run these against the fake-provider staging deployment, before any credential ex
 They prove the deployment itself, not the integrations.
 
 ### 1. Admin login
-Bootstrap the first ADMIN with the CLI command; log in through the Vercel frontend.
+Bootstrap the first ADMIN with the CLI command; log in through the deployed frontend.
 - **Expect:** session cookie set, `HttpOnly`, `Secure`, `SameSite=Lax`, **no `Domain`
   attribute** ([D13] — the BFF depends on this).
 - **Also:** the browser makes no request to the Cloud Run origin. Check the network tab;
-  every call goes to the Vercel origin.
+  every call goes to the frontend origin.
 - **Negative:** an unauthenticated dashboard call returns 401, not a redirect loop.
 
 ### 2. Upload real Excel audience
