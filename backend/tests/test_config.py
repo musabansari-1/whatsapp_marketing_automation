@@ -170,6 +170,18 @@ class TestSlotPolicy:
         assert settings.demo_timezone == "Europe/London"
 
 
+class TestConversationHistory:
+    def test_fourteen_turns_by_default(self, settings: Settings) -> None:
+        """Durable facts live in the lead record, so history is conversational glue
+        rather than memory — fourteen short WhatsApp turns cover a whole demo
+        negotiation without paying for twenty."""
+        assert settings.conversation_history_turns == 14
+
+    def test_history_depth_is_configurable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CONVERSATION_HISTORY_TURNS", "8")
+        assert Settings().conversation_history_turns == 8
+
+
 class TestOptOutAndAudience:
     def test_opt_out_keywords_have_defaults(self, settings: Settings) -> None:
         assert "STOP" in settings.opt_out_keywords

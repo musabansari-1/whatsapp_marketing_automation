@@ -91,8 +91,9 @@ from app.worker.handlers.crm_sync import queue_crm_sync
 logger = get_logger(__name__)
 
 # How many prior turns are given to the model. Configuration in all but name — it is
-# read from settings; this is only the fallback when unset.
-DEFAULT_HISTORY_TURNS = 20
+# read from settings; this is only the fallback when unset. Kept equal to the
+# setting's default.
+DEFAULT_HISTORY_TURNS = 14
 
 
 @dataclass(frozen=True, slots=True)

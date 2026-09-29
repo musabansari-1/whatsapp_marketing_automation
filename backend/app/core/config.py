@@ -263,8 +263,9 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- conversations §9 §10
     # How many prior turns are sent to the model. A context window is finite and the
     # recent turns are what the next reply depends on; tune against real conversations
-    # in Phase 10 alongside the model choice ([D17]).
-    conversation_history_turns: int = 20
+    # in Phase 10 alongside the model choice ([D17]). Durable facts live in the lead
+    # record, so history is conversational glue rather than memory.
+    conversation_history_turns: int = 14
 
     # ---------------------------------------------------------------- rate limits §19
     # §19 asks for "appropriate rate limits" without saying what they are, so every
