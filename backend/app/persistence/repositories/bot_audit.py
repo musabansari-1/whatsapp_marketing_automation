@@ -15,8 +15,9 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import MessageDirection
-from app.persistence.models import Conversation, Lead, Message, WhatsAppSuppression
+from app.domain.enums import MessageDirection, NotificationType
+from app.persistence.models import Conversation, Lead, Message, Notification, WhatsAppSuppression
+from app.persistence.repositories.bookings import ENTITY_LEAD
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,4 +103,23 @@ async def recent_activity(session: AsyncSession, *, since: datetime) -> list[Con
     ]
 
 
-__all__ = ["ConversationActivity", "recent_activity"]
+async def has_unread_flag(session: AsyncSession, *, lead_id: uuid.UUID) -> bool:
+    """Whether any bot flag for this lead is still unreviewed, by anyone.
+
+    The auto-block gate reads this *before* this run's fan-out: a pre-existing
+    unread flag means the team has not looked while the pattern continued, and
+    that is what escalates a repeat from another bell to a block. A read flag
+    means a human owns the decision, and the audit never overrides one.
+    """
+    result = await session.execute(
+        select(Notification.id).where(
+            Notification.type == NotificationType.BOT_SUSPECTED,
+            Notification.related_entity_type == ENTITY_LEAD,
+            Notification.related_entity_id == lead_id,
+            Notification.is_read.is_(False),
+        )
+    )
+    return result.scalars().first() is not None
+
+
+__all__ = ["ConversationActivity", "has_unread_flag", "recent_activity"]

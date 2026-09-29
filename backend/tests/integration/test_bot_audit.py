@@ -38,6 +38,7 @@ from app.persistence.models import (
     User,
     WhatsAppSuppression,
 )
+from app.persistence.repositories import suppressions as suppression_repo
 from app.worker.handlers.bot_audit import sweep_bot_activity
 from tests.integration.helpers import ensure_product_id, get_test_database_url, run_db
 
@@ -154,11 +155,17 @@ class TestBotAuditSweep:
 
         assert result["flagged"] == 1
         assert result["notified"] == 1
+        assert result["blocked"] == 0
         [notification] = notifications()
         assert notification.type is NotificationType.BOT_SUSPECTED
         assert "Possible automated sender" in notification.title
         assert PHONE in notification.message
         assert notification.related_entity_type == "lead"
+
+        async def suppressions(session: AsyncSession) -> int:
+            return len((await session.execute(select(WhatsAppSuppression))).scalars().all())
+
+        assert run_db(suppressions) == 0
 
     def test_a_repeat_run_collapses_instead_of_reflagging(self, audit_env: None) -> None:
         """The flag's unique constraint is per conversation: every hourly run
@@ -172,6 +179,68 @@ class TestBotAuditSweep:
         assert result["notified"] == 0
         assert len(notifications()) == 1
 
+    def test_an_unreviewed_repeat_escalates_to_a_block(self, audit_env: None) -> None:
+        """Still suspect an hour later with the first flag unread by anyone: the
+        team had its chance to look, so the audit blocks on its own — the same
+        row `block-sender` writes, minus the human."""
+        seed_conversation(messages=35, gap_seconds=30)
+
+        run_sweep()
+        result = run_sweep()
+
+        assert result["blocked"] == 1
+
+        async def block_reason(session: AsyncSession) -> SuppressionReason | None:
+            return await suppression_repo.suppression_reason(session, PHONE)
+
+        assert run_db(block_reason) is SuppressionReason.MANUAL
+
+    def test_a_reviewed_repeat_is_never_overridden(self, audit_env: None) -> None:
+        """A read flag means a human owns the decision. The audit keeps flagging
+        silently but must not block over them."""
+        seed_conversation(messages=35, gap_seconds=30)
+
+        run_sweep()
+
+        async def mark_read(session: AsyncSession) -> None:
+            rows = (await session.execute(select(Notification))).scalars().all()
+            for row in rows:
+                row.is_read = True
+                row.read_at = datetime.now(UTC)
+            await session.commit()
+
+        run_db(mark_read)
+        result = run_sweep()
+
+        assert result["flagged"] == 1
+        assert result["blocked"] == 0
+
+        async def suppressions(session: AsyncSession) -> int:
+            return len((await session.execute(select(WhatsAppSuppression))).scalars().all())
+
+        assert run_db(suppressions) == 0
+
+    def test_blocking_can_be_turned_off_to_observe(
+        self, audit_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tune mode: flags without blocks while learning what trips in real
+        traffic."""
+        seed_conversation(messages=35, gap_seconds=30)
+
+        run_sweep()
+
+        monkeypatch.setenv("BOT_BLOCK_ON_REPEAT", "false")
+        reset_settings_cache()
+        result = run_sweep()
+
+        assert result["flagged"] == 1
+        assert result["blocked"] == 0
+
+        async def suppressions(session: AsyncSession) -> int:
+            return len((await session.execute(select(WhatsAppSuppression))).scalars().all())
+
+        assert run_db(suppressions) == 0
+
     def test_an_ordinary_chat_is_clean(self, audit_env: None) -> None:
         seed_conversation(messages=6, gap_seconds=300)
 
@@ -182,6 +251,7 @@ class TestBotAuditSweep:
             "conversations": 1,
             "flagged": 0,
             "notified": 0,
+            "blocked": 0,
         }
         assert notifications() == []
 

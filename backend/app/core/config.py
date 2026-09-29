@@ -305,6 +305,12 @@ class Settings(BaseSettings):
     bot_audit_msgs_per_hour: int = 30
     bot_audit_max_median_gap_seconds: int = 120
     bot_audit_min_lifetime_messages: int = 100
+    # Block on an unreviewed repeat: a suspect pattern that is still going an hour
+    # later, with the first flag unread by anyone, gets a MANUAL suppression without
+    # waiting for a human. A read flag means someone owns the decision and is never
+    # overridden. Off observes only (flags, no blocks) — the tune mode for learning
+    # what trips in real traffic.
+    bot_block_on_repeat: bool = True
 
     # ---------------------------------------------------------------- customer copy [D21]
     # Never hard-coded in application logic. A product's system prompt and qualification
