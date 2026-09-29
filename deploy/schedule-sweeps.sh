@@ -89,6 +89,13 @@ schedule "wa-sweep-sessions" "$SWEEP_SESSIONS_SCHEDULE" \
   "sweep_expired_sessions" \
   "Delete expired session rows (D-43)"
 
+# Hourly. Scores recent inbound traffic for automated-looking patterns and flags
+# suspects for human review ([D67]). Detection only: flagging never gates a reply,
+# so a wrong guess costs a dismissed notification rather than a lost customer.
+schedule "wa-sweep-bot-activity" "$SWEEP_BOT_ACTIVITY_SCHEDULE" \
+  "sweep_bot_activity" \
+  "Flag conversations with bot-like inbound patterns ([D67])"
+
 log "Scheduled"
 cat <<EOF
 Run one now to check it works, rather than waiting for the cron:

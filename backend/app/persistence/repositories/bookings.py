@@ -31,6 +31,10 @@ from app.persistence.models import Booking, Conversation, Lead, Notification, Us
 
 # §13 relates a notification to what it is about, so the dashboard can link to it.
 ENTITY_BOOKING = "booking"
+#: A notification about a lead rather than a booking (offline demo requests, bot
+#: flags). Defined once, here with the fan-out that enforces its uniqueness, so
+#: two handlers cannot drift into two spellings of the same entity.
+ENTITY_LEAD = "lead"
 
 
 # ---------------------------------------------------------------- bookings
@@ -301,6 +305,7 @@ async def mark_all_read(session: AsyncSession, user_id: uuid.UUID) -> int:
 
 __all__ = [
     "ENTITY_BOOKING",
+    "ENTITY_LEAD",
     "active_internal_user_ids",
     "fan_out_notification",
     "find_by_event_id",

@@ -295,6 +295,17 @@ class Settings(BaseSettings):
     # enqueueing thousands of tasks at once.
     sweep_batch_size: int = 200
 
+    # ---------------------------------------------------------------- bot audit [D67]
+    # What counts as "looks automated" for the hourly bot-activity audit. Every one
+    # is configuration: a number in code here would be a deployment problem the
+    # moment traffic patterns change, and a wrong guess must cost a dismissed
+    # notification rather than a lost customer — flagging never gates a reply.
+    # A sustained 30/hour with machine-regular gaps, or a hundred-message history,
+    # is far beyond any human negotiation pace.
+    bot_audit_msgs_per_hour: int = 30
+    bot_audit_max_median_gap_seconds: int = 120
+    bot_audit_min_lifetime_messages: int = 100
+
     # ---------------------------------------------------------------- customer copy [D21]
     # Never hard-coded in application logic. A product's system prompt and qualification
     # criteria are not here: they are its own `ai_configurations` rows (§28.4, Phase 27).

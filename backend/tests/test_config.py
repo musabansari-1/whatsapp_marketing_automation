@@ -182,6 +182,20 @@ class TestConversationHistory:
         assert Settings().conversation_history_turns == 8
 
 
+class TestBotAuditThresholds:
+    def test_bot_definition_has_defaults(self, settings: Settings) -> None:
+        """A sustained 30/hour at machine-regular gaps, or a hundred-message
+        history: far beyond any human negotiation pace, and every leg is
+        configuration so a wrong guess is a redeploy-free tune."""
+        assert settings.bot_audit_msgs_per_hour == 30
+        assert settings.bot_audit_max_median_gap_seconds == 120
+        assert settings.bot_audit_min_lifetime_messages == 100
+
+    def test_bot_definition_is_configurable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BOT_AUDIT_MSGS_PER_HOUR", "50")
+        assert Settings().bot_audit_msgs_per_hour == 50
+
+
 class TestOptOutAndAudience:
     def test_opt_out_keywords_have_defaults(self, settings: Settings) -> None:
         assert "STOP" in settings.opt_out_keywords

@@ -56,6 +56,11 @@ class TaskType(StrEnum):
     # Housekeeping for expired session rows (D-43). Expiry is already enforced when a
     # session is read, so this is growth control, not access control.
     SWEEP_EXPIRED_SESSIONS = "sweep_expired_sessions"
+    # Bot-activity audit ([D67]). Scores recent conversations for automated-looking
+    # inbound patterns and flags suspects for human review. Detection only: flagging
+    # never gates a reply, so this task sends nothing and changes no state except
+    # the notification itself.
+    SWEEP_BOT_ACTIVITY = "sweep_bot_activity"
 
 
 @dataclass(frozen=True, slots=True)

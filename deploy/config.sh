@@ -139,6 +139,9 @@ SWEEP_COUNTERS_SCHEDULE="${SWEEP_COUNTERS_SCHEDULE:-0 * * * *}"
 # Daily. Sessions expire on a scale of days, so an hourly run would find nothing most
 # of the time (D-43).
 SWEEP_SESSIONS_SCHEDULE="${SWEEP_SESSIONS_SCHEDULE:-30 3 * * *}"
+# Hourly, staggered off the :00 rate-limit sweep. Detection latency, not correctness:
+# a marathon sustains across runs while a burst confined to one hour still trips once.
+SWEEP_BOT_ACTIVITY_SCHEDULE="${SWEEP_BOT_ACTIVITY_SCHEDULE:-30 * * * *}"
 # Etc/UTC deliberately: these are housekeeping intervals, not customer-facing times, and
 # a UTC schedule does not shift twice a year. DEMO_TIMEZONE is the separate setting that
 # governs when demos may be offered.

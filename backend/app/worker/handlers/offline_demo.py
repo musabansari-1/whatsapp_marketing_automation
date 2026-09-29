@@ -30,13 +30,9 @@ from app.persistence.database import get_session_factory
 from app.persistence.models import Lead, Product
 from app.persistence.repositories import bookings as booking_repo
 from app.persistence.repositories import conversations as conversation_repo
+from app.persistence.repositories.bookings import ENTITY_LEAD
 
 logger = get_logger(__name__)
-
-#: The notification entity for an offline request: the lead to contact, since there
-#: is no booking to link to. The dashboard renders what the title and message say;
-#: only a `booking` entity links to the demos list.
-ENTITY_LEAD = "lead"
 
 
 async def notify_offline_demo(task: TaskRequest) -> dict[str, int | str]:
@@ -101,4 +97,4 @@ def _notification_message(lead: Lead) -> str:
     )
 
 
-__all__ = ["ENTITY_LEAD", "notify_offline_demo"]
+__all__ = ["notify_offline_demo"]

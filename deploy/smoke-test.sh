@@ -105,6 +105,7 @@ EXPECTED_TASKS=(
   ingest_knowledge_document
   notify_booking
   notify_offline_demo
+  sweep_bot_activity
   sync_crm_contact
   sync_whatsapp_templates
   sweep_unanswered_messages

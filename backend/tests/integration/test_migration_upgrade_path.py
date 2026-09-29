@@ -996,3 +996,33 @@ class TestAcademicaeLaunchLeavesProductInactive:
         assert _rows(scratch_database, MIN_LEAD_COLUMN_SQL) == []
 
         _alembic(scratch_database, ACADEMICAE_LAUNCH, direction="up")
+
+
+BOT_SUSPECTED_REVISION = "f1a2b3c4d5e6"
+BOT_SUSPECTED_PARENT = "e8f9a0b1c2d3"
+
+BOT_SUSPECTED_LABEL_SQL = (
+    "SELECT count(*) FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+    "WHERE t.typname = 'notification_type' AND e.enumlabel = 'BOT_SUSPECTED'"
+)
+
+
+class TestBotSuspectedEnumValue:
+    """Migration `f1a2b3c4d5e6` adds the bot-flag label to `notification_type` ([D67]).
+
+    An enum addition is the one migration whose downgrade cannot undo it —
+    PostgreSQL cannot drop a label — so the downgrade is a documented no-op and the
+    upgrade must be idempotent across the CI upgrade → downgrade → upgrade cycle.
+    """
+
+    def test_the_label_appears_downgrade_keeps_it_and_reupgrade_converges(
+        self, scratch_database: str
+    ) -> None:
+        _ensure_revision(scratch_database, BOT_SUSPECTED_REVISION)
+        assert _scalar(scratch_database, BOT_SUSPECTED_LABEL_SQL) == 1
+
+        _alembic(scratch_database, BOT_SUSPECTED_PARENT, direction="down")
+        assert _scalar(scratch_database, BOT_SUSPECTED_LABEL_SQL) == 1
+
+        _alembic(scratch_database, BOT_SUSPECTED_REVISION, direction="up")
+        assert _scalar(scratch_database, BOT_SUSPECTED_LABEL_SQL) == 1

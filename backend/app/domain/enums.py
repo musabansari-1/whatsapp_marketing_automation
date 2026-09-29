@@ -203,10 +203,15 @@ class AIRunStatus(StrEnum):
 
 
 class NotificationType(StrEnum):
-    """§13 gives notifications a `type`. V1 books demos and nothing else notifies,
-    so this is the only member; adding more is a scope change."""
+    """§13 gives notifications a `type`. Bookings notify; the bot-activity audit
+    flags ([D67]). Each addition is a scope decision, because a type is a promise
+    about what the bell can say."""
 
     DEMO_BOOKED = "DEMO_BOOKED"
+    #: A conversation whose inbound pattern looks automated (pace, regularity,
+    #: marathon length). Detection only: flagging never gates a reply, so a wrong
+    #: guess costs a dismissed notification rather than a lost customer.
+    BOT_SUSPECTED = "BOT_SUSPECTED"
 
 
 class SuppressionReason(StrEnum):
