@@ -424,6 +424,11 @@ reaction or other content without text is stored for the transcript but never
 answered: it carries nothing to reply to, and a full model turn would burn context
 and quota to talk to it — then talk, which is worse.
 
+An operator-blocked sender (`MANUAL` suppression, via `block-sender`) stops earlier
+still: its deliveries are dropped after routing, before any lead, message or turn
+exists. Consent suppressions keep their own flow and are never lifted by
+`unblock-sender`.
+
 Respect eligibility, opt-outs, invalid numbers and applicable provider messaging rules.
 
 Automated tests must never send real WhatsApp messages.

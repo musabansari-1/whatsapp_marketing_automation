@@ -35,10 +35,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, and_, case, or_, select, update
+from sqlalchemy import CursorResult, and_, case, delete, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import LeadStatus
+from app.domain.enums import LeadStatus, SuppressionReason
 from app.persistence.models import Lead, WhatsAppSuppression
 
 #: Lead states the §10 table makes terminal, whose status opt-out must not overwrite.
@@ -56,6 +57,20 @@ async def is_suppressed(session: AsyncSession, phone_e164: str) -> bool:
         select(WhatsAppSuppression.id).where(WhatsAppSuppression.phone_e164 == phone_e164)
     )
     return result.scalars().first() is not None
+
+
+async def suppression_reason(session: AsyncSession, phone_e164: str) -> SuppressionReason | None:
+    """Why this number is suppressed, or None when it is not.
+
+    The inbound path needs the reason, not just the fact: an operator block
+    (`MANUAL`) drops the delivery before any lead, message or turn exists, while an
+    opt-out keeps its existing flow (stored, acknowledged once, never answered).
+    """
+    result = await session.execute(
+        select(WhatsAppSuppression.reason).where(WhatsAppSuppression.phone_e164 == phone_e164)
+    )
+    row = result.scalars().first()
+    return SuppressionReason(row) if row is not None else None
 
 
 async def enforce_mirror(session: AsyncSession, phones: Sequence[str]) -> int:
@@ -119,4 +134,61 @@ async def enforce_mirror_for(session: AsyncSession, phone_e164: str) -> int:
     return await enforce_mirror(session, [phone_e164])
 
 
-__all__ = ["enforce_mirror", "enforce_mirror_for", "is_suppressed"]
+async def record_manual_block(session: AsyncSession, *, phone_e164: str, notes: str | None) -> bool:
+    """Block a sender by operator decision (spam, abuse, runaway bot).
+
+    Writes a `MANUAL` suppression row: every send path already checks this table, so
+    nothing else is needed to stop outbound traffic, and the inbound path drops the
+    number's deliveries before any lead, message or turn exists.
+
+    Deliberately narrower than `suppress`: no lead mirror, no CRM sync, no
+    acknowledgement. Those belong to the consent flow; a block records an operator
+    safety action, not a customer's consent decision, and nothing is ever sent to a
+    blocked number — not even an acknowledgement.
+
+    Returns True when the row was newly inserted; an existing suppression of any
+    reason is left untouched.
+    """
+    statement = (
+        pg_insert(WhatsAppSuppression)
+        .values(
+            phone_e164=phone_e164,
+            reason=SuppressionReason.MANUAL,
+            source_message_id=None,
+            notes=notes,
+            lead_id=None,
+        )
+        .on_conflict_do_nothing(index_elements=[WhatsAppSuppression.phone_e164])
+    )
+    result = await session.execute(statement)
+    await session.flush()
+    return bool(cast("CursorResult[Any]", result).rowcount)
+
+
+async def lift_manual_block(session: AsyncSession, *, phone_e164: str) -> SuppressionReason | None:
+    """Lift an operator block, returning what was there.
+
+    Returns None when the number was not suppressed at all, `MANUAL` when a block
+    was lifted, and the existing reason untouched otherwise: consent (`OPT_OUT_*`)
+    and provider findings (`PROVIDER_INVALID`) are never lifted by this command —
+    unblocking must not resurrect contactability someone refused or Meta rejected.
+    Previously cancelled sends stay skipped and lead mirrors are left as they were.
+    """
+    reason = await suppression_reason(session, phone_e164)
+    if reason is None or reason is not SuppressionReason.MANUAL:
+        return reason
+    await session.execute(
+        delete(WhatsAppSuppression).where(WhatsAppSuppression.phone_e164 == phone_e164)
+    )
+    await session.flush()
+    return SuppressionReason.MANUAL
+
+
+__all__ = [
+    "enforce_mirror",
+    "enforce_mirror_for",
+    "is_suppressed",
+    "lift_manual_block",
+    "record_manual_block",
+    "suppression_reason",
+]

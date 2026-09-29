@@ -24,6 +24,7 @@ from app.domain.enums import (
     LeadStatus,
     MessageStatus,
     RecipientStatus,
+    SuppressionReason,
     WebhookEventStatus,
 )
 from app.integrations.queue import TaskRequest, TaskType
@@ -37,6 +38,7 @@ from app.persistence.models import (
     WebhookEvent,
     WhatsAppSuppression,
 )
+from app.persistence.repositories import suppressions as suppression_repo
 from app.worker.handlers.whatsapp import process_inbound_webhook
 from tests.integration.helpers import (
     ensure_product_id,
@@ -762,6 +764,75 @@ class TestConversationTurnQueueing:
 
         assert len(queued) == 1
         assert len({task.task_id for task in queued}) == 1
+
+    def test_a_blocked_sender_queues_no_turn_and_stores_nothing(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An operator block stops everything before any lead, message or turn
+        exists: no model cost, no reply, no new rows. The raw webhook delivery
+        itself is still persisted by the endpoint, so the audit trail does not
+        depend on these rows."""
+        queued = capture_queue(monkeypatch)
+        _block_sender()
+
+        post_webhook(webhook_client, inbound("Hello dozen times"))
+        process_all()
+
+        assert queued == []
+
+        async def counts(session: AsyncSession) -> tuple[int, int]:
+            messages = len((await session.execute(select(Message))).scalars().all())
+            leads = len((await session.execute(select(Lead))).scalars().all())
+            return messages, leads
+
+        assert run_db(counts) == (0, 0)
+
+    def test_a_stop_from_a_blocked_sender_changes_nothing(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Already suppressed means no acknowledgement and no re-processing: in
+        particular nothing is ever sent to a blocked number, not even an ack."""
+        queued = capture_queue(monkeypatch)
+        _block_sender()
+
+        post_webhook(webhook_client, inbound("STOP"))
+        process_all()
+
+        assert queued == []
+
+        async def reason(session: AsyncSession) -> SuppressionReason | None:
+            return await suppression_repo.suppression_reason(session, CUSTOMER)
+
+        assert run_db(reason) is SuppressionReason.MANUAL
+
+    def test_an_opted_out_sender_keeps_the_existing_flow(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only a MANUAL block drops this early. An opt-out is consent handling,
+        not abuse handling: its messages are still stored, and the turn handler's
+        own suppression check is what withholds the reply."""
+        queued = capture_queue(monkeypatch)
+
+        post_webhook(webhook_client, inbound("STOP"))
+        process_all()
+        post_webhook(webhook_client, inbound("are you there?", message_id="wamid.2"))
+        process_all()
+
+        assert len(queued) == 1
+        assert queued[0].task_type is TaskType.PROCESS_CONVERSATION_TURN
+
+        async def messages(session: AsyncSession) -> int:
+            return len((await session.execute(select(Message))).scalars().all())
+
+        assert run_db(messages) == 2
+
+
+def _block_sender(phone: str = CUSTOMER, notes: str = "test block") -> None:
+    async def insert(session: AsyncSession) -> None:
+        await suppression_repo.record_manual_block(session, phone_e164=phone, notes=notes)
+        await session.commit()
+
+    run_db(insert)
 
 
 def capture_queue(monkeypatch: pytest.MonkeyPatch) -> list[TaskRequest]:

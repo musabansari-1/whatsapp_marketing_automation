@@ -8,6 +8,8 @@ Run with `python -m app.cli <command>`:
     product-readiness       report whether each product can safely be activated
     activate-product        activate one product, after its readiness check
     deactivate-product      stop one product starting new customer activity
+    block-sender            stop all platform activity for one phone number
+    unblock-sender          lift an operator block (never an opt-out)
 
 None of them calls Meta, Google or HubSpot, and none sends a message. Configuration and
 activation are separate on purpose: no amount of configuration activates a product.
@@ -35,11 +37,13 @@ from app.configuration.report import platform_notes, render_json, render_product
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.security import hash_password
-from app.domain.enums import UserRole
+from app.domain.enums import SuppressionReason, UserRole
+from app.domain.phone import normalize_phone
 from app.domain.readiness import Verdict
 from app.persistence.database import dispose_engine, get_session_factory
 from app.persistence.repositories import products as product_repo
 from app.persistence.repositories import readiness as readiness_repo
+from app.persistence.repositories import suppressions as suppression_repo
 from app.persistence.repositories import users as user_repo
 
 logger = get_logger(__name__)
@@ -270,6 +274,82 @@ async def deactivate_product(settings: Settings, slug: str, *, out: TextIO | Non
     return EXIT_OK
 
 
+async def block_sender(
+    settings: Settings, phone: str, *, note: str | None = None, out: TextIO | None = None
+) -> int:
+    """Stop all platform activity for one phone number, by operator decision.
+
+    Writes a `MANUAL` suppression row — every send path already checks that table —
+    skips that number's queued campaign sends, and from then on the inbound path
+    drops its deliveries before any lead, message or turn exists. Idempotent: an
+    already-suppressed number reports its reason and changes nothing.
+
+    Deliberately narrower than an opt-out: no lead mirror, no CRM sync, no
+    acknowledgement. Those belong to the consent flow; a block records an operator
+    safety action, and nothing is ever sent to a blocked number — not even an ack.
+    """
+    # Imported here, not at module top: it pulls the worker stack, and every other
+    # command must stay lean.
+    from app.persistence.repositories import webhooks as webhook_repo
+
+    normalized = normalize_phone(phone, default_region=settings.audience_phone_default_region)
+    if not normalized.ok or not normalized.e164:
+        _say(out, f"Refused: {phone!r} is not a valid phone number ({normalized.error}).")
+        return EXIT_FAILED
+
+    factory = get_session_factory()
+    async with factory() as session:
+        inserted = await suppression_repo.record_manual_block(
+            session, phone_e164=normalized.e164, notes=note
+        )
+        if not inserted:
+            reason = await suppression_repo.suppression_reason(session, normalized.e164)
+            await session.rollback()
+            _say(out, f"No change: {normalized.e164} is already suppressed ({reason}).")
+            return EXIT_OK
+        skipped = await webhook_repo.cancel_pending_sends(session, normalized.e164)
+        await session.commit()
+
+    _say(
+        out,
+        f"Blocked {normalized.e164}: no turns, no replies, no sends "
+        f"({skipped} queued campaign send(s) skipped).",
+    )
+    logger.info("sender_blocked", phone_e164=normalized.e164, skipped_pending_sends=skipped)
+    return EXIT_OK
+
+
+async def unblock_sender(settings: Settings, phone: str, *, out: TextIO | None = None) -> int:
+    """Lift an operator block. Only a `MANUAL` block can be lifted here: consent
+    suppressions are never undone by this command, and previously cancelled sends
+    stay skipped."""
+    normalized = normalize_phone(phone, default_region=settings.audience_phone_default_region)
+    if not normalized.ok or not normalized.e164:
+        _say(out, f"Refused: {phone!r} is not a valid phone number ({normalized.error}).")
+        return EXIT_FAILED
+
+    factory = get_session_factory()
+    async with factory() as session:
+        lifted = await suppression_repo.lift_manual_block(session, phone_e164=normalized.e164)
+        if lifted is None:
+            await session.rollback()
+            _say(out, f"No change: {normalized.e164} is not suppressed.")
+            return EXIT_OK
+        if lifted is not SuppressionReason.MANUAL:
+            await session.rollback()
+            _say(
+                out,
+                f"Refused: {normalized.e164} is suppressed for {lifted}, not by an "
+                "operator block. Consent and provider findings are never lifted here.",
+            )
+            return EXIT_FAILED
+        await session.commit()
+
+    _say(out, f"Unblocked {normalized.e164}.")
+    logger.info("sender_unblocked", phone_e164=normalized.e164)
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="app.cli", description="Administrative commands")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -308,6 +388,15 @@ def build_parser() -> argparse.ArgumentParser:
     deactivate = commands.add_parser("deactivate-product", help="deactivate a product")
     deactivate.add_argument("slug")
 
+    block = commands.add_parser(
+        "block-sender", help="stop all platform activity for one phone number"
+    )
+    block.add_argument("phone", help="any spelling; normalized to E.164 before anything is written")
+    block.add_argument("--note", default=None, help="why, for the audit trail")
+
+    unblock = commands.add_parser("unblock-sender", help="lift an operator block")
+    unblock.add_argument("phone", help="any spelling; normalized to E.164")
+
     return parser
 
 
@@ -330,6 +419,10 @@ async def _run(args: argparse.Namespace) -> int:
                 return await activate_product(settings, args.slug, accept_gaps=args.accept_gaps)
             case "deactivate-product":
                 return await deactivate_product(settings, args.slug)
+            case "block-sender":
+                return await block_sender(settings, args.phone, note=args.note)
+            case "unblock-sender":
+                return await unblock_sender(settings, args.phone)
             case _:
                 logger.error("unknown_command", command=args.command)
                 return EXIT_FAILED

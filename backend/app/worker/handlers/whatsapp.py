@@ -15,6 +15,7 @@ from typing import Any
 from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.logging import get_logger
+from app.domain.enums import SuppressionReason
 from app.domain.whatsapp_webhook import matches_opt_out, parse_webhook
 from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import (
@@ -26,6 +27,7 @@ from app.integrations.whatsapp import ApprovedTemplate, OutboundTextMessage
 from app.persistence.database import get_session_factory
 from app.persistence.models import Product
 from app.persistence.repositories import products as product_repo
+from app.persistence.repositories import suppressions as suppression_repo
 from app.persistence.repositories import templates as template_repo
 from app.persistence.repositories import webhooks as webhook_repo
 from app.worker.handlers.crm_sync import queue_crm_sync
@@ -146,6 +148,7 @@ async def _apply_inbound(
     stored = 0
     opt_outs = 0
     unroutable = 0
+    blocked = 0
     needs_reply: list[str] = []
 
     for event in messages:
@@ -166,6 +169,24 @@ async def _apply_inbound(
                 error=str(exc),
             )
             unroutable += 1
+            continue
+
+        # An operator-blocked sender stops here: no lead, no message row, no turn, no
+        # reply — and therefore no model cost. The raw webhook delivery itself is
+        # already persisted by the endpoint, so the audit trail does not depend on
+        # these rows. Only a MANUAL block drops this early; an opt-out keeps its
+        # existing flow (stored, acknowledged once, never answered), because that
+        # path records consent and this one must not touch it.
+        if (
+            await suppression_repo.suppression_reason(session, event.from_e164)
+            is SuppressionReason.MANUAL
+        ):
+            logger.info(
+                "inbound_blocked_sender_skipped",
+                message_type=event.message_type,
+                provider_message_id=event.provider_message_id,
+            )
+            blocked += 1
             continue
 
         lead = await webhook_repo.get_or_create_lead(
@@ -218,6 +239,11 @@ async def _apply_inbound(
         # Surfaced as a count as well as per-event warnings: a misconfigured number
         # shows up here as a steady trickle rather than a single line lost in a log.
         logger.warning("inbound_unroutable_batch", count=unroutable)
+
+    if blocked:
+        # Same surfacing for a blocked sender that keeps messaging: the operator
+        # who blocked it sees the attempts continue without paying turns for them.
+        logger.warning("inbound_blocked_batch", count=blocked)
 
     return stored, opt_outs, needs_reply
 
