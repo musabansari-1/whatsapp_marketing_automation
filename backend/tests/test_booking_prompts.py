@@ -127,3 +127,16 @@ class TestLeadContextAndBatching:
         product = _product("life-herba")
         prompt = product.ai_configuration.system_prompt or ""
         assert "do not promise to email times" not in prompt
+
+
+class TestConciseReplies:
+    """Long answers on WhatsApp read as spam — but "short" risks dropped details,
+    so the rule demands concise AND complete, with the slot list (long by design)
+    explicitly exempted so the rule cannot eat it."""
+
+    def test_both_booking_products_demand_concise_complete_replies(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "Keep replies concise but complete" in prompt, slug
+            assert "never omit needed details" in prompt, slug
+            assert "list the times plainly with no extra commentary" in prompt, slug

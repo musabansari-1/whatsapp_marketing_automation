@@ -27,6 +27,7 @@ SAFETY_PHRASES = (
     "Do not invent prices",
     "external registration",
     "Do **not** send the registration link merely because someone replied",
+    "Keep replies concise but complete",
     "Do not expose these labels to the user",
 )
 
