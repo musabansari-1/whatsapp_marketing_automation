@@ -998,6 +998,8 @@ Rules:
   that date's whole day; only an explicit multi-day window can name more days.
 - Nothing is ever emailed: the confirmation goes over WhatsApp, the booking tool
   says so in its result, and the reply guard removes emailed-invite claims.
+- Nothing is ever recorded, seen or touched on the customer's phone either: the
+  reply guard removes device-capability claims the same way.
 - Respect timezone.
 - Recheck immediately before booking.
 - Handle race conditions.

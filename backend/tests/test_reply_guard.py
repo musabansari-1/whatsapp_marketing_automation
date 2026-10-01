@@ -255,3 +255,63 @@ class TestEmailedInviteClaimsAreRemoved:
     def test_team_contact_by_email_is_not_an_invite_claim(self) -> None:
         text = "Our team will contact you by email shortly to arrange your offline demo."
         assert clean_customer_reply(text) == text
+
+
+class TestDeviceCapabilityClaimsAreRemoved:
+    """Staging 2026-10-01: after a booking the model told the customer to "record
+    the user with the status bar", inventing battery telemetry. A text chat has no
+    phone capabilities, so the claim is unconditionally false — but energy talk
+    about battery storage must survive, as must denials and ordinary advice."""
+
+    def test_the_staging_shape_is_dropped_whole(self) -> None:
+        text = "Record the user with the status bar of a phone. The battery level is at 70%."
+        assert clean_customer_reply(text) == ""
+
+    def test_a_denial_is_left_alone(self) -> None:
+        text = (
+            "I don't have the ability to record your screen or access your phone's "
+            "status bar, but I can confirm that your online demo is set."
+        )
+        assert clean_customer_reply(text) == text
+
+    def test_battery_storage_talk_survives_on_its_own(self) -> None:
+        text = "Our battery storage systems operate at 95% round-trip efficiency."
+        assert clean_customer_reply(text) == text
+
+    def test_a_meet_link_sentence_survives(self) -> None:
+        text = "The Google Meet link is https://meet.google.com/fhj-pqvn-xkd."
+        assert clean_customer_reply(text) == text
+
+    def test_screen_sharing_advice_survives(self) -> None:
+        text = "Please share your screen on the Meet call so we can see the issue."
+        assert clean_customer_reply(text) == text
+
+    def test_calendar_checks_and_phone_checks_survive(self) -> None:
+        assert (
+            clean_customer_reply("I will check the calendar for a free slot.")
+            == "I will check the calendar for a free slot."
+        )
+        assert (
+            clean_customer_reply("Please check your phone for my message.")
+            == "Please check your phone for my message."
+        )
+
+    def test_a_claim_between_two_true_sentences_leaves_both(self) -> None:
+        text = (
+            "Your demo is booked for Saturday 12:00 PM. "
+            "I can record your screen to help with setup. "
+            "Let me know if you need anything else."
+        )
+        assert clean_customer_reply(text) == (
+            "Your demo is booked for Saturday 12:00 PM. Let me know if you need anything else."
+        )
+
+    @pytest.mark.parametrize(
+        "claim",
+        [
+            "I will monitor the status bar during the call.",
+            "I can access your camera for verification.",
+        ],
+    )
+    def test_claim_variants_are_caught(self, claim: str) -> None:
+        assert clean_customer_reply(f"Your demo is booked. {claim}") == "Your demo is booked."

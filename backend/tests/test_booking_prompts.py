@@ -92,6 +92,20 @@ class TestOfflineDemoHandoff:
             assert "do not offer slots" in prompt, slug
 
 
+class TestDeviceCapabilityDenial:
+    """Staging 2026-10-01: after a booking the model told the customer to "record
+    the user with the status bar", inventing battery telemetry. A text chat has no
+    phone capabilities, and the prompts must say so where every turn reads it."""
+
+    def test_both_booking_products_disclaim_phone_capabilities(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "You are a text chat." in prompt, slug
+            assert "Never claim or imply any of these capabilities." in prompt, slug
+            for capability in ("screen", "camera", "battery", "status bar"):
+                assert capability in prompt, f"{slug}: missing {capability!r}"
+
+
 class TestLeadContextAndBatching:
     """One fewer model round per turn: the lead summary rides in the prompt, and
     independent tools go out together."""

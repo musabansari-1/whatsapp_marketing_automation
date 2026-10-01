@@ -17,7 +17,7 @@ forbade it). The platform has no email path at all — no attendee is ever added
 can never delete a true statement.
 
 This module is the last gate before a turn is sent. It is pure and model-agnostic, and
-deliberately narrow in what it *keeps*: prose the model composed is never rewritten. Three
+deliberately narrow in what it *keeps*: prose the model composed is never rewritten. Four
 rules decide what goes:
 
 - anything that reads as tool plumbing — a tool name, or a key like `arguments`, `facts`,
@@ -26,13 +26,17 @@ rules decide what goes:
   unrecognised, because a serialised blob is not a reply whatever it contains;
 - a sentence claiming an emailed calendar invite is removed, as is a trailing
   "and …" clause making that claim — while the true half of a mixed sentence (the
-  time, the Meet link) survives.
+  time, the Meet link) survives;
+- a sentence claiming phone/device capabilities the platform does not have is
+  removed, with battery telemetry going only when such a claim was found in the
+  same reply (energy talk about battery storage must survive on its own).
 
 Unparseable text and JSON embedded in the middle of a sentence are left alone: half-
 deleting something is worse than letting a human see it. The same caution applies to
-the invite rule: a sentence carrying a negation ("no invite will be emailed") is left
-alone, and novel phrasings the patterns do not recognise still pass — the prompts and
-the tool result remain the first two layers.
+the invite and device rules: a sentence carrying a negation ("no invite will be
+emailed", "I can't record your screen") is left alone, and novel phrasings the
+patterns do not recognise still pass — the prompts and the tool result remain the
+first layers.
 
 Delivery is not re-tried here. When nothing survives the strip the caller falls back to
 the approved wording ([D21]) exactly as it does for an empty completion.
@@ -111,6 +115,28 @@ _TOOL_NAMES_PATTERN = re.compile("|".join(sorted(_TOOL_NAMES)), re.IGNORECASE)
 _TOOL_LABEL_LINE = re.compile(
     rf"^[\s\[\(\{{\"'`]*(?:{_TOOL_NAMES_PATTERN.pattern})[\s\]\)\}}\"'`]*[:;,.]?\s*$",
     re.IGNORECASE,
+)
+
+#: Phone/device actions claimed as the model's own. The platform is a text-only
+#: channel with no device APIs, so such claims are unconditionally false — but only
+#: the claiming shapes are matched. "Check your phone for my message" is ordinary
+#: advice (check + phone deliberately excluded), "share your screen on the call"
+#: uses no claiming verb, and metaphors ("I see you chose noon") name no device.
+#: Like the invite rule, anything carrying a negation is left alone.
+_DEVICE_CLAIM = re.compile(
+    r"\b(record|access)\b.{0,50}\b(screen|status bar|battery|camera|mic|microphone|device|phone)\b"
+    r"|\bI(?:'ll| will| can)\b.{0,60}\b(check|see|watch|monitor)\b.{0,60}"
+    r"\b(screen|status bar|battery|camera|mic|microphone|device)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: Telemetry readings ("the battery level is at 70%"). Indistinguishable from
+#: legitimate energy talk on their own — SustainX sells battery storage — so these
+#: only go when a device claim was already found in the same reply. A contaminated
+#: reply's telemetry is part of the fabrication; standalone energy prose is kept.
+_BATTERY_TELEMETRY = re.compile(
+    r"\bbattery\b.{0,40}\d+\s*(%|percent\b)",
+    re.IGNORECASE | re.DOTALL,
 )
 
 #: An invite claimed sent or delivered through email. The platform has no email path,
@@ -205,6 +231,7 @@ def clean_customer_reply(text: str) -> str:
     cleaned = _cut_blob_lines(cleaned)
     cleaned = _drop_tool_label_lines(cleaned)
     cleaned = _without_emailed_invite_claims(cleaned)
+    cleaned = _without_device_claims(cleaned)
 
     if _has_json_residue(cleaned):
         # What is left is still a payload: a blob that was cut off mid-object, or quoted
@@ -310,6 +337,60 @@ def _claims_emailed_invite(sentence: str) -> bool:
     if _NEGATED.search(sentence):
         return False
     return bool(_INVITE_EMAILED.search(sentence) or _INVITE_BY_EMAIL.search(sentence))
+
+
+def _without_device_claims(text: str) -> str:
+    """Remove sentences claiming phone/device capabilities or telemetry.
+
+    Same shape as the invite rule, narrower target: first-person or imperative
+    claims over device nouns, plus battery telemetry only when a claim was found
+    in the same reply (energy talk about battery storage must survive on its
+    own). Negations are left alone — a denial ("I can't record your screen") is
+    a true statement the customer should read.
+    """
+    sentences = _SENTENCE_SPLIT.split(text)
+    separators = _SENTENCE_SPLIT.findall(text)
+    kept: list[str] = []
+    changed = False
+    for index, sentence in enumerate(sentences):
+        prefix = separators[index - 1] if index else ""
+        if not sentence.strip():
+            kept.append(prefix + sentence)
+            continue
+        if _claims_device_capability(sentence):
+            changed = True
+        else:
+            kept.append(prefix + sentence)
+    if not changed:
+        return text
+    stripped = "".join(kept)
+    # Second pass over what remains: telemetry readings are only suspicious
+    # inside a reply already caught fabricating device actions.
+    kept = []
+    changed = False
+    again = _SENTENCE_SPLIT.split(stripped)
+    separators = _SENTENCE_SPLIT.findall(stripped)
+    for index, sentence in enumerate(again):
+        prefix = separators[index - 1] if index else ""
+        if sentence.strip() and _is_battery_telemetry(sentence):
+            changed = True
+            continue
+        kept.append(prefix + sentence)
+    return "".join(kept) if changed else stripped
+
+
+def _claims_device_capability(sentence: str) -> bool:
+    """Whether this sentence claims a phone/device action as the model's own."""
+    if _NEGATED.search(sentence):
+        return False
+    return bool(_DEVICE_CLAIM.search(sentence))
+
+
+def _is_battery_telemetry(sentence: str) -> bool:
+    """Whether this sentence reports a battery reading."""
+    if _NEGATED.search(sentence):
+        return False
+    return bool(_BATTERY_TELEMETRY.search(sentence))
 
 
 def _has_json_residue(text: str) -> bool:
