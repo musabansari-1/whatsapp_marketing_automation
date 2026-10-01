@@ -48,8 +48,15 @@ async def queue_crm_sync(settings: Settings, lead_id: uuid.UUID) -> bool:
     platform, and the callers are the send path, the conversation turn and the booking
     flow — none of which should abandon its own work because a queue call failed.
 
+    When the operator kill-switch is off (`CRM_SYNC_ENABLED=false`), nothing is
+    enqueued at all: staging runs multi-product with sync deferred ([D58]), so each
+    task would only be refused on arrival. The task's own deferral check stays as
+    backstop for anything already queued.
+
     Returns whether the task was enqueued, for callers that want to log it.
     """
+    if not settings.crm_sync_enabled:
+        return False
     try:
         await build_queue_provider(settings).enqueue(
             TaskRequest(

@@ -224,6 +224,13 @@ class Settings(BaseSettings):
     hubspot_access_token: SecretStr | None = None
     hubspot_base_url: str = "https://api.hubapi.com"
     hubspot_timeout_seconds: float = 20.0
+    # Kill-switch for CRM sync tasks. Off skips the enqueue entirely (the
+    # task-level deferral stays as backstop): staging runs multi-product with CRM
+    # deferred ([D58]), so every turn would otherwise enqueue a task the worker
+    # immediately refuses. Default on: single-product deployments sync for real,
+    # and a forgotten-off flag would silently stop that — so disabling is always
+    # an explicit operator act, never a default.
+    crm_sync_enabled: bool = True
 
     # ---------------------------------------------------------------- audience [D4][D20][D51]
     # Operational parsing limits, shared by every product. *Which* spreadsheet headers map
