@@ -147,9 +147,8 @@ def book(
     conversation_id: str,
     *,
     calendar: FakeCalendarProvider,
-    start_time: str | None = None,
 ) -> ai_tools.ToolResult:
-    """Run the book_demo tool, as the agent does."""
+    """List slots and book the first, as the agent does."""
 
     async def call(session: AsyncSession) -> ai_tools.ToolResult:
         lead = await conversation_repo.get_lead(session, uuid.UUID(lead_id))
@@ -166,12 +165,10 @@ def book(
             now=NOW,
         )
 
-        chosen = start_time
-        if chosen is None:
-            slots = await ai_tools.dispatch("get_available_slots", {}, context)
-            chosen = str(slots.data["slots"][0]["start_time"])
-
-        return await ai_tools.dispatch("book_demo", {"start_time": chosen}, context)
+        slots = await ai_tools.dispatch("get_available_slots", {}, context)
+        return await ai_tools.dispatch(
+            "book_demo", {"slot_id": slots.data["slots"][0]["slot_id"]}, context
+        )
 
     return run_db(call)
 
@@ -257,20 +254,76 @@ class TestBookingRecord:
         assert result.data["meeting_link"] == "https://meet.google.com/static-room-abc"
         assert bookings()[0].meeting_link == "https://meet.google.com/static-room-abc"
 
-    def test_booking_twice_records_one_row(self, booking_env: FakeWhatsAppProvider) -> None:
-        """§20: a redelivered turn must converge. The event ID is derived from the
-        conversation and slot, so the second attempt finds the first's event."""
+    def test_booking_twice_on_one_listing_records_one_row(
+        self, booking_env: FakeWhatsAppProvider
+    ) -> None:
+        """§20: booking the same slot ID twice — a double tool call in one turn —
+        converges on one event, one row."""
         lead_id, conversation_id = seed()
         calendar = FakeCalendarProvider()
 
-        first = book(lead_id, conversation_id, calendar=calendar)
-        second = book(
-            lead_id, conversation_id, calendar=calendar, start_time=first.data["start_time"]
-        )
+        async def call(session: AsyncSession) -> None:
+            lead = await conversation_repo.get_lead(session, uuid.UUID(lead_id))
+            conversation = await conversation_repo.get_conversation(
+                session, uuid.UUID(conversation_id)
+            )
+            assert lead is not None and conversation is not None
+            context = ai_tools.ToolContext(
+                session=session,
+                lead=lead,
+                conversation=conversation,
+                slot_policy=a_policy(),
+                calendar=calendar,
+                qualification_rules=QualificationRules(),
+                now=NOW,
+            )
+            slots = await ai_tools.dispatch("get_available_slots", {}, context)
+            first = await ai_tools.dispatch(
+                "book_demo", {"slot_id": slots.data["slots"][0]["slot_id"]}, context
+            )
+            second = await ai_tools.dispatch(
+                "book_demo", {"slot_id": slots.data["slots"][0]["slot_id"]}, context
+            )
+            assert first.ok and second.ok
 
-        assert second.ok
+        run_db(call)
+
         assert len(bookings()) == 1
         assert len(calendar.events) == 1
+
+    def test_a_fresh_listing_after_a_booking_states_the_booking(
+        self, booking_env: FakeWhatsAppProvider
+    ) -> None:
+        """Per-listing slot IDs mean a later turn cannot re-attempt the booked time
+        by copying it — so the listing states the existing booking, and the model
+        confirms it instead of booking a second demo beside it."""
+        lead_id, conversation_id = seed()
+        calendar = FakeCalendarProvider()
+        assert book(lead_id, conversation_id, calendar=calendar).ok
+
+        async def relist(session: AsyncSession) -> Any:
+            lead = await conversation_repo.get_lead(session, uuid.UUID(lead_id))
+            conversation = await conversation_repo.get_conversation(
+                session, uuid.UUID(conversation_id)
+            )
+            assert lead is not None and conversation is not None
+            context = ai_tools.ToolContext(
+                session=session,
+                lead=lead,
+                conversation=conversation,
+                slot_policy=a_policy(),
+                calendar=calendar,
+                qualification_rules=QualificationRules(),
+                now=NOW,
+            )
+            return await ai_tools.dispatch("get_available_slots", {}, context)
+
+        result = run_db(relist)
+
+        assert result.ok
+        [existing] = result.data["existing_bookings"]
+        assert existing["local_time"] == "Wednesday 02 September, 10:00 AM"
+        assert "meet.google.com" in existing["meeting_link"]
 
     def test_nothing_is_recorded_when_the_calendar_write_fails(
         self, booking_env: FakeWhatsAppProvider
@@ -312,7 +365,7 @@ class TestBookingRecord:
             )
             slots = await ai_tools.dispatch("get_available_slots", {}, context)
             await ai_tools.dispatch(
-                "book_demo", {"start_time": slots.data["slots"][0]["start_time"]}, context
+                "book_demo", {"slot_id": slots.data["slots"][0]["slot_id"]}, context
             )
             return context.proposed_status
 
@@ -394,6 +447,69 @@ class TestNotificationFanOut:
 
         assert result["notified"] == 0
         assert bookings()[0].status is BookingStatus.CONFIRMED
+
+
+def run_notify_failed(lead_id: str, reason: str = "the calendar was unreachable") -> dict[str, Any]:
+    """Run the failed-booking notification task, as the worker would."""
+    from app.persistence import database
+    from app.worker.handlers.booking_failed import notify_booking_failed
+
+    async def run() -> dict[str, Any]:
+        database._engine = None  # noqa: SLF001
+        database._session_factory = None  # noqa: SLF001
+        try:
+            result = await notify_booking_failed(
+                TaskRequest(
+                    task_type=TaskType.NOTIFY_BOOKING_FAILED,
+                    task_id=f"notify-booking-failed-{lead_id}",
+                    payload={"lead_id": lead_id, "reason": reason},
+                )
+            )
+            return dict(result)
+        finally:
+            await database.dispose_engine()
+
+    return asyncio.run(run())
+
+
+class TestBookingFailedNotification:
+    """The bell behind the fallback promise: a terminal booking failure tells the
+    customer a colleague will follow up, so the team has to hear about it —
+    staging lost an Academicae demo to a silent failure on 2026-10-01."""
+
+    def test_every_active_user_is_notified_once(self, booking_env: FakeWhatsAppProvider) -> None:
+        lead_id, _ = seed(users=3)
+
+        result = run_notify_failed(lead_id)
+
+        assert result["notified"] == 3
+        assert len(notifications()) == 3
+
+    def test_a_repeat_failure_does_not_re_announce(self, booking_env: FakeWhatsAppProvider) -> None:
+        """The fan-out's unique constraint collapses repeats: a bell the team
+        learns to ignore is worse than none."""
+        lead_id, _ = seed(users=2)
+
+        first = run_notify_failed(lead_id)
+        second = run_notify_failed(lead_id)
+
+        assert first["notified"] == 2
+        assert second["notified"] == 0
+        assert len(notifications()) == 2
+
+    def test_the_notification_names_the_customer_and_the_reason(
+        self, booking_env: FakeWhatsAppProvider
+    ) -> None:
+        lead_id, _ = seed(users=1)
+
+        run_notify_failed(lead_id, reason="the calendar was unreachable")
+
+        notification = notifications()[0]
+        assert notification.type is NotificationType.BOOKING_FAILED
+        assert "Asha Rao" in notification.message
+        assert "+919876500200" in notification.message
+        assert "the calendar was unreachable" in notification.message
+        assert "will follow up" in notification.message
 
 
 class TestCustomerConfirmation:

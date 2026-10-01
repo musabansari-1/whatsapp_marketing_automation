@@ -588,6 +588,22 @@ intervals, create the event, and only then report success. **A demo is never rep
 as booked unless Calendar returned an event** — a failed write, a lost race and an
 unavailable slot are all reported honestly so the model offers another time.
 
+Booking takes a slot ID, never a datetime. `get_available_slots` numbers the slots
+it lists (`slot-1`, `slot-2`, …) in a registry that lives on the turn's tool
+context and is replaced on every listing; `book_demo` resolves the ID against the
+latest listing and refuses anything else. A hand-built time is unrepresentable, an
+ID from history or an older listing resolves to nothing, and the refusal tells the
+model to re-check and retry once. Staging lost a real Academicae demo on 2026-10-01
+to a hand-built time with no timezone; the contract makes a repeat structurally
+impossible rather than merely discouraged.
+
+A terminal booking failure — the calendar cannot answer, or the product cannot
+book — rings a `BOOKING_FAILED` bell to every active internal user, linked to the
+lead. The turn answers the customer with the follow-up promise, and the bell is
+what keeps it: without it the customer waits and the team never knows. A taken
+slot is not this: the model offers another time, so no bell rings. Repeats
+collapse on the fan-out's unique constraint, so retries do not re-announce.
+
 The event ID is derived from the conversation and the slot, so a retried turn converges
 on one event rather than double-booking the sales team.
 

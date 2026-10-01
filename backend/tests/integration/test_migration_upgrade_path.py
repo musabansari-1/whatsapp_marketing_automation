@@ -1026,3 +1026,32 @@ class TestBotSuspectedEnumValue:
 
         _alembic(scratch_database, BOT_SUSPECTED_REVISION, direction="up")
         assert _scalar(scratch_database, BOT_SUSPECTED_LABEL_SQL) == 1
+
+
+BOOKING_FAILED_REVISION = "c2d3e4f5a6b7"
+BOOKING_FAILED_PARENT = "f1a2b3c4d5e6"
+
+BOOKING_FAILED_LABEL_SQL = (
+    "SELECT count(*) FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+    "WHERE t.typname = 'notification_type' AND e.enumlabel = 'BOOKING_FAILED'"
+)
+
+
+class TestBookingFailedEnumValue:
+    """Migration `c2d3e4f5a6b7` adds the failed-booking bell label to
+    `notification_type`. Same shape as `f1a2b3c4d5e6`: an enum addition whose
+    downgrade cannot undo it, so the downgrade is a documented no-op and the
+    upgrade must be idempotent across the CI upgrade → downgrade → upgrade cycle.
+    """
+
+    def test_the_label_appears_downgrade_keeps_it_and_reupgrade_converges(
+        self, scratch_database: str
+    ) -> None:
+        _ensure_revision(scratch_database, BOOKING_FAILED_REVISION)
+        assert _scalar(scratch_database, BOOKING_FAILED_LABEL_SQL) == 1
+
+        _alembic(scratch_database, BOOKING_FAILED_PARENT, direction="down")
+        assert _scalar(scratch_database, BOOKING_FAILED_LABEL_SQL) == 1
+
+        _alembic(scratch_database, BOOKING_FAILED_REVISION, direction="up")
+        assert _scalar(scratch_database, BOOKING_FAILED_LABEL_SQL) == 1

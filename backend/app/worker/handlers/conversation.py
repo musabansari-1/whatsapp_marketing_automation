@@ -529,6 +529,16 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
     if tool_context.notify_offline_demo:
         await _queue_offline_demo_notification(settings, lead_id)
 
+    # A terminal booking failure is the one case the turn answers with a promise —
+    # "a colleague will follow up" — so the team has to hear about it, or the
+    # promise is hollow. Enqueued only when the flag survived the turn (any later
+    # success clears it), with a deterministic task ID and a fan-out that
+    # collapses repeats, so retries and repeat failures do not re-announce.
+    if tool_context.notify_booking_failed is not None:
+        await _queue_booking_failed_notification(
+            settings, conversation_id, lead_id, tool_context.notify_booking_failed
+        )
+
     # The lead has engaged, and the turn may have recorded facts or moved its status.
     # Best-effort by design: §14 forbids a CRM problem breaking the conversation, and
     # `queue_crm_sync` swallows its own failures.
@@ -581,6 +591,34 @@ async def _queue_offline_demo_notification(settings: Settings, lead_id: uuid.UUI
     except Exception as exc:  # noqa: BLE001 - a request is not worth losing over this
         logger.warning(
             "offline_demo_notification_enqueue_failed", lead_id=str(lead_id), error=str(exc)
+        )
+
+
+async def _queue_booking_failed_notification(
+    settings: Settings, conversation_id: uuid.UUID, lead_id: uuid.UUID, reason: str
+) -> None:
+    """Hand a terminal booking failure to the notification task.
+
+    Same failure contract as the other notification enqueues: best-effort, logged
+    not raised — the reply already went out with the follow-up promise, and
+    failing the turn here would re-run the whole conversation to fix a bell.
+    """
+    try:
+        await build_queue_provider(settings).enqueue(
+            TaskRequest(
+                task_type=TaskType.NOTIFY_BOOKING_FAILED,
+                # Deterministic per conversation, so a redelivered turn collapses
+                # into one task; a repeat failure collaborates with the fan-out's
+                # own collapse rather than re-announcing.
+                task_id=f"notify-booking-failed-{conversation_id}",
+                payload={"lead_id": str(lead_id), "reason": reason},
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - a bell is not worth losing a turn over
+        logger.warning(
+            "booking_failed_notification_enqueue_failed",
+            lead_id=str(lead_id),
+            error=str(exc),
         )
 
 

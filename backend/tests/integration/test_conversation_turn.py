@@ -761,3 +761,69 @@ class TestTypingIndicator:
         run_turn(message_id)
 
         assert whatsapp.typing_indicators == []
+
+
+class TestBookingFailedWiring:
+    """A terminal booking failure leaves the turn with the follow-up promise in
+    the reply and a bell for the team — the promise staging made hollow on
+    2026-10-01."""
+
+    def test_a_terminal_booking_failure_enqueues_the_team_notification(
+        self,
+        turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.integrations.queue import EnqueuedTask
+
+        llm, _whatsapp = turn_env
+        # The fixture product has no calendar, so booking refuses terminally —
+        # the same flag a downed calendar sets.
+        llm.queue_tool_call("book_demo", {"slot_id": "slot-9"})
+        llm.queue_text("The calendar cannot be checked right now. A colleague will follow up.")
+        lead_id, _, message_id = seed_turn()
+
+        enqueued: list[TaskRequest] = []
+
+        class RecordingQueue:
+            async def enqueue(self, task: TaskRequest) -> EnqueuedTask:
+                enqueued.append(task)
+                return EnqueuedTask(task_id=task.task_id, task_type=task.task_type)
+
+        monkeypatch.setattr(
+            "app.worker.handlers.conversation.build_queue_provider",
+            lambda settings: RecordingQueue(),
+        )
+
+        result = run_turn(message_id)
+
+        assert result["result"] == "replied"
+        failed = [t for t in enqueued if t.task_type is TaskType.NOTIFY_BOOKING_FAILED]
+        assert len(failed) == 1
+        assert failed[0].payload["lead_id"] == lead_id
+
+    def test_a_successful_turn_rings_no_bell(
+        self,
+        turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.integrations.queue import EnqueuedTask
+
+        llm, _whatsapp = turn_env
+        llm.queue_text("Thanks for your message!")
+        _, _, message_id = seed_turn()
+
+        enqueued: list[TaskRequest] = []
+
+        class RecordingQueue:
+            async def enqueue(self, task: TaskRequest) -> EnqueuedTask:
+                enqueued.append(task)
+                return EnqueuedTask(task_id=task.task_id, task_type=task.task_type)
+
+        monkeypatch.setattr(
+            "app.worker.handlers.conversation.build_queue_provider",
+            lambda settings: RecordingQueue(),
+        )
+
+        run_turn(message_id)
+
+        assert [t for t in enqueued if t.task_type is TaskType.NOTIFY_BOOKING_FAILED] == []

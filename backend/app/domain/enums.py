@@ -212,6 +212,13 @@ class NotificationType(StrEnum):
     #: marathon length). Detection only: flagging never gates a reply, so a wrong
     #: guess costs a dismissed notification rather than a lost customer.
     BOT_SUSPECTED = "BOT_SUSPECTED"
+    #: A booking tool failed terminally — the calendar cannot answer, or the
+    #: product cannot book — after the customer was told a colleague will follow
+    #: up. The bell is what makes that promise real; without it the customer waits
+    #: and the team never knows (staging lost an Academicae demo to exactly that
+    #: on 2026-10-01). A taken slot is not this: the model offers another time,
+    #: so no bell for that.
+    BOOKING_FAILED = "BOOKING_FAILED"
 
 
 class SuppressionReason(StrEnum):

@@ -18,6 +18,11 @@ Three rules from CLAUDE.md are enforced here rather than trusted to the prompt:
   failure when the provider refuses, and the caller must not paper over it.
 - **The slot is re-checked immediately before booking** (§12), because the customer
   chose from a list computed minutes ago.
+- **Booking takes a slot ID, never a datetime.** `get_available_slots` numbers the
+  slots it lists this turn; `book_demo` accepts only one of those IDs. A
+  hand-built time is unrepresentable, so the model cannot reformat, invent, or
+  reuse a stale time from history — staging lost a real Academicae booking to
+  exactly that on 2026-10-01.
 """
 
 from __future__ import annotations
@@ -107,6 +112,16 @@ class ToolContext:
     # Set only when a booking was newly recorded, so a retried turn does not notify
     # the team twice about the same demo.
     notify_booking_id: uuid.UUID | None = None
+    # Slots this turn's get_available_slots listings offered, slot ID to start.
+    # Replaced on every listing, so an ID from an older listing — or from history,
+    # which is another turn's listing — no longer resolves. Booking takes an ID,
+    # never a datetime, which is what makes a hand-built time unrepresentable.
+    offered_slots: dict[str, datetime] = field(default_factory=dict)
+    # Set when a booking tool fails terminally (the calendar cannot answer, or the
+    # product cannot book), with the reason. Cleared by any later success, so a
+    # recovered turn does not ring the bell. The turn handler notifies the team,
+    # which is what keeps the "a colleague will follow up" promise real.
+    notify_booking_failed: str | None = None
     # Set only when this turn newly recorded an offline demo request ([D66]), so
     # the team hears about it once. A request is not a booking: no calendar event,
     # no time, no second message to the customer.
@@ -211,8 +226,12 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                     name=AuthorizedTool.GET_AVAILABLE_SLOTS,
                     description=(
                         "Get demo times that are actually free: every slot of the first "
-                        "day with availability, from opening to closing. Only offer times "
-                        "this returns. "
+                        "day with availability, from opening to closing. Each slot has "
+                        "a slot_id — offer times only from this result, and book with "
+                        "the slot_id, never a time you write yourself. "
+                        "If the result lists existing bookings for this conversation and "
+                        "the customer is not asking to change them, confirm one of those "
+                        "instead of booking another. "
                         "Never invent a time or promise one you have not checked. "
                         "When the customer names a later date, pass from_date (YYYY-MM-DD) "
                         "to see that date's whole day — do not invent availability outside "
@@ -256,7 +275,12 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                 ToolSpec(
                     name=AuthorizedTool.BOOK_DEMO,
                     description=(
-                        "Book a demo at a time the customer chose from get_available_slots. "
+                        "Book a demo the customer chose from get_available_slots. Pass the "
+                        "slot's slot_id exactly as listed in the latest result — never a "
+                        "time you write yourself, and never an ID from an older message: "
+                        "only the latest listing's IDs can be booked. "
+                        "If it rejects the ID, call get_available_slots again and retry "
+                        "once with a fresh ID. "
                         "Only tell the customer the demo is booked if this returns ok: true. "
                         "email_sent in the result is always false — nothing is emailed, so "
                         "confirm over WhatsApp and never claim an invite was sent. "
@@ -268,15 +292,15 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                     parameters={
                         "type": "object",
                         "properties": {
-                            "start_time": {
+                            "slot_id": {
                                 "type": "string",
                                 "description": (
-                                    "Slot start in ISO 8601 format, exactly as returned by "
-                                    "get_available_slots."
+                                    "The slot_id of the chosen slot, exactly as "
+                                    "get_available_slots listed it."
                                 ),
                             }
                         },
-                        "required": ["start_time"],
+                        "required": ["slot_id"],
                     },
                 ),
             ]
@@ -467,9 +491,15 @@ async def _get_available_slots(arguments: dict[str, Any], context: ToolContext) 
         # follow up, which is better than the whole turn failing — and the guidance
         # stops it promising email or a later check, which it cannot do.
         logger.warning("ai_slot_lookup_failed", error=str(exc))
+        context.notify_booking_failed = (
+            f"Could not check the calendar: {exc}. The customer was told a colleague "
+            "will follow up."
+        )
         raise ToolError(
             f"Could not check the calendar just now. {CALENDAR_UNAVAILABLE_GUIDANCE}"
         ) from exc
+
+    context.notify_booking_failed = None
 
     return ToolResult(
         ok=True,
@@ -480,10 +510,25 @@ async def _get_available_slots(arguments: dict[str, Any], context: ToolContext) 
             "horizon_unbounded": policy.is_horizon_unbounded,
             "slots": [
                 {
+                    "slot_id": slot_id,
                     "start_time": slot.start.isoformat(),
                     "local_time": slot.start.astimezone(policy.zone).strftime("%A %d %B, %I:%M %p"),
                 }
-                for slot in slots
+                for slot_id, slot in _numbered_slots(slots, context)
+            ],
+            # Demos this conversation already holds. A retried or repeat turn must
+            # confirm one of these — never book another — unless the customer is
+            # asking to change it. Stated, not inferred: per-listing slot IDs mean
+            # the model cannot re-attempt the booked time by copying it.
+            "existing_bookings": [
+                {
+                    "start_time": booking.start_time.isoformat(),
+                    "local_time": booking.start_time.astimezone(policy.zone).strftime(
+                        "%A %d %B, %I:%M %p"
+                    ),
+                    "meeting_link": booking.meeting_link,
+                }
+                for booking in await _existing_bookings(context)
             ],
         },
     )
@@ -492,18 +537,44 @@ async def _get_available_slots(arguments: dict[str, Any], context: ToolContext) 
 async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
     """Book a demo, and never claim one that Calendar did not confirm.
 
-    The §12 sequence in full: re-check the slot against live busy intervals, create the
-    event, and only then report success. The re-check is not redundant — the customer
-    chose from a list computed minutes earlier, and someone else may have taken it
-    since.
+    The §12 sequence in full: resolve the slot ID against this turn's listing,
+    re-check the slot against live busy intervals, create the event, and only
+    then report success. The re-check is not redundant — the customer chose from
+    a list computed minutes earlier, and someone else may have taken it since.
 
     The already-booked check comes *first*, before the re-check, and that ordering is
     load-bearing. On a retried turn the booking's own calendar event is now busy time,
     so re-checking first would find the slot occupied and tell the customer their demo
     was lost — when in fact it is theirs.
     """
-    policy, calendar = _booking_capability(context)
-    start = _parse_start_time(arguments.get("start_time"))
+    if isinstance(arguments.get("start_time"), str):
+        # The pre-slot-ID contract. Refused rather than parsed: accepting both
+        # would keep the hand-built-time failure alive beside the new one.
+        raise ToolError(
+            "book_demo no longer takes a time. Call get_available_slots and pass "
+            "one of its slot_id values."
+        )
+    try:
+        policy, calendar = _booking_capability(context)
+        start = _resolve_slot(context, arguments.get("slot_id"))
+        return await _book_resolved_slot(context, policy, calendar, start)
+    except ToolError as exc:
+        # Terminal: the calendar cannot answer, or the product cannot book. The
+        # model is told to stop, and the turn handler tells the team — which is
+        # what keeps the "a colleague will follow up" promise real. A taken slot
+        # is not terminal (it returns ok=False below), so no bell for that.
+        context.notify_booking_failed = (
+            f"Booking failed: {exc}. The customer was told a colleague will follow up."
+        )
+        raise
+
+
+async def _book_resolved_slot(
+    context: ToolContext,
+    policy: SlotPolicy,
+    calendar: CalendarProvider,
+    start: datetime,
+) -> ToolResult:
     now = context.now or datetime.now(UTC)
     slot = TimeInterval(start=start, end=start + _minutes(policy.duration_minutes))
 
@@ -515,6 +586,8 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
     if already is not None and already.status is BookingStatus.CONFIRMED:
         context.booked_event_id = event_id
         context.booking_id = already.id
+        # A recovered turn is not a failed one: a later success clears the bell.
+        context.notify_booking_failed = None
         # Deliberately not set: the team was notified when this booking was first
         # recorded, and telling them twice about one demo is noise.
         logger.info("ai_demo_already_booked", booking_id=str(already.id))
@@ -594,6 +667,8 @@ async def _book_demo(arguments: dict[str, Any], context: ToolContext) -> ToolRes
         event=event,
     )
     context.booking_id = booking.id
+    # A booked demo is not a failed one, whatever an earlier attempt said.
+    context.notify_booking_failed = None
 
     if created:
         # The lead has a demo. Proposed through the §10 table like every other status
@@ -749,23 +824,44 @@ def _optional_date(value: Any) -> date | None:
         raise ToolError("from_date must be a YYYY-MM-DD string") from exc
 
 
-def _parse_start_time(value: Any) -> datetime:
-    if not isinstance(value, str) or not value.strip():
-        raise ToolError("start_time is required, in ISO 8601 format")
+def _numbered_slots(
+    slots: list[TimeInterval], context: ToolContext
+) -> list[tuple[str, TimeInterval]]:
+    """Number this turn's listing, replacing the previous registry.
 
-    text = value.strip().replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError as exc:
-        raise ToolError(f"{value!r} is not a valid ISO 8601 time") from exc
+    IDs are per-listing (`slot-1`, `slot-2`, …), so an ID from an older listing —
+    or from history, which is another turn's listing — resolves to nothing, and
+    the model is told to re-check rather than booking a stale time.
+    """
+    numbered = [(f"slot-{index + 1}", slot) for index, slot in enumerate(slots)]
+    context.offered_slots = {slot_id: slot.start for slot_id, slot in numbered}
+    return numbered
 
-    if parsed.tzinfo is None:
-        # A naive time is ambiguous, and guessing a timezone here would book the demo
-        # in the wrong one. Refused so the model re-reads the slot it was given.
-        raise ToolError(
-            "start_time must include a timezone offset, exactly as get_available_slots returned it"
-        )
-    return parsed
+
+async def _existing_bookings(context: ToolContext) -> list[Any]:
+    """Confirmed bookings already held by this turn's conversation."""
+    return await booking_repo.list_confirmed_for_conversation(
+        context.session, context.conversation.id
+    )
+
+
+def _resolve_slot(context: ToolContext, value: Any) -> datetime:
+    """Resolve a slot ID from the latest listing to its start.
+
+    A datetime is no longer accepted at all: the staging incident this replaces
+    was a model hand-building "2026-09-25 10:00" with no timezone and losing a
+    real booking to the format refusal. An unknown ID — invented, reformatted,
+    or carried over from history — fails with instructions to re-check, which is
+    the retry the model needs rather than a dead end.
+    """
+    if isinstance(value, str) and value.strip():
+        start = context.offered_slots.get(value.strip())
+        if start is not None:
+            return start
+    raise ToolError(
+        f"{value!r} is not a slot from the latest availability check. "
+        "Call get_available_slots again and pass one of its slot_id values exactly."
+    )
 
 
 def _positive_int(value: Any, *, default: int, maximum: int) -> int:

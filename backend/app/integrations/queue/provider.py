@@ -43,6 +43,10 @@ class TaskType(StrEnum):
     # same reason as NOTIFY_BOOKING, but team-only: the customer was already told
     # in the turn's reply, and a second message would double-text them.
     NOTIFY_OFFLINE_DEMO = "notify_offline_demo"
+    # Telling the team a booking failed terminally, after the customer was told a
+    # colleague will follow up. Without this the promise in the fallback reply is
+    # hollow: the customer waits and nobody is told. Team-only, same reason.
+    NOTIFY_BOOKING_FAILED = "notify_booking_failed"
     INGEST_KNOWLEDGE_DOCUMENT = "ingest_knowledge_document"
     GENERATE_EMBEDDINGS = "generate_embeddings"
     SYNC_CRM_CONTACT = "sync_crm_contact"

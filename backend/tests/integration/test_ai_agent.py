@@ -135,6 +135,40 @@ def run_tool(
     return run_db(call)
 
 
+def run_turn_tools(
+    calls: list[tuple[str, dict[str, Any]]],
+    *,
+    lead_id: str,
+    conversation_id: str,
+    calendar: FakeCalendarProvider | None = None,
+    rules: QualificationRules | None = None,
+    policy: SlotPolicy | None = None,
+) -> tuple[list[ai_tools.ToolResult], str | None]:
+    """Dispatch several tools on one shared context, as a real turn does.
+
+    A turn's slot registry lives on the context, so slots-then-book sequences
+    must share one — `run_tool` builds a fresh context per call and cannot.
+    Returns the results and the booking-failure flag the turn handler reads.
+    """
+    results: list[ai_tools.ToolResult] = []
+
+    async def call(session: AsyncSession) -> str | None:
+        context = await a_context(
+            session,
+            lead_id,
+            conversation_id,
+            calendar=calendar,
+            rules=rules,
+            policy=policy,
+        )
+        for name, arguments in calls:
+            results.append(await ai_tools.dispatch(name, arguments, context))
+        return context.notify_booking_failed
+
+    flag = run_db(call)
+    return results, flag
+
+
 class TestAuthorizationBoundary:
     """§9: the AI may only request the six listed tools."""
 
@@ -285,6 +319,12 @@ class TestAvailableSlots:
         assert result.ok
         assert result.data["slots"]
         assert result.data["timezone"] == "Asia/Kolkata"
+        # IDs are positional within the listing: what book_demo takes.
+        assert [slot["slot_id"] for slot in result.data["slots"][:3]] == [
+            "slot-1",
+            "slot-2",
+            "slot-3",
+        ]
 
     def test_busy_time_is_excluded(self) -> None:
         """§12's sequence starts here: retrieve *actual* slots, then offer those."""
@@ -379,66 +419,69 @@ class TestAvailableSlots:
 
 
 class TestBookDemo:
-    def _first_slot(
-        self, lead_id: str, conversation_id: str, calendar: FakeCalendarProvider
-    ) -> str:
-        result = run_tool(
-            "get_available_slots",
-            {},
-            lead_id=lead_id,
-            conversation_id=conversation_id,
-            calendar=calendar,
-        )
-        return str(result.data["slots"][0]["start_time"])
+    """Booking takes a slot ID from the latest listing, never a datetime.
+
+    Staging 2026-10-01: the model hand-built "2026-09-25 10:00" with no timezone
+    and lost a real Academicae booking to the format refusal. A time is now
+    unrepresentable — only IDs from this turn's latest listing resolve, and an
+    unknown ID fails with instructions to re-check rather than a dead end.
+    """
 
     def test_a_demo_is_booked(self) -> None:
         lead_id, conversation_id = seed()
         calendar = FakeCalendarProvider()
-        start = self._first_slot(lead_id, conversation_id, calendar)
 
-        result = run_tool(
-            "book_demo",
-            {"start_time": start},
+        results, flag = run_turn_tools(
+            [("get_available_slots", {}), ("book_demo", {"slot_id": "slot-1"})],
             lead_id=lead_id,
             conversation_id=conversation_id,
             calendar=calendar,
         )
 
-        assert result.ok
-        assert result.data["booked"] is True
-        assert result.data["event_id"]
+        booked = results[1]
+        assert booked.ok
+        assert booked.data["booked"] is True
+        assert booked.data["event_id"]
+        # Success is not a failure: no bell.
+        assert flag is None
 
     def test_a_taken_slot_is_refused_rather_than_double_booked(self) -> None:
         """§12 re-checks immediately before booking: the customer chose from a list
-        computed minutes ago."""
+        computed minutes ago. A taken slot is refused without a bell — the model
+        offers another time, so there is nothing for the team to do."""
+
+        class LateBusyCalendar(FakeCalendarProvider):
+            """Free at listing time, fully busy at pre-check time: the race itself."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self._calls = 0
+
+            async def list_busy_intervals(self, window: TimeInterval) -> list[TimeInterval]:
+                self._calls += 1
+                if self._calls > 1:
+                    return [TimeInterval(start=window.start, end=window.end)]
+                return await super().list_busy_intervals(window)
+
         lead_id, conversation_id = seed()
-        calendar = FakeCalendarProvider()
-        start = self._first_slot(lead_id, conversation_id, calendar)
 
-        calendar.busy.append(
-            TimeInterval(
-                start=datetime.fromisoformat(start),
-                end=datetime.fromisoformat(start) + timedelta(minutes=30),
-            )
-        )
-
-        result = run_tool(
-            "book_demo",
-            {"start_time": start},
+        results, flag = run_turn_tools(
+            [("get_available_slots", {}), ("book_demo", {"slot_id": "slot-1"})],
             lead_id=lead_id,
             conversation_id=conversation_id,
-            calendar=calendar,
+            calendar=LateBusyCalendar(),
         )
 
-        assert result.ok is False
-        assert "no longer available" in (result.error or "")
+        assert results[1].ok is False
+        assert "no longer available" in (results[1].error or "")
+        assert flag is None
 
     def test_nothing_is_claimed_when_the_calendar_refuses_to_write(self) -> None:
         """CLAUDE.md: never claim a demo is booked before Calendar confirms it.
 
         The failure is injected on `create_event` alone, so the slot check passes and
         only the write fails — the case where a naive implementation would already
-        have told the customer it was booked.
+        have told the customer it was booked. Terminal, so the team is told.
         """
 
         class WriteFailingCalendar(FakeCalendarProvider):
@@ -446,28 +489,27 @@ class TestBookDemo:
                 raise RuntimeError("calendar write failed")
 
         lead_id, conversation_id = seed()
-        calendar = WriteFailingCalendar()
-        start = self._first_slot(lead_id, conversation_id, calendar)
 
-        result = run_tool(
-            "book_demo",
-            {"start_time": start},
+        results, flag = run_turn_tools(
+            [("get_available_slots", {}), ("book_demo", {"slot_id": "slot-1"})],
             lead_id=lead_id,
             conversation_id=conversation_id,
-            calendar=calendar,
+            calendar=WriteFailingCalendar(),
         )
 
-        assert result.ok is False
-        assert "booked" not in result.data
+        failed = results[1]
+        assert failed.ok is False
+        assert "booked" not in failed.data
         # The write failed after the slot check passed: the model must not claim it is
         # booked, and must not promise to confirm later or by email (D-22, 2026-09-22).
-        error = result.error or ""
+        error = failed.error or ""
         assert "do not promise to check again later" in error
         assert "colleague will follow up" in error
+        assert flag is not None
 
     def test_a_slot_lost_between_check_and_write_is_reported_honestly(self) -> None:
         """The race §12 narrows but cannot close: someone books between the re-check
-        and the write."""
+        and the write. Refused without a bell — another time is offered."""
         from app.integrations.calendar import SlotUnavailableError
 
         class RacingCalendar(FakeCalendarProvider):
@@ -475,87 +517,101 @@ class TestBookDemo:
                 raise SlotUnavailableError("taken")
 
         lead_id, conversation_id = seed()
-        calendar = RacingCalendar()
-        start = self._first_slot(lead_id, conversation_id, calendar)
 
-        result = run_tool(
-            "book_demo",
-            {"start_time": start},
+        results, flag = run_turn_tools(
+            [("get_available_slots", {}), ("book_demo", {"slot_id": "slot-1"})],
+            lead_id=lead_id,
+            conversation_id=conversation_id,
+            calendar=RacingCalendar(),
+        )
+
+        assert results[1].ok is False
+        assert "taken" in (results[1].error or "")
+        assert flag is None
+
+    def test_booking_without_checking_first_is_refused(self) -> None:
+        """The staging incident in reverse: no listing this turn means no IDs, so a
+        slot from history or imagination resolves to nothing."""
+        lead_id, conversation_id = seed()
+
+        results, _ = run_turn_tools(
+            [("book_demo", {"slot_id": "slot-1"})],
+            lead_id=lead_id,
+            conversation_id=conversation_id,
+        )
+
+        assert results[0].ok is False
+        assert "latest availability check" in (results[0].error or "")
+
+    def test_an_invented_slot_id_is_refused(self) -> None:
+        lead_id, conversation_id = seed()
+
+        results, _ = run_turn_tools(
+            [("get_available_slots", {}), ("book_demo", {"slot_id": "slot-99"})],
+            lead_id=lead_id,
+            conversation_id=conversation_id,
+        )
+
+        assert results[1].ok is False
+        assert "get_available_slots again" in (results[1].error or "")
+
+    def test_a_time_instead_of_an_id_is_refused(self) -> None:
+        """The pre-slot-ID contract is refused, not parsed: accepting both would
+        keep the hand-built-time failure alive beside the new one."""
+        lead_id, conversation_id = seed()
+
+        results, _ = run_turn_tools(
+            [("book_demo", {"start_time": "2026-09-02T10:00:00+05:30"})],
+            lead_id=lead_id,
+            conversation_id=conversation_id,
+        )
+
+        assert results[0].ok is False
+        assert "no longer takes a time" in (results[0].error or "")
+
+    def test_a_rejected_id_recovers_through_a_fresh_listing(self) -> None:
+        """The incident's recovery path: a stale ID fails with instructions, the
+        model re-checks, and the fresh ID books. The earlier failure leaves no
+        bell behind a success."""
+        lead_id, conversation_id = seed()
+        calendar = FakeCalendarProvider()
+
+        results, flag = run_turn_tools(
+            [
+                ("book_demo", {"slot_id": "slot-9"}),
+                ("get_available_slots", {}),
+                ("book_demo", {"slot_id": "slot-1"}),
+            ],
             lead_id=lead_id,
             conversation_id=conversation_id,
             calendar=calendar,
         )
 
-        assert result.ok is False
-        assert "taken" in (result.error or "")
-
-    def test_a_slot_outside_working_hours_is_refused(self) -> None:
-        """Even if the model invents a plausible-sounding time."""
-        lead_id, conversation_id = seed()
-
-        result = run_tool(
-            "book_demo",
-            {"start_time": "2026-09-02T22:00:00+05:30"},
-            lead_id=lead_id,
-            conversation_id=conversation_id,
-        )
-
-        assert result.ok is False
-
-    def test_a_past_slot_is_refused(self) -> None:
-        lead_id, conversation_id = seed()
-
-        result = run_tool(
-            "book_demo",
-            {"start_time": "2020-01-01T10:00:00+05:30"},
-            lead_id=lead_id,
-            conversation_id=conversation_id,
-        )
-
-        assert result.ok is False
-
-    @pytest.mark.parametrize("value", ["", "tomorrow at ten", "2026-13-45T10:00:00Z", None])
-    def test_an_unparseable_time_is_refused(self, value: Any) -> None:
-        lead_id, conversation_id = seed()
-
-        result = run_tool(
-            "book_demo",
-            {"start_time": value},
-            lead_id=lead_id,
-            conversation_id=conversation_id,
-        )
-
-        assert result.ok is False
-
-    def test_a_naive_time_is_refused(self) -> None:
-        """Guessing a timezone would book the demo in the wrong one."""
-        lead_id, conversation_id = seed()
-
-        result = run_tool(
-            "book_demo",
-            {"start_time": "2026-09-02T11:00:00"},
-            lead_id=lead_id,
-            conversation_id=conversation_id,
-        )
-
-        assert result.ok is False
-        assert "timezone" in (result.error or "")
+        assert results[0].ok is False
+        assert results[1].ok is True
+        assert results[2].ok is True
+        assert results[2].data["booked"] is True
+        assert flag is None
 
     def test_booking_the_same_slot_twice_converges_on_one_event(self) -> None:
         """The event ID is derived from the conversation and the slot, so a retried
         turn does not double-book the sales team."""
         lead_id, conversation_id = seed()
         calendar = FakeCalendarProvider()
-        start = self._first_slot(lead_id, conversation_id, calendar)
 
-        first = run_tool(
-            "book_demo",
-            {"start_time": start},
+        results, _ = run_turn_tools(
+            [
+                ("get_available_slots", {}),
+                ("book_demo", {"slot_id": "slot-1"}),
+                ("book_demo", {"slot_id": "slot-1"}),
+            ],
             lead_id=lead_id,
             conversation_id=conversation_id,
             calendar=calendar,
         )
-        assert first.ok
+
+        assert results[1].ok
+        assert results[2].ok
         assert len(calendar.events) == 1
 
 

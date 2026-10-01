@@ -186,16 +186,50 @@ def run_tool(
 def book(
     conversation: tuple[uuid.UUID, uuid.UUID],
     calendar: FakeCalendarProvider | None,
-    start: datetime | str = TUESDAY_10AM,
+    start: datetime | None = None,
     **extra: Any,
 ) -> ai_tools.ToolResult:
-    start_time = start if isinstance(start, str) else start.isoformat()
-    return run_tool(
-        "book_demo",
-        {"start_time": start_time, **extra},
-        conversation=conversation,
-        calendar=calendar,
-    )
+    """List slots and book one, on one shared context as a turn does.
+
+    Without `start` the first free slot is booked. With one, the listing covers
+    the wanted hour and its slot ID is booked — the model path (list, pick an
+    ID), never a time passed straight to booking.
+    """
+    lead_id, conversation_id = conversation
+
+    async def call(session: AsyncSession) -> ai_tools.ToolResult:
+        lead = await conversation_repo.get_lead(session, lead_id)
+        row = await conversation_repo.get_conversation(session, conversation_id)
+        assert lead is not None and row is not None
+        context = ai_tools.ToolContext(
+            session=session,
+            lead=lead,
+            conversation=row,
+            slot_policy=a_policy() if calendar is not None else None,
+            calendar=calendar,
+            qualification_rules=QualificationRules(),
+            now=NOW,
+        )
+        list_args: dict[str, Any] = {}
+        if start is not None:
+            local = start.astimezone(IST)
+            list_args = {"from_date": local.strftime("%Y-%m-%d"), "days": 7}
+        slots = await ai_tools.dispatch("get_available_slots", list_args, context)
+        if not slots.ok:
+            # No listing means no IDs: booking refuses, same as the turn sees.
+            return await ai_tools.dispatch("book_demo", {"slot_id": "slot-1"}, context)
+        wanted = slots.data["slots"][0]["slot_id"]
+        if start is not None:
+            match = [
+                slot["slot_id"]
+                for slot in slots.data["slots"]
+                if datetime.fromisoformat(slot["start_time"]) == start
+            ]
+            assert match, f"wanted hour {start} not listed"
+            wanted = match[0]
+        return await ai_tools.dispatch("book_demo", {"slot_id": wanted, **extra}, context)
+
+    return run_db(call)
 
 
 def first_slot(conversation: tuple[uuid.UUID, uuid.UUID], calendar: FakeCalendarProvider) -> str:
@@ -283,7 +317,7 @@ class TestTheSameHourInDifferentProducts:
         }
 
         for product in products:
-            result = book(seed_conversation(product), calendars[product])
+            result = book(seed_conversation(product), calendars[product], TUESDAY_10AM)
             assert result.ok, result.error
 
         assert confirmed_products_at(TUESDAY_10AM) == sorted(products, key=str)
@@ -304,18 +338,18 @@ class TestTheSameHourInDifferentProducts:
 
 class TestTheSameHourInOneProduct:
     def test_a_second_customer_cannot_take_a_confirmed_hour(self) -> None:
-        """Existing double-booking protection, unchanged within a product: the re-check
-        against the product's calendar finds the first booking's event."""
+        """Existing double-booking protection, unchanged within a product: the taken
+        hour leaves the next listing, and the re-check stands behind it."""
         product = make_product("k-only", "only@calendar.example")
         calendar = FakeCalendarProvider(calendar_id="only@calendar.example")
 
-        assert book(seed_conversation(product, "+919876500711"), calendar).ok
-        second = book(seed_conversation(product, "+919876500712"), calendar)
+        assert book(seed_conversation(product, "+919876500711"), calendar, TUESDAY_10AM).ok
+        second_conversation = seed_conversation(product, "+919876500712")
 
-        assert second.ok is False
-        assert "no longer available" in (second.error or "")
+        assert datetime.fromisoformat(first_slot(second_conversation, calendar)) != TUESDAY_10AM
+        assert book(second_conversation, calendar).ok
         assert confirmed_products_at(TUESDAY_10AM) == [product]
-        assert calendar.event_count == 1
+        assert calendar.event_count == 2
 
     def test_the_database_refuses_a_second_confirmation(self) -> None:
         """The race §12 requires closing: two confirmations of one hour in one product
@@ -451,7 +485,7 @@ class TestAvailabilityIsolation:
         beta_calendar = FakeCalendarProvider(calendar_id="beta@calendar.example")
 
         hour = first_slot(alpha_conversation, alpha_calendar)
-        assert book(alpha_conversation, alpha_calendar, hour).ok
+        assert book(alpha_conversation, alpha_calendar).ok
 
         assert first_slot(alpha_conversation, alpha_calendar) != hour
         assert first_slot(beta_conversation, beta_calendar) == hour
@@ -572,17 +606,7 @@ class TestExistingBehaviourIsUnchanged:
         assert isinstance(calendar, FakeCalendarProvider)
 
         conversation = seed_conversation(product)
-        slots = run_tool(
-            "get_available_slots", {}, conversation=conversation, calendar=calendar, policy=policy
-        )
-        assert slots.ok, slots.error
-        booked = run_tool(
-            "book_demo",
-            {"start_time": slots.data["slots"][0]["start_time"]},
-            conversation=conversation,
-            calendar=calendar,
-            policy=policy,
-        )
+        booked = book(conversation, calendar)
 
         assert booked.ok, booked.error
         [row] = booking_rows()

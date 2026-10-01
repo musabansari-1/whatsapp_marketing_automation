@@ -7,6 +7,7 @@ touch the worker entrypoint.
 
 from app.integrations.queue import TaskType
 from app.worker.handlers.booking import notify_booking
+from app.worker.handlers.booking_failed import notify_booking_failed
 from app.worker.handlers.bot_audit import sweep_bot_activity
 from app.worker.handlers.campaign_send import send_campaign_message
 from app.worker.handlers.conversation import process_conversation_turn
@@ -38,6 +39,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
         TaskType.INGEST_KNOWLEDGE_DOCUMENT: ingest_knowledge_document,
         TaskType.PROCESS_CONVERSATION_TURN: process_conversation_turn,
         TaskType.NOTIFY_BOOKING: notify_booking,
+        TaskType.NOTIFY_BOOKING_FAILED: notify_booking_failed,
         TaskType.NOTIFY_OFFLINE_DEMO: notify_offline_demo,
         TaskType.SWEEP_BOT_ACTIVITY: sweep_bot_activity,
         TaskType.SYNC_CRM_CONTACT: sync_crm_contact,
@@ -54,6 +56,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
 __all__ = [
     "ingest_knowledge_document",
     "notify_booking",
+    "notify_booking_failed",
     "notify_offline_demo",
     "queue_crm_sync",
     "process_conversation_turn",

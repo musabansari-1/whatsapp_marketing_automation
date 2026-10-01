@@ -75,6 +75,27 @@ async def find_confirmed_at(
     return result.scalars().first()
 
 
+async def list_confirmed_for_conversation(
+    session: AsyncSession, conversation_id: uuid.UUID
+) -> list[Booking]:
+    """Confirmed bookings this conversation already holds, oldest first.
+
+    Surfaced in the availability listing so a retried or repeat turn confirms the
+    existing demo instead of booking a second one: with per-listing slot IDs the
+    model can no longer re-attempt the same time by copying it, so the existing
+    booking must be stated, not inferred.
+    """
+    result = await session.execute(
+        select(Booking)
+        .where(
+            Booking.conversation_id == conversation_id,
+            Booking.status == BookingStatus.CONFIRMED,
+        )
+        .order_by(Booking.start_time)
+    )
+    return list(result.scalars().all())
+
+
 async def record_confirmed_booking(
     session: AsyncSession,
     *,

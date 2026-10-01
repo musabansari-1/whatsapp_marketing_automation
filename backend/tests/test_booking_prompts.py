@@ -45,6 +45,44 @@ class TestBookingFailureGuidance:
             assert "the calendar cannot be checked right now" in prompt, slug
             assert prompt.count("will follow up") >= 2, slug  # flow + booking rules
 
+
+class TestSlotIdBookingRules:
+    """Staging 2026-10-01: the model offered stale September slots from history
+    without calling get_available_slots, then hand-built a datetime with no
+    timezone and lost a real Academicae booking to the format refusal. Booking
+    takes a slot ID from the latest listing now — never a written time — and the
+    prompts must say so where every turn reads it."""
+
+    def test_both_booking_products_book_by_slot_id(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "Book with the slot_id exactly as listed" in prompt, slug
+            assert "Never write a time yourself" in prompt, slug
+
+    def test_both_booking_products_treat_history_slots_as_expired(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "in this turn" in prompt, slug
+            assert "Times from earlier messages are expired" in prompt, slug
+
+    def test_both_booking_products_retry_once_before_falling_back(self) -> None:
+        """The old unconditional fallback taught the model to give up on its own
+        correctable mistakes. A rejected slot means re-check and retry once; only
+        an unreachable calendar means the fallback sentence."""
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "retry once with a fresh slot_id" in prompt, slug
+            assert "because the calendar cannot be reached" in prompt, slug
+
+    def test_both_booking_products_confirm_an_existing_booking(self) -> None:
+        """Per-listing slot IDs mean the model cannot re-attempt a booked time by
+        copying it, so a repeat turn must be told the booking exists rather than
+        booking a second demo beside it."""
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "already has a booked demo" in prompt, slug
+            assert "confirm that booking instead of booking another" in prompt, slug
+
     def test_both_booking_products_never_invent_a_meet_link(self) -> None:
         """The join link only exists when the calendar could host a conference; a
         secondary calendar in a personal-Google account has none. The model must
