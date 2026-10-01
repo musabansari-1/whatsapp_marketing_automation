@@ -30,7 +30,10 @@ specific failure:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -96,6 +99,13 @@ logger = get_logger(__name__)
 # setting's default.
 DEFAULT_HISTORY_TURNS = 14
 
+# How often a long turn re-fires the typing indicator. Meta dismisses it 25
+# seconds after each firing, so the interval must stay under that: each refresh
+# opens a new 25-second window, and the refreshes stop when the turn ends. A
+# module constant rather than a setting on purpose — raising it past 25 would
+# silently break the continuity it exists to provide.
+TYPING_INDICATOR_REFRESH_SECONDS = 20.0
+
 
 @dataclass(frozen=True, slots=True)
 class TurnOutcome:
@@ -121,6 +131,67 @@ def reply_idempotency_key(message_id: str) -> str:
     refuses the second write.
     """
     return f"reply-{message_id}"
+
+
+async def _show_typing_indicator(
+    settings: Settings, product_id: uuid.UUID, provider_message_id: str | None
+) -> None:
+    """Show blue ticks + "typing…" for the message about to be answered.
+
+    Called only after every no-reply exit above has returned, so indicator on
+    screen always means a reply is being generated right now. Meta dismisses it
+    when the reply lands or after 25 seconds, so it can never stick. Best-effort
+    throughout: a status failure must not lose the turn.
+    """
+    if not provider_message_id:
+        return
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            product = await session.get(Product, product_id)
+        if product is None:
+            return
+        whatsapp = build_whatsapp_provider(settings, product=product)
+        await whatsapp.mark_read_with_typing(provider_message_id)
+    except Exception as exc:  # noqa: BLE001 - read receipt is not worth losing the turn over
+        logger.warning("conversation_typing_indicator_failed", error=str(exc))
+
+
+@asynccontextmanager
+async def _typing_indicator_alive(
+    settings: Settings,
+    product_id: uuid.UUID,
+    provider_message_id: str | None,
+    *,
+    interval_seconds: float = TYPING_INDICATOR_REFRESH_SECONDS,
+) -> AsyncIterator[None]:
+    """Keep "typing…" on screen for the duration of a long turn.
+
+    Re-fires the indicator every interval while the block runs — model rounds,
+    tool calls, calendar booking — and stops on exit for any reason: reply sent,
+    failure, or exception. The last firing then expires on its own within 25
+    seconds, so the indicator can never outlive the turn it belongs to.
+    `interval_seconds` exists for tests; production uses the constant above.
+    """
+    stop = asyncio.Event()
+
+    async def _refresh() -> None:
+        try:
+            while not stop.is_set():
+                await asyncio.sleep(interval_seconds)
+                if not stop.is_set():
+                    await _show_typing_indicator(settings, product_id, provider_message_id)
+        except asyncio.CancelledError:
+            pass
+
+    task = asyncio.create_task(_refresh())
+    try:
+        yield
+    finally:
+        stop.set()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
@@ -220,6 +291,7 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         product_id = conversation.product_id
         segment_id = conversation.segment_id
         question = message.body or ""
+        trigger_wamid = message.provider_message_id
         await session.commit()
 
     started = datetime.now(UTC)
@@ -242,6 +314,10 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             error=str(exc),
         )
         return TurnOutcome("ai_not_configured", str(conversation_id)).as_dict()
+
+    # Past every exit that answers nothing, so a reply is now genuinely imminent.
+    # The customer sees blue ticks + "typing…" while the model works.
+    await _show_typing_indicator(settings, product_id, trigger_wamid)
 
     # Retrieval happens before the model runs and outside the tool loop: §11 makes it
     # the evidence the reply is grounded in, not something the model chooses to
@@ -311,16 +387,17 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
                 ),
             )
 
-            outcome = await respond_to_customer(
-                provider=provider,
-                system_prompt=system_prompt,
-                history=prompt,
-                retrieval=retrieval,
-                context=tool_context,
-                fallback_message=ai_config.fallback_message,
-                max_rounds=ai_config.max_tool_rounds,
-                include_booking_tools=include_booking_tools,
-            )
+            async with _typing_indicator_alive(settings, product_id, trigger_wamid):
+                outcome = await respond_to_customer(
+                    provider=provider,
+                    system_prompt=system_prompt,
+                    history=prompt,
+                    retrieval=retrieval,
+                    context=tool_context,
+                    fallback_message=ai_config.fallback_message,
+                    max_rounds=ai_config.max_tool_rounds,
+                    include_booking_tools=include_booking_tools,
+                )
             # Tools write through this session, so their effects are committed with
             # the turn rather than left dangling if the send fails.
             await session.commit()

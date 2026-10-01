@@ -31,6 +31,7 @@ class FakeWhatsAppProvider(WhatsAppProvider):
     ) -> None:
         self.sent_templates: list[OutboundTemplateMessage] = []
         self.sent_texts: list[OutboundTextMessage] = []
+        self.typing_indicators: list[str] = []
         self.approved_templates = list(approved_templates or [])
         self.fail_with = fail_with
         self._counter = itertools.count(1)
@@ -76,6 +77,10 @@ class FakeWhatsAppProvider(WhatsAppProvider):
         self._maybe_fail()
         return list(self.approved_templates)
 
+    async def mark_read_with_typing(self, provider_message_id: str) -> None:
+        self._maybe_fail()
+        self.typing_indicators.append(provider_message_id)
+
     # ---------------------------------------------------------------- test helpers
 
     @property
@@ -88,6 +93,7 @@ class FakeWhatsAppProvider(WhatsAppProvider):
     def reset(self) -> None:
         self.sent_templates.clear()
         self.sent_texts.clear()
+        self.typing_indicators.clear()
         self._by_idempotency_key.clear()
 
     def fail_retryably(self, message: str = "simulated WhatsApp outage") -> None:

@@ -132,3 +132,13 @@ class WhatsAppProvider(ABC):
     @abstractmethod
     async def fetch_approved_templates(self) -> list[ApprovedTemplate]:
         """Return templates Meta has approved, for synchronization into the database."""
+
+    @abstractmethod
+    async def mark_read_with_typing(self, provider_message_id: str) -> None:
+        """Mark an inbound message read and show a typing indicator.
+
+        Meta dismisses the indicator when the reply lands or after 25 seconds,
+        so it can never stick on screen. A status update, not a send: no
+        idempotency key, no result, and callers treat failure as best-effort —
+        losing a turn over a read receipt would be absurd.
+        """

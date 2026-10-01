@@ -690,3 +690,74 @@ class TestToolCalls:
         # The final round is asked without tools, so the loop terminates in words.
         assert len(llm.requests) <= 4
         assert len(whatsapp.sent_texts) == 1
+
+
+def _trigger_wamid(message_id: str) -> str:
+    async def fetch(session: AsyncSession) -> str:
+        row = await session.get(Message, uuid.UUID(message_id))
+        assert row is not None
+        assert row.provider_message_id is not None
+        return row.provider_message_id
+
+    return run_db(fetch)
+
+
+class TestTypingIndicator:
+    """Blue ticks + "typing…" fire only when a reply is genuinely imminent.
+
+    Every exit that answers nothing — already handled, closed, suppressed,
+    outside the window — returns before the indicator, so it can never promise
+    a reply that never comes. Meta dismisses it on reply or after 25s anyway.
+    """
+
+    def test_normal_turn_shows_typing_for_the_triggering_message(
+        self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
+    ) -> None:
+        _llm, whatsapp = turn_env
+        _, _, message_id = seed_turn()
+
+        run_turn(message_id)
+
+        assert whatsapp.typing_indicators == [_trigger_wamid(message_id)]
+
+    def test_no_second_indicator_on_redelivery(
+        self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
+    ) -> None:
+        """A retried task returns at `already_replied`, before the indicator."""
+        _llm, whatsapp = turn_env
+        _, _, message_id = seed_turn()
+
+        run_turn(message_id)
+        run_turn(message_id)
+
+        assert whatsapp.typing_indicators == [_trigger_wamid(message_id)]
+
+    def test_no_indicator_when_suppressed(
+        self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
+    ) -> None:
+        _llm, whatsapp = turn_env
+        _, _, message_id = seed_turn(suppressed=True)
+
+        run_turn(message_id)
+
+        assert whatsapp.typing_indicators == []
+
+    def test_no_indicator_when_closed(
+        self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
+    ) -> None:
+        _llm, whatsapp = turn_env
+        _, _, message_id = seed_turn(conversation_status=ConversationStatus.CLOSED)
+
+        run_turn(message_id)
+
+        assert whatsapp.typing_indicators == []
+
+    def test_no_indicator_outside_the_window(
+        self, turn_env: tuple[FakeLLMProvider, FakeWhatsAppProvider]
+    ) -> None:
+        _llm, whatsapp = turn_env
+        _, _, message_id = seed_turn(last_inbound_age=timedelta(hours=30))
+
+        run_turn(message_id)
+
+        assert whatsapp.typing_indicators == []

@@ -127,6 +127,29 @@ class MetaWhatsAppProvider(WhatsAppProvider):
         }
         return await self._send(payload, to=message.to_e164)
 
+    async def mark_read_with_typing(self, provider_message_id: str) -> None:
+        """Show blue ticks + "typing…" for the message being answered.
+
+        Fired only once the turn has committed to replying, so indicator on
+        screen always means a reply is being generated right now. Meta clears it
+        on reply or after 25 seconds — it cannot stick, whatever we do.
+        """
+        if self._phone_number_id is None:
+            raise NonRetryableProviderError(
+                "This WhatsApp provider has no phone number to send from", provider=self.name
+            )
+        await self._request(
+            "POST",
+            f"{self._base_url}/{self._phone_number_id}/messages",
+            json={
+                "messaging_product": "whatsapp",
+                "status": "read",
+                "message_id": provider_message_id,
+                "typing_indicator": {"type": "text"},
+            },
+        )
+        logger.info("whatsapp_typing_indicator_shown", provider_message_id=provider_message_id)
+
     async def fetch_approved_templates(self) -> list[ApprovedTemplate]:
         """List templates from the WhatsApp Business Account ([D6]).
 

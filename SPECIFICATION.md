@@ -710,6 +710,13 @@ after the task was queued ([D16]).
 The reply's idempotency key is derived from the triggering message, so a retry computes
 the same key and the unique constraint refuses the second write.
 
+Once every no-reply exit above has returned, the turn marks the triggering message
+read with a typing indicator, so the customer sees activity while the model works.
+Meta dismisses it on reply or after 25 seconds, and it is best-effort: a status
+failure never loses the turn. A turn running long re-fires it every 20 seconds
+until the agent run ends, so multi-round turns keep one continuous indicator
+that still expires on its own if the worker dies mid-turn.
+
 Outside the 24-hour window the customer's turn is still recorded but nothing is sent:
 §8 permits only an approved template there, and [D24] leaves that content with the
 client.

@@ -348,6 +348,37 @@ class TestSending:
             )
 
 
+class TestTypingIndicator:
+    async def test_the_typing_indicator_payload_shape(self) -> None:
+        """Blue ticks + "typing…" for the message being answered. Meta dismisses it
+        on reply or after 25 seconds, so it can never stick on screen."""
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"success": True})
+
+        await make_provider(handler).mark_read_with_typing("wamid.INBOUND")
+
+        assert captured["messaging_product"] == "whatsapp"
+        assert captured["status"] == "read"
+        assert captured["message_id"] == "wamid.INBOUND"
+        assert captured["typing_indicator"] == {"type": "text"}
+
+    async def test_typing_without_a_number_refuses(self) -> None:
+        """A template-only provider has no number to send the status from."""
+        provider = MetaWhatsAppProvider(
+            access_token="secret-token",  # noqa: S106 - never leaves the mock
+            phone_number_id=None,
+            business_account_id="waba-1",
+            client=httpx.AsyncClient(transport=httpx.MockTransport(ok_send)),
+        )
+        with pytest.raises(NonRetryableProviderError, match="no phone number"):
+            await provider.mark_read_with_typing("wamid.INBOUND")
+
+
 class TestRetryableFailures:
     """§20: retry only what might succeed."""
 
