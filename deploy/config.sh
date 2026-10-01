@@ -40,6 +40,14 @@ API_MIN_INSTANCES="${API_MIN_INSTANCES:-0}"
 API_MAX_INSTANCES="${API_MAX_INSTANCES:-10}"
 WORKER_MAX_INSTANCES="${WORKER_MAX_INSTANCES:-10}"
 
+# How many tasks one worker instance handles at once. Turns spend nearly all of
+# their time awaiting the model, webhooks and CRM syncs are pure I/O, and only
+# embedding batches burn CPU — so at 1, webhook/CRM/turn work single-files and a
+# turn can wait ~10s behind unrelated tasks (measured on staging). 3 lets that
+# triple overlap; revisit downward if turn latencies ever show CPU contention
+# (embedding batches colliding), upward if queue waits reappear at volume.
+WORKER_CONCURRENCY="${WORKER_CONCURRENCY:-3}"
+
 # WORKER_MIN_INSTANCES defaults to 1. A worker instance starts empty and loads the
 # embedding model on first use, so a cold start is tens of seconds, while Cloud Tasks
 # retries a failed dispatch five times on a 2s→300s backoff and then *drops* the task.

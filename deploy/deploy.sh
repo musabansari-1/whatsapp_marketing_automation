@@ -160,17 +160,17 @@ echo "  worker: $WORKER_URL"
 # Scheduler, through the invoker service account's OIDC token. It is not a public
 # service and must not become one.
 #
-# Memory is generous because the worker loads the embedding model in-process ([D1]);
-# concurrency is 1 because embedding is CPU-bound and several concurrent turns on one
-# instance would queue behind each other anyway.
-
+# Memory is generous because the worker loads the embedding model in-process ([D1]).
+# Concurrency comes from config.sh: turns are I/O-bound on the model, so a small
+# overlap beats strict serialization (measured: ~10s queue waits at 1).
+#
 log "Worker"
 gcloud run deploy "$WORKER_SERVICE" \
   --image "${WORKER_IMAGE}:${TAG}" \
   --region "$REGION" --project "$PROJECT_ID" \
   --service-account "$WORKER_SA" \
   --no-allow-unauthenticated \
-  --memory 4Gi --cpu 2 --concurrency 1 --timeout 900 \
+  --memory 4Gi --cpu 2 --concurrency "${WORKER_CONCURRENCY:-3}" --timeout 900 \
   --min-instances "${WORKER_MIN_INSTANCES:-1}" --max-instances "${WORKER_MAX_INSTANCES:-10}" \
   --update-env-vars "$(join "${common_env[@]}"),EMBEDDING_PROVIDER=${WORKER_EMBEDDING_PROVIDER},WORKER_BASE_URL=${WORKER_URL}" \
   --set-secrets "$(join "${common_secrets[@]}")"
