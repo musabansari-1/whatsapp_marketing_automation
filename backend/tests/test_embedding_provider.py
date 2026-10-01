@@ -127,3 +127,38 @@ class TestEmbeddingProvider:
 
         with pytest.raises(NonRetryableProviderError, match="Could not load"):
             await provider.embed_documents(["text"])
+
+
+class TestWarmup:
+    @pytest.mark.asyncio
+    async def test_warmup_loads_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A fresh instance pays the load at boot, not mid-turn — and only once,
+        even if lifespan and a turn race it (the lock lives inside `_load`)."""
+        provider = LocalSentenceTransformerProvider(model_name="m", dimension=4)
+        loads: list[int] = []
+
+        def fake_load() -> Any:
+            loads.append(1)
+            monkeypatch.setattr(provider, "_model", StubModel())
+            return provider._model
+
+        monkeypatch.setattr(provider, "_load", fake_load)
+        await provider.warmup()
+        await provider.warmup()
+
+        assert loads == [1]
+
+    @pytest.mark.asyncio
+    async def test_warmup_failure_propagates_to_the_caller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`warmup` reports; the lifespan decides. Only the caller knows whether
+        anything else on the service still works without embeddings."""
+        provider = LocalSentenceTransformerProvider(model_name="m", dimension=4)
+
+        def fail() -> Any:
+            raise RuntimeError("weights missing")
+
+        monkeypatch.setattr(provider, "_load", fail)
+        with pytest.raises(RuntimeError, match="weights missing"):
+            await provider.warmup()

@@ -72,6 +72,20 @@ class LocalSentenceTransformerProvider(EmbeddingProvider):
         vectors = await self._encode([text])
         return vectors[0]
 
+    async def warmup(self) -> None:
+        """Load the model now rather than on first use.
+
+        Called from the worker lifespan so a fresh instance never bills a
+        customer's turn for the load. Skipped when already loaded; the lock
+        inside `_load` still guards a lifespan racing a first turn. Runs off the
+        event loop like encoding does. Failures propagate: the caller decides
+        whether boot survives them, because only the caller knows whether
+        anything else on the service still works without embeddings.
+        """
+        if self._model is not None:
+            return
+        await asyncio.to_thread(self._load)
+
     # ---------------------------------------------------------------- internals
 
     async def _encode(self, texts: list[str]) -> list[Vector]:

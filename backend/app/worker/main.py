@@ -19,7 +19,11 @@ from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
+from app.integrations.embedding.local_sentence_transformer import (
+    LocalSentenceTransformerProvider,
+)
 from app.integrations.queue import TaskRequest, TaskType
+from app.integrations.registry import build_embedding_provider
 from app.persistence.database import check_database_connection, dispose_engine
 from app.worker.dispatcher import dispatch_task
 from app.worker.handlers import register_all
@@ -66,14 +70,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Registers the handlers implemented so far. Phase 7 adds the Cloud Tasks
     # transport in front of them; the dispatch seam itself is unchanged.
     register_all()
+    # A fresh instance must not bill a customer's turn for the embedding load:
+    # min-instances keeps the container warm, but the model loads lazily, so the
+    # first retrieval turn would pay tens of seconds mid-reply without this.
+    preloaded = await preload_embeddings(settings)
     logger.info(
         "worker_starting",
         environment=settings.app_env.value,
         registered_task_types=[t.value for t in task_registry.registered_types()],
+        embeddings_preloaded=preloaded,
     )
     yield
     await dispose_engine()
     logger.info("worker_stopped")
+
+
+async def preload_embeddings(settings: Settings) -> bool:
+    """Load the embedding model at boot when this service embeds locally.
+
+    Returns whether the model is loaded afterwards. A failure is logged loudly
+    and does NOT stop boot: retrieval degrades to the approved fallback while
+    booking, conversation and notification tasks keep working, and crash-looping
+    the whole worker over one provider would trade a partial outage for a total
+    one. Non-local providers have nothing to preload.
+    """
+    provider = build_embedding_provider(settings)
+    if not isinstance(provider, LocalSentenceTransformerProvider):
+        return False
+    try:
+        await provider.warmup()
+    except Exception as exc:  # noqa: BLE001 - boot must succeed; see above
+        logger.error("embedding_preload_failed", model=provider.model_id, error=str(exc))
+        return False
+    return True
 
 
 def create_worker_app(settings: Settings | None = None) -> FastAPI:

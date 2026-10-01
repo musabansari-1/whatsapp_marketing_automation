@@ -15,6 +15,63 @@ from app.worker.handlers.campaign_send import RetryableSendError
 from app.worker.registry import task_registry
 
 
+class TestPreloadEmbeddings:
+    """The worker boots with embeddings warm, so no customer turn pays the load."""
+
+    @pytest.mark.asyncio
+    async def test_a_fake_provider_preloads_nothing(self) -> None:
+        from app.core.config import Settings
+        from app.worker.main import preload_embeddings
+
+        assert await preload_embeddings(Settings()) is False
+
+    @pytest.mark.asyncio
+    async def test_a_local_provider_is_warmed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.core.config import Settings
+        from app.integrations.embedding.local_sentence_transformer import (
+            LocalSentenceTransformerProvider,
+        )
+        from app.worker.main import preload_embeddings
+
+        provider = LocalSentenceTransformerProvider(model_name="m", dimension=4)
+        loads: list[int] = []
+
+        def fake_load() -> object:
+            loads.append(1)
+            return object()
+
+        monkeypatch.setattr(provider, "_load", fake_load)
+        monkeypatch.setattr("app.worker.main.build_embedding_provider", lambda settings: provider)
+
+        assert await preload_embeddings(Settings()) is True
+        assert loads == [1]
+
+    @pytest.mark.asyncio
+    async def test_a_broken_model_does_not_stop_boot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Retrieval degrades to the approved fallback while booking, conversation
+        and notification tasks keep working — crash-looping the whole worker over
+        one provider would trade a partial outage for a total one."""
+        from structlog.testing import capture_logs
+
+        from app.core.config import Settings
+        from app.integrations.embedding.local_sentence_transformer import (
+            LocalSentenceTransformerProvider,
+        )
+        from app.worker.main import preload_embeddings
+
+        provider = LocalSentenceTransformerProvider(model_name="m", dimension=4)
+
+        def fail() -> object:
+            raise RuntimeError("weights missing")
+
+        monkeypatch.setattr(provider, "_load", fail)
+        monkeypatch.setattr("app.worker.main.build_embedding_provider", lambda settings: provider)
+        with capture_logs() as logs:
+            assert await preload_embeddings(Settings()) is False
+
+        assert any(entry["event"] == "embedding_preload_failed" for entry in logs)
+
+
 class TestRetrySignalling:
     def test_a_retryable_failure_asks_cloud_tasks_to_retry(self, worker_client: TestClient) -> None:
         """503, because Cloud Tasks retries on 5xx and treats any 2xx as final."""

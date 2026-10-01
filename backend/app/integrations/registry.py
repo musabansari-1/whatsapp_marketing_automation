@@ -195,7 +195,9 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
         case EmbeddingProviderName.LOCAL_SENTENCE_TRANSFORMER:
             # The model is loaded lazily, so building this costs nothing until
             # something actually embeds ([D1]) — and it is then held for the
-            # process lifetime, which is the point of the cache.
+            # process lifetime, which is the point of the cache. The worker
+            # lifespan preloads it at boot (`preload_embeddings`), so in
+            # production the first load never lands mid-turn.
             provider = LocalSentenceTransformerProvider(
                 model_name=settings.embedding_model,
                 dimension=settings.embedding_dimension,
