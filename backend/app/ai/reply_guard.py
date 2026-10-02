@@ -17,7 +17,7 @@ forbade it). The platform has no email path at all — no attendee is ever added
 can never delete a true statement.
 
 This module is the last gate before a turn is sent. It is pure and model-agnostic, and
-deliberately narrow in what it *keeps*: prose the model composed is never rewritten. Four
+deliberately narrow in what it *keeps*: prose the model composed is never rewritten. Five
 rules decide what goes:
 
 - anything that reads as tool plumbing — a tool name, or a key like `arguments`, `facts`,
@@ -30,6 +30,9 @@ rules decide what goes:
 - a sentence claiming phone/device capabilities the platform does not have is
   removed, with battery telemetry going only when such a claim was found in the
   same reply (energy talk about battery storage must survive on its own).
+- a reply narrating its own thinking ("looking at my instructions", "the user is
+  asking", "let me make the function call") blanks whole — the plan fragments it
+  would leave behind read worse than the approved fallback.
 
 Unparseable text and JSON embedded in the middle of a sentence are left alone: half-
 deleting something is worse than letting a human see it. The same caution applies to
@@ -168,6 +171,22 @@ _TRAILING_INVITE_CLAUSE = re.compile(
     re.IGNORECASE,
 )
 
+#: Thinking narrated at the customer. A reply that reasons about the user in the
+#: third person ("the user is asking"), cites its own instructions, or narrates a
+#: tool/function call was never addressed to anyone — and the plan fragments such a
+#: reply leaves behind ("1. Answer the prospect's question first") read worse than
+#: the approved fallback. So any match blanks the whole reply rather than salvaging
+#: lines. Legitimate replies address "you", never "the user", and never speak of
+#: instructions or function calls.
+_THINKING_LEAK = re.compile(
+    r"\bthe (?:user|customer|prospect) is asking\b"
+    r"|\bmy instructions\b"
+    r"|\b(?:tool|function) calls?\b"
+    r"|\bmy reasoning\b"
+    r"|\blet me think\b",
+    re.IGNORECASE,
+)
+
 #: Sentence boundaries for the claim scan. URLs carry periods without trailing space,
 #: so only punctuation followed by whitespace (or the end) splits.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
@@ -232,6 +251,13 @@ def clean_customer_reply(text: str) -> str:
     cleaned = _drop_tool_label_lines(cleaned)
     cleaned = _without_emailed_invite_claims(cleaned)
     cleaned = _without_device_claims(cleaned)
+
+    if _THINKING_LEAK.search(cleaned):
+        # The model was thinking, not answering: staging sent a whole
+        # chain-of-thought ("Looking at my instructions, I need to…") to a Life
+        # Herba customer on 2026-10-01. Fragments of a plan are worse than the
+        # approved wording, so the reply becomes empty and the caller falls back.
+        return ""
 
     if _has_json_residue(cleaned):
         # What is left is still a payload: a blob that was cut off mid-object, or quoted

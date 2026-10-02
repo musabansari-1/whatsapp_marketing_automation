@@ -315,3 +315,45 @@ class TestDeviceCapabilityClaimsAreRemoved:
     )
     def test_claim_variants_are_caught(self, claim: str) -> None:
         assert clean_customer_reply(f"Your demo is booked. {claim}") == "Your demo is booked."
+
+
+class TestThinkingAloudIsBlanked:
+    """Staging 2026-10-01: a Life Herba reply was pure chain-of-thought — "the
+    user is asking… looking at my instructions… let me make the function call
+    properly" — with zero tool calls behind it. Thinking is never addressed to
+    anyone, and the plan fragments it leaves behind read worse than the approved
+    fallback, so any match blanks the whole reply instead of salvaging lines."""
+
+    STAGING_TEXT = (
+        'The user is asking about "therapy details of LifeHerba." This could be '
+        "interpreted in different ways - they might be asking about therapy services. "
+        "Looking at my instructions, I need to answer first and be careful with "
+        "the tool call format. Let me make the function call properly."
+    )
+
+    def test_the_staging_shape_is_blanked_whole(self) -> None:
+        assert clean_customer_reply(self.STAGING_TEXT) == ""
+
+    @pytest.mark.parametrize(
+        "thinking",
+        [
+            "The customer is asking about pricing, let me check.",
+            "Looking at my instructions, I should offer a demo.",
+            "I need to be careful with the tool call format.",
+            "Let me think about the best slot.",
+        ],
+    )
+    def test_thinking_variants_blank_the_reply(self, thinking: str) -> None:
+        assert clean_customer_reply(thinking) == ""
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "Would you prefer a video call or an in-person demo?",
+            "Please call us on +911234567890 for support.",
+            "Here are the tools we offer for simulation-based learning.",
+            "I will check the calendar for a free slot.",
+        ],
+    )
+    def test_ordinary_prose_survives(self, prose: str) -> None:
+        assert clean_customer_reply(prose) == prose

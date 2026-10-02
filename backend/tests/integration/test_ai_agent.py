@@ -758,6 +758,23 @@ class TestAgentGrounding:
         assert outcome.reply == "A colleague will follow up."
         assert outcome.used_fallback is True
 
+    def test_thinking_aloud_becomes_the_fallback(self) -> None:
+        """Staging 2026-10-01: the whole reply was chain-of-thought with zero tool
+        calls. The guard blanks it, and the customer gets the approved wording —
+        never the model's internal monologue."""
+        llm = FakeLLMProvider(
+            default_text=(
+                'The user is asking about therapy details. Looking at my instructions, '
+                "I need to answer first and be careful with the tool call format. "
+                "Let me make the function call properly."
+            )
+        )
+
+        outcome = self._run(llm, retrieval=None, fallback="A colleague will follow up.")
+
+        assert outcome.reply == "A colleague will follow up."
+        assert outcome.used_fallback is True
+
 
 class TestReplyHygiene:
     """§9/§21: what is delivered is the model's prose, never the tool call behind it.

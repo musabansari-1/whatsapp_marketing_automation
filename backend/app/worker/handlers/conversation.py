@@ -37,6 +37,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,7 +56,11 @@ from app.domain.ai_config import (
     with_lead_context,
 )
 from app.domain.conversation import LeadStateError, can_transition_conversation
-from app.domain.conversion import uses_calendar_booking, with_conversion_guidance
+from app.domain.conversion import (
+    uses_calendar_booking,
+    with_conversion_guidance,
+    with_today_context,
+)
 from app.domain.enums import ConversationStatus, LeadStatus, MessageStatus
 from app.domain.product import ProductInactiveError, assert_accepts_new_activity
 from app.domain.qualification import rules_from_settings
@@ -372,6 +377,14 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
                 status=lead.status.value,
                 known_facts=dict(lead.qualification_data or {}),
             )
+            # Today's date in the product's timezone, so relative days ("Friday",
+            # "day after tomorrow") resolve to real from_date values. A date line
+            # must never fail the turn, so an unusable zone falls back to UTC.
+            try:
+                zone = slot_policy.zone if slot_policy is not None else ZoneInfo("UTC")
+            except Exception:  # noqa: BLE001 - the date line is context, not load-bearing
+                zone = ZoneInfo("UTC")
+            system_prompt = with_today_context(system_prompt, now=started, zone=zone)
             tool_context = ai_tools.ToolContext(
                 session=session,
                 lead=lead,

@@ -106,8 +106,7 @@ async def record_confirmed_booking(
     """Record a booking Google has confirmed, or return the existing one.
 
     Returns the booking and whether it was newly created, so the caller can skip the
-    side effects — the notification fan-out and the customer's confirmation — for a
-    booking it has already handled.
+    side effects — the notification fan-out — for a booking it has already handled.
 
     CONFIRMED, not PENDING: this is only called once the calendar has returned an
     event, which is exactly what §12 requires before a booking may be treated as real.

@@ -41,7 +41,7 @@ goes, and how to prove it arrived.
 | ☐ | Provider selections — `deploy.sh` defaults every external one to `fake` | `*_PROVIDER` |
 | ☐ | Dispatch rate from the real messaging tier — D-05 | `QUEUE_MAX_DISPATCHES_PER_SECOND`, `DISPATCH_RATE_PER_SECOND` |
 | ☐ | Platform slot-policy defaults confirmed — [D8] | `DEMO_*` (a product overrides only what differs) |
-| ☐ | Customer copy reviewed — [D21] | `MSG_RAG_FALLBACK`, `MSG_BOOKING_CONFIRMATION`, `MSG_OPT_OUT_RESPONSE` |
+| ☐ | Customer copy reviewed — [D21] | `MSG_RAG_FALLBACK`, `MSG_OPT_OUT_RESPONSE` |
 
 **Retired variables.** `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`,
 `GOOGLE_CALENDAR_ID`, `AUDIENCE_COLUMN_SCHEMA`, `QUALIFICATION_REQUIRED_FIELDS`,

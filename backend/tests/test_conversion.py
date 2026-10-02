@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from app.ai import tools as ai_tools
@@ -10,6 +13,7 @@ from app.domain.conversion import (
     parse_conversion_mode,
     uses_calendar_booking,
     with_conversion_guidance,
+    with_today_context,
 )
 from app.integrations.llm import AuthorizedTool
 
@@ -47,6 +51,19 @@ class TestConversionGuidance:
         assert "Join as Pharmacy" in text
         assert "Choose Join as Pharmacy." in text
         assert "not calendar booking" in text
+
+
+class TestTodayContext:
+    def test_the_date_line_names_the_day_and_zone(self) -> None:
+        text = with_today_context(
+            "Base.",
+            now=datetime(2026, 10, 2, 9, 0, tzinfo=ZoneInfo("UTC")),
+            zone=ZoneInfo("Asia/Kolkata"),
+        )
+
+        assert text.startswith("Base.")
+        # 09:00 UTC is 14:30 IST: the date is the product's, not the server's.
+        assert "Today is Friday 02 October 2026 (Asia/Kolkata)." in text
 
 
 class TestToolSpecsRespectConversion:

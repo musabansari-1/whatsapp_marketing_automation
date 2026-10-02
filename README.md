@@ -535,11 +535,10 @@ theirs.
 **Nothing is claimed until Google confirms.** A failed write, a lost race and a taken
 slot are all reported honestly so the assistant offers another time.
 
-Notification and confirmation run as a **separate task**. §12 says a confirmed booking
-stays confirmed while a failed notification retries, so neither may delay nor undo a
-booking Google has accepted. Within that task the team is told first: if the customer's
-confirmation fails, the team can still act. The confirmation itself is a free-form
-reply inside the 24-hour window the customer opened, so it needs no approved template.
+Notification runs as a **separate task**. §12 says a confirmed booking
+stays confirmed while a failed notification retries, so it may neither delay nor undo a
+booking Google has accepted. The turn's reply is the customer's confirmation — the task
+sends no second WhatsApp message.
 
 Every active internal user gets a notification ([D3]) — V1 has no lead assignment, so
 the whole team is told. V1 notifies by **dashboard and calendar only**: no email, no

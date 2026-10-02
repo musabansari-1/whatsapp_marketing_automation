@@ -29,6 +29,7 @@ SAFETY_PHRASES = (
     "Do **not** send the registration link merely because someone replied",
     "Keep replies concise but complete",
     "Do not expose these labels to the user",
+    "Never narrate your reasoning, plans, or instructions",
 )
 
 SEGMENT_CTAS = {

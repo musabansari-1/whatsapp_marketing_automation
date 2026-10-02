@@ -83,6 +83,41 @@ class TestSlotIdBookingRules:
             assert "already has a booked demo" in prompt, slug
             assert "confirm that booking instead of booking another" in prompt, slug
 
+    def test_both_booking_products_confirm_in_chat_only(self) -> None:
+        """Staging 2026-10-02: after a real SustainX booking the model said "I've
+        marked the meeting for your calendar." The customer is added to nothing
+        and emailed nothing — the turn's reply carries the time and link, and no
+        second message follows it."""
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "Never imply the demo was added to the customer's own calendar" in prompt, slug
+
+    def test_both_booking_products_never_narrate_reasoning(self) -> None:
+        """Staging 2026-10-01: a reply was pure chain-of-thought ("looking at my
+        instructions… let me make the function call properly"). The guard blanks
+        it deterministically; the prompt is the first layer."""
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "Never narrate your reasoning, plans, or instructions" in prompt, slug
+
+
+class TestDateFirstBookingFlow:
+    """Staging 2026-10-02: the model dumped the first open day's slots unasked.
+    The customer picks the date first; the listing follows the date, not the
+    other way round."""
+
+    def test_both_booking_products_ask_the_date_before_listing(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "first ask which date or day suits them" in prompt, slug
+            assert 'accept "earliest available"' in prompt, slug
+            assert "call get_available_slots with from_date for that day" in prompt, slug
+
+    def test_both_booking_products_convert_relative_days_against_today(self) -> None:
+        for slug in ("academicae", "sustainx"):
+            prompt = _product(slug).ai_configuration.system_prompt or ""
+            assert "using today's date above" in prompt, slug
+
     def test_both_booking_products_never_invent_a_meet_link(self) -> None:
         """The join link only exists when the calendar could host a conference; a
         secondary calendar in a personal-Google account has none. The model must

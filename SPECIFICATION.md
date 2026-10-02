@@ -1097,28 +1097,29 @@ customer selects a slot          book_demo tool (§9)
 already booked?                  by deterministic event ID — before the recheck
  ↓
 recheck against live busy time   app/domain/slots.is_slot_available
- ↓
+  ↓
 Calendar event                   GoogleCalendarProvider.create_event
- ↓
+  ↓
 booking row                      bookings, CONFIRMED, keyed on calendar_event_id
- ↓
+  ↓
 dashboard notification           NOTIFY_BOOKING task, fan-out to every active user
- ↓
-customer confirmation            free-form WhatsApp reply, inside the 24-hour window
 ```
+
+The turn's reply is the customer's confirmation: it carries the time and the join
+link, and the prompts require it to. The notify task sends no second WhatsApp
+message — staging double-texted every booking until it was removed, and one reply
+per inbound message forbids it. Never imply the demo was added to the customer's
+own calendar: the event lives on the team's calendar, and the customer is emailed
+nothing.
 
 **The already-booked check comes before the recheck, and that ordering is
 load-bearing.** On a retried turn the booking's own calendar event is now busy time, so
 rechecking first would find the slot occupied and tell the customer their demo was lost
 — when in fact it is theirs.
 
-**Notification and confirmation are a separate task.** §12 says a confirmed booking
-stays confirmed while a failed notification retries, so neither may delay nor undo a
-booking Google has already accepted. Within the task the team is told first: if the
-customer's confirmation fails, the team can still act.
-
-The customer's confirmation needs no approved template. It is a reply inside the window
-the customer opened by asking for the demo, so it does not depend on [D24].
+**Notification is a separate task.** §12 says a confirmed booking
+stays confirmed while a failed notification retries, so it may neither delay nor undo a
+booking Google has already accepted.
 
 ### Credentials (Phase 11 / [D19])
 
@@ -1146,8 +1147,7 @@ Three independent mechanisms, because a demo booked twice is worse than one not 
   row is written, so a crash between them leaves an event with no record, and the next
   attempt must find it rather than book again.
 - **`notifications` is unique on user, type and entity.** A retried fan-out re-runs for
-  everyone and duplicates for nobody, and the customer's confirmation is keyed on the
-  booking so it cannot be sent twice.
+  everyone and duplicates for nobody.
 
 `uq_bookings_confirmed_start_time` — partial, CONFIRMED only — is the database's share:
 two concurrent confirmations for the same slot cannot both commit, and a cancelled
@@ -2158,7 +2158,6 @@ GOOGLE_CALENDAR_TOKEN_SECRET_NAME                        [D19]
 GOOGLE_CALENDAR_AUTH_MODE                                 [D62]
 
 MSG_RAG_FALLBACK                                         [D21]
-MSG_BOOKING_CONFIRMATION                                 [D21]
 MSG_OPT_OUT_RESPONSE                                     [D21]
 ```
 

@@ -11,7 +11,9 @@ the product row.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
+from zoneinfo import ZoneInfo
 
 
 class ConversionMode(StrEnum):
@@ -33,6 +35,17 @@ def uses_calendar_booking(mode: ConversionMode | str | None) -> bool:
     return parse_conversion_mode(
         mode.value if isinstance(mode, ConversionMode) else mode
     ) is ConversionMode.CALENDAR_BOOKING
+
+
+def with_today_context(system_prompt: str, *, now: datetime, zone: ZoneInfo) -> str:
+    """Append today's date in the product's timezone.
+
+    The model resolves relative days ("Friday", "day after tomorrow") into
+    `from_date` values against this line. Without it, date-first booking is
+    guesswork — staging offered undateable "tomorrow" slots on 2026-10-02.
+    """
+    today = now.astimezone(zone).strftime("%A %d %B %Y")
+    return f"{system_prompt}\n\nToday is {today} ({zone.key})."
 
 
 def registration_guidance(

@@ -1,4 +1,10 @@
-"""Unit tests for booking confirmation copy (Meet link on WhatsApp)."""
+"""Unit tests for the booking bell (dashboard copy) and the event description.
+
+The customer confirmation used to live here too: a second WhatsApp message sent
+by the notify task. It double-texted every booking — the turn's reply already
+confirms the time and join link — so the task is team-only now and the copy,
+setting and send path are gone with it.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +13,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.ai.tools import _booking_description
-from app.core.config import Settings
-from app.worker.handlers.booking import _confirmation_message, _notification_message
+from app.worker.handlers.booking import _notification_message
 
 
 def _booking(*, meeting_link: str | None) -> SimpleNamespace:
@@ -18,34 +23,6 @@ def _booking(*, meeting_link: str | None) -> SimpleNamespace:
         timezone="Asia/Kolkata",
         meeting_link=meeting_link,
     )
-
-
-def test_confirmation_includes_meet_link() -> None:
-    settings = Settings(
-        msg_booking_confirmation=(
-            "Your demo is confirmed for {start_time} ({timezone}). Join here: {meeting_link}"
-        )
-    )
-    booking = _booking(meeting_link="https://meet.google.com/abc-defg-hij")
-
-    body = _confirmation_message(settings, booking)  # type: ignore[arg-type]
-
-    assert "10:00 AM" in body
-    assert "https://meet.google.com/abc-defg-hij" in body
-
-
-def test_confirmation_falls_back_without_meet_link() -> None:
-    settings = Settings(
-        msg_booking_confirmation=(
-            "Your demo is confirmed for {start_time} ({timezone}). Join here: {meeting_link}"
-        )
-    )
-    booking = _booking(meeting_link=None)
-
-    body = _confirmation_message(settings, booking)  # type: ignore[arg-type]
-
-    assert "10:00 AM" in body
-    assert "Join here" not in body
 
 
 def test_dashboard_notification_includes_meet_link() -> None:
@@ -85,7 +62,7 @@ class TestBookingDescriptionContactRouting:
     """
 
     def test_a_lead_without_email_describes_only_the_conversation(self) -> None:
-        body = _booking_description(_lead())  # type: ignore[arg-type]
+        body = _booking_description(_lead())
 
         assert "Demo booked from a WhatsApp conversation" in body
         assert "+919876543210" in body
@@ -95,13 +72,13 @@ class TestBookingDescriptionContactRouting:
     def test_a_lead_with_email_carries_the_contact_channel_and_instruction(
         self,
     ) -> None:
-        body = _booking_description(_lead(email="asha@example.com"))  # type: ignore[arg-type]
+        body = _booking_description(_lead(email="asha@example.com"))
 
         assert "Email: asha@example.com" in body
         assert "share the Google Meet link on WhatsApp" in body
 
     def test_extra_facts_do_not_push_the_email_or_instruction_out(self) -> None:
-        body = _booking_description(_lead(email="asha@example.com", city="Pune"))  # type: ignore[arg-type]
+        body = _booking_description(_lead(email="asha@example.com", city="Pune"))
 
         assert "City: Pune" in body
         assert "Email: asha@example.com" in body

@@ -327,9 +327,6 @@ class Settings(BaseSettings):
         "I don't have verified information on that yet. "
         "Let me have someone from our team follow up with you."
     )
-    msg_booking_confirmation: str = (
-        "Your demo is confirmed for {start_time} ({timezone}). Join here: {meeting_link}"
-    )
     msg_opt_out_response: str = "You have been unsubscribed and will not receive further messages."
 
     # ---------------------------------------------------------------- retries [D27]

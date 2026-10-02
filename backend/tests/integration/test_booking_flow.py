@@ -22,7 +22,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import tools as ai_tools
-from app.core.errors import NonRetryableProviderError, RetryableProviderError
 from app.domain.enums import (
     BookingStatus,
     ConversationStatus,
@@ -46,8 +45,7 @@ from app.persistence.models import (
     User,
 )
 from app.persistence.repositories import conversations as conversation_repo
-from app.worker.handlers.booking import confirmation_idempotency_key, notify_booking
-from app.worker.handlers.campaign_send import RetryableSendError
+from app.worker.handlers.booking import notify_booking
 from tests.integration.helpers import (
     ensure_product_id,
     get_test_database_url,
@@ -83,14 +81,10 @@ def booking_env(engine: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeWh
     database._engine = None  # noqa: SLF001
     database._session_factory = None  # noqa: SLF001
 
+    # The notify task sends no WhatsApp message — the turn's reply is the
+    # confirmation — so there is no provider to fake here. The fake stays as
+    # the assertion surface proving nothing was sent.
     whatsapp = FakeWhatsAppProvider()
-    monkeypatch.setattr(
-        "app.worker.handlers.booking.build_whatsapp_provider",
-        # `**_` swallows the `product=` the caller now passes ([D40]). Which number a
-        # product sends from is tested against the real builder in
-        # `test_product_routing.py`; here the fake stands in for any of them.
-        lambda _settings, **_: whatsapp,
-    )
 
     async def clear(session: AsyncSession) -> None:
         await session.execute(delete(Notification))
@@ -513,69 +507,26 @@ class TestBookingFailedNotification:
 
 
 class TestCustomerConfirmation:
-    def test_the_customer_is_told(self, booking_env: FakeWhatsAppProvider) -> None:
-        lead_id, conversation_id = seed(users=1)
-        book(lead_id, conversation_id, calendar=FakeCalendarProvider())
+    """The turn's reply is the confirmation — the notify task sends no second
+    WhatsApp message. Staging double-texted every booking until the separate
+    confirmation was removed."""
 
-        run_notify(str(bookings()[0].id))
-
-        assert len(booking_env.sent_texts) == 1
-        assert booking_env.sent_texts[0].to_e164 == PHONE
-
-    def test_the_confirmation_includes_the_meet_link(
+    def test_the_notify_task_sends_no_whatsapp_message(
         self, booking_env: FakeWhatsAppProvider
     ) -> None:
         lead_id, conversation_id = seed(users=1)
         book(lead_id, conversation_id, calendar=FakeCalendarProvider())
-        booking = bookings()[0]
 
-        run_notify(str(booking.id))
+        result = run_notify(str(bookings()[0].id))
 
-        assert booking.meeting_link
-        assert booking.meeting_link in booking_env.sent_texts[0].body
-        assert "meet.google.com" in booking_env.sent_texts[0].body
+        assert result["notified"] == 1
+        assert "confirmed" not in result
+        assert booking_env.sent_texts == []
 
-    def test_the_wording_is_configurable(self, booking_env: FakeWhatsAppProvider) -> None:
-        """[D21]: customer-facing copy is never hard-coded."""
-        from app.core.config import get_settings
-
-        lead_id, conversation_id = seed(users=1)
-        book(lead_id, conversation_id, calendar=FakeCalendarProvider())
-        run_notify(str(bookings()[0].id))
-
-        template = get_settings().msg_booking_confirmation
-        assert template.split("{")[0].strip() in booking_env.sent_texts[0].body
-
-    def test_the_time_is_shown_in_the_booking_timezone(
+    def test_a_retried_task_still_notifies_each_user_once(
         self, booking_env: FakeWhatsAppProvider
     ) -> None:
-        """A customer reading a UTC timestamp has to translate it themselves, at
-        exactly the wrong moment."""
-        lead_id, conversation_id = seed(users=1)
-        book(lead_id, conversation_id, calendar=FakeCalendarProvider())
-        run_notify(str(bookings()[0].id))
-
-        # The first free slot is 10:00 IST, which is 04:30 UTC.
-        assert "10:00 AM" in booking_env.sent_texts[0].body
-
-    def test_the_confirmation_reaches_the_transcript(
-        self, booking_env: FakeWhatsAppProvider
-    ) -> None:
-        """The AI's next turn must know the customer was already told, or it says it
-        again."""
-        lead_id, conversation_id = seed(users=1)
-        book(lead_id, conversation_id, calendar=FakeCalendarProvider())
-        run_notify(str(bookings()[0].id))
-
-        async def transcript(session: AsyncSession) -> list[str]:
-            turns = await conversation_repo.get_history(session, uuid.UUID(conversation_id))
-            return [turn.content for turn in turns]
-
-        assert any("confirmed" in content.lower() for content in run_db(transcript))
-
-    def test_the_customer_is_not_told_twice(self, booking_env: FakeWhatsAppProvider) -> None:
-        """§20: the key is derived from the booking, so a retry computes the same one
-        and the unique constraint refuses the second write."""
+        """§20: the fan-out's unique constraint collapses the retry."""
         lead_id, conversation_id = seed(users=1)
         book(lead_id, conversation_id, calendar=FakeCalendarProvider())
         booking_id = str(bookings()[0].id)
@@ -583,14 +534,16 @@ class TestCustomerConfirmation:
         run_notify(booking_id)
         run_notify(booking_id)
 
-        assert len(booking_env.sent_texts) == 1
+        assert len(notifications()) == 1
+        assert booking_env.sent_texts == []
 
-    def test_the_key_is_derived_from_the_booking(self, booking_env: FakeWhatsAppProvider) -> None:
+    def test_no_outbound_row_is_written_by_the_notify_task(
+        self, booking_env: FakeWhatsAppProvider
+    ) -> None:
         lead_id, conversation_id = seed(users=1)
         book(lead_id, conversation_id, calendar=FakeCalendarProvider())
-        booking_id = str(bookings()[0].id)
 
-        run_notify(booking_id)
+        run_notify(str(bookings()[0].id))
 
         async def outbound(session: AsyncSession) -> list[str | None]:
             result = await session.execute(
@@ -600,43 +553,7 @@ class TestCustomerConfirmation:
             )
             return list(result.scalars().all())
 
-        assert confirmation_idempotency_key(booking_id) in run_db(outbound)
-
-    def test_a_transient_send_failure_is_retried(self, booking_env: FakeWhatsAppProvider) -> None:
-        lead_id, conversation_id = seed(users=1)
-        book(lead_id, conversation_id, calendar=FakeCalendarProvider())
-        booking_env.fail_with = RetryableProviderError("rate limit", provider="fake")
-
-        with pytest.raises(RetryableSendError):
-            run_notify(str(bookings()[0].id))
-
-    def test_a_permanent_send_failure_leaves_the_booking_confirmed(
-        self, booking_env: FakeWhatsAppProvider
-    ) -> None:
-        """§12: the booking is real whatever happens to the acknowledgement, and the
-        team has already been told."""
-        lead_id, conversation_id = seed(users=2)
-        book(lead_id, conversation_id, calendar=FakeCalendarProvider())
-        booking_env.fail_with = NonRetryableProviderError("blocked", provider="fake")
-
-        result = run_notify(str(bookings()[0].id))
-
-        assert result["confirmed"] == 0
-        assert result["notified"] == 2
-        assert bookings()[0].status is BookingStatus.CONFIRMED
-
-    def test_the_team_is_notified_before_the_customer(
-        self, booking_env: FakeWhatsAppProvider
-    ) -> None:
-        """§12's order. If the confirmation fails, the team can still act."""
-        lead_id, conversation_id = seed(users=1)
-        book(lead_id, conversation_id, calendar=FakeCalendarProvider())
-        booking_env.fail_with = NonRetryableProviderError("blocked", provider="fake")
-
-        run_notify(str(bookings()[0].id))
-
-        assert len(notifications()) == 1
-        assert booking_env.sent_texts == []
+        assert run_db(outbound) == []
 
 
 class TestTaskValidation:
