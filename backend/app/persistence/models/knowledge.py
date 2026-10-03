@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Computed,
     DateTime,
     Enum,
     ForeignKey,
@@ -23,7 +24,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -153,6 +154,12 @@ class KnowledgeChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSION))
     embedding_model: Mapped[str | None] = mapped_column(String(255))
 
+    # Term match for hybrid retrieval, generated from content so it can never
+    # drift from it. Mirrors migration `a3b4c5d6e7f8`; keep the two in agreement.
+    content_tsv: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', content)", persisted=True)
+    )
+
     chunk_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     document: Mapped[KnowledgeDocument] = relationship(back_populates="chunks")
@@ -170,6 +177,13 @@ class KnowledgeChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             postgresql_using="hnsw",
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        # GIN over the generated term vector, for the keyword half of hybrid
+        # retrieval (migration `a3b4c5d6e7f8`).
+        Index(
+            "ix_knowledge_chunks_content_tsv",
+            "content_tsv",
+            postgresql_using="gin",
         ),
     )
 

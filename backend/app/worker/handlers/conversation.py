@@ -723,8 +723,19 @@ async def _retrieve(
                 # search after a model change returns nothing rather than nonsense.
                 embedding_model=embedding.model_id,
             )
+            # The keyword half of hybrid retrieval: same rows, term match. Runs in
+            # the same session right after dense — two indexed queries, no extra
+            # round of architecture.
+            keyword = await knowledge_repo.search_keyword(
+                session,
+                product_id=product_id,
+                segment_id=segment_id,
+                query_text=question,
+                query_vector=vector,
+                limit=config.rag_top_k if config else settings.rag_top_k,
+            )
 
-            if not candidates:
+            if not candidates and not keyword:
                 # Distinguishable from "nothing was similar enough": this says the
                 # product has no eligible knowledge at all, which is a configuration
                 # fact worth seeing in the logs.
@@ -735,6 +746,7 @@ async def _retrieve(
 
     return retrieve(
         candidates,
+        keyword,
         policy=RetrievalPolicy(
             top_k=config.rag_top_k if config else settings.rag_top_k,
             min_similarity=(config.rag_min_similarity if config else settings.rag_min_similarity),

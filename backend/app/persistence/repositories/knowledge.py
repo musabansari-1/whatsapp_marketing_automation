@@ -379,6 +379,76 @@ async def search(
     ]
 
 
+async def search_keyword(
+    session: AsyncSession,
+    *,
+    product_id: uuid.UUID,
+    segment_id: uuid.UUID | None = None,
+    query_text: str,
+    query_vector: Sequence[float],
+    limit: int,
+) -> list[RetrievedChunk]:
+    """Term search over the same eligible rows, for hybrid retrieval.
+
+    Same product, segment and READY filters as `search` — isolation is not
+    relaxed for getting an extra signal. Two deliberate differences:
+
+    - No embedding-model filter. A term match compares text, not vectors, so
+      [D1]'s prohibition (meaningless cross-model vector comparison) does not
+      apply — and filtering would blind the keyword path mid-migration.
+    - Each hit also carries its dense similarity, so fusion and the evidence
+      rule can weigh both signals instead of trusting either alone.
+
+    `plainto_tsquery` ANDs the query's terms: every term must appear. An empty
+    or stopword-only query matches nothing rather than everything.
+    """
+    if not query_text.strip():
+        return []
+
+    ts_query = func.plainto_tsquery("english", query_text)
+    rank = func.ts_rank(KnowledgeChunk.content_tsv, ts_query)
+    distance = KnowledgeChunk.embedding.cosine_distance(list(query_vector))
+
+    eligible_segment = (
+        KnowledgeBase.segment_id.is_(None)
+        if segment_id is None
+        else or_(KnowledgeBase.segment_id.is_(None), KnowledgeBase.segment_id == segment_id)
+    )
+
+    query = (
+        select(
+            KnowledgeChunk.id,
+            KnowledgeChunk.document_id,
+            KnowledgeDocument.title,
+            KnowledgeChunk.content,
+            distance.label("distance"),
+        )
+        .join(KnowledgeDocument, KnowledgeChunk.document_id == KnowledgeDocument.id)
+        .join(KnowledgeBase, KnowledgeDocument.knowledge_base_id == KnowledgeBase.id)
+        .where(
+            KnowledgeBase.product_id == product_id,
+            eligible_segment,
+            KnowledgeDocument.status == DocumentStatus.READY,
+            KnowledgeChunk.embedding.is_not(None),
+            KnowledgeChunk.content_tsv.bool_op("@@")(ts_query),
+        )
+    )
+
+    result = await session.execute(query.order_by(rank.desc()).limit(limit))
+
+    return [
+        RetrievedChunk(
+            chunk_id=str(row[0]),
+            document_id=str(row[1]),
+            document_title=row[2],
+            content=row[3],
+            similarity=similarity_from_distance(float(row[4])),
+            keyword_rank=index,
+        )
+        for index, row in enumerate(result.all())
+    ]
+
+
 async def count_chunks(session: AsyncSession, document_id: uuid.UUID) -> int:
     result = await session.execute(
         select(func.count())

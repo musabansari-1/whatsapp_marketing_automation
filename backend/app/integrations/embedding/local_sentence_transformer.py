@@ -7,11 +7,11 @@ company documents.
 The trade is operational. The model and PyTorch are large, the first load takes
 seconds, and the weights must be present in the image — `Dockerfile.worker` records
 that they are baked in at build time rather than downloaded on a cold start, because a
-Cloud Run instance fetching 90 MB before serving its first request is both slow and
+Cloud Run instance fetching ~130 MB before serving its first request is both slow and
 dependent on network at boot.
 
-**Silent truncation is the failure mode to know about.** `all-MiniLM-L6-v2` accepts 256
-word-pieces and quietly discards the rest, so an over-long chunk is embedded from its
+**Silent truncation is the failure mode to know about.** `bge-small-en-v1.5` accepts 512
+tokens and quietly discards the rest, so an over-long chunk is embedded from its
 opening words alone with no error raised. The chunker keeps inputs well inside that
 window; this provider reports when something arrives too long anyway, so the problem is
 visible rather than silently degrading retrieval.

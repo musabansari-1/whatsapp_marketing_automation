@@ -106,7 +106,7 @@ uv run alembic revision --autogenerate -m "description"
 
 20 tables: the 18 in specification §15, plus `whatsapp_suppressions` ([D16]) and
 `sessions` ([D2], a documented deviation — see §15 of the specification). The
-`knowledge_chunks.embedding` column is `vector(384)`, matching `all-MiniLM-L6-v2`
+`knowledge_chunks.embedding` column is `vector(384)`, matching `bge-small-en-v1.5`
 ([D1]) and driven by `EMBEDDING_DIMENSION`. Changing the embedding model means a new
 migration plus a full re-embed — vectors from different models must never share the
 column.
@@ -365,8 +365,8 @@ reason, so the dashboard can show why a file did not ingest. Re-running an inges
 task replaces the document's chunks rather than appending, which is what makes a
 redelivered task idempotent.
 
-**Embeddings run locally** ([D1]) via `all-MiniLM-L6-v2` — no per-request cost, no rate
-limit, and no third party seeing company documents. The model accepts 256 word-pieces
+**Embeddings run locally** ([D1]) via `bge-small-en-v1.5` — no per-request cost, no rate
+limit, and no third party seeing company documents. The model accepts 512 tokens
 and *silently truncates* beyond that, which is why `RAG_CHUNK_CHARS` defaults to 800
 rather than being a free parameter. Weights are baked into `Dockerfile.worker` at build
 time, so a cold-starting instance does not download them.

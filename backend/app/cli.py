@@ -24,6 +24,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO
 
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.configuration.catalog import CatalogError, apply_catalog, load_catalog
@@ -350,6 +351,60 @@ async def unblock_sender(settings: Settings, phone: str, *, out: TextIO | None =
     return EXIT_OK
 
 
+async def re_embed_knowledge(settings: Settings, *, out: TextIO | None = None) -> int:
+    """Re-embed every chunk not on the configured embedding model ([D1]).
+
+    The embedding-model upgrade path: after the configured model changes, stored
+    vectors belong to the old space and retrieval filters them out, so chunks must
+    be re-encoded. Idempotent — rows already on the model are skipped — so
+    re-running converges, and safe to re-run after an interrupted run.
+
+    Committed per page, so an interruption keeps finished pages. During the run
+    the corpus is mixed and retrieval sees a partial index; run it in a quiet
+    window rather than mid-campaign.
+    """
+    from app.integrations.registry import build_embedding_provider
+    from app.persistence.models import KnowledgeChunk
+
+    provider = build_embedding_provider(settings)
+    model = provider.model_id
+    await provider.warmup()
+
+    factory = get_session_factory()
+    total = 0
+    page_size = 200
+    while True:
+        async with factory() as session:
+            rows = (
+                await session.execute(
+                    select(KnowledgeChunk.id, KnowledgeChunk.content)
+                    .where(
+                        or_(
+                            KnowledgeChunk.embedding_model.is_distinct_from(model),
+                            KnowledgeChunk.embedding.is_(None),
+                        )
+                    )
+                    .order_by(KnowledgeChunk.id)
+                    .limit(page_size)
+                )
+            ).all()
+            if not rows:
+                break
+            ids = [row[0] for row in rows]
+            vectors = await provider.embed_documents([row[1] for row in rows])
+            for chunk_id, vector in zip(ids, vectors, strict=True):
+                chunk = await session.get(KnowledgeChunk, chunk_id)
+                if chunk is not None:
+                    chunk.embedding = list(vector)
+                    chunk.embedding_model = model
+            await session.commit()
+            total += len(ids)
+            logger.info("knowledge_re_embedded", batch=len(ids), total=total, model=model)
+
+    _say(out, f"Re-embedded {total} chunks with {model}.")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="app.cli", description="Administrative commands")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -397,6 +452,11 @@ def build_parser() -> argparse.ArgumentParser:
     unblock = commands.add_parser("unblock-sender", help="lift an operator block")
     unblock.add_argument("phone", help="any spelling; normalized to E.164")
 
+    commands.add_parser(
+        "re-embed-knowledge",
+        help="re-encode chunks not on the configured embedding model ([D1])",
+    )
+
     return parser
 
 
@@ -423,6 +483,8 @@ async def _run(args: argparse.Namespace) -> int:
                 return await block_sender(settings, args.phone, note=args.note)
             case "unblock-sender":
                 return await unblock_sender(settings, args.phone)
+            case "re-embed-knowledge":
+                return await re_embed_knowledge(settings)
             case _:
                 logger.error("unknown_command", command=args.command)
                 return EXIT_FAILED

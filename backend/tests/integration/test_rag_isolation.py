@@ -135,6 +135,25 @@ def search(
     return run_db(run)
 
 
+def search_keyword(
+    product_id: uuid.UUID, query_text: str, *, segment_id: uuid.UUID | None = None
+) -> list[tuple[str, int | None]]:
+    """(content, keyword_rank) pairs: rank proves the term path ordered them."""
+
+    async def run(session: AsyncSession) -> list[tuple[str, int | None]]:
+        results = await knowledge_repo.search_keyword(
+            session,
+            product_id=product_id,
+            segment_id=segment_id,
+            query_text=query_text,
+            query_vector=IDENTICAL,
+            limit=20,
+        )
+        return [(chunk.content, chunk.keyword_rank) for chunk in results]
+
+    return run_db(run)
+
+
 class TestCrossProductIsolation:
     def test_identical_content_in_two_products_stays_separate(self) -> None:
         """The strongest form of the test.
@@ -346,3 +365,53 @@ class TestSeveralKnowledgeBasesInOneProduct:
         make_knowledge(product_id=product, name="services", content="We offer four services.")
 
         assert set(search(product)) == {"Refunds within 30 days.", "We offer four services."}
+
+
+class TestHybridKeywordSearch:
+    """Exact terms dense vectors underweight: names, prices, dates. Every chunk
+    below shares one identical vector, so whatever the keyword path returns came
+    from terms, not geometry."""
+
+    def test_a_term_match_is_found_and_ranked(self) -> None:
+        product = make_product("r-alpha")
+        make_knowledge(
+            product_id=product, name="generic", content="Our programs run every quarter."
+        )
+        make_knowledge(
+            product_id=product,
+            name="pricing",
+            content="The capstone fee structure totals ninety thousand rupees.",
+        )
+
+        results = search_keyword(product, "capstone fee structure")
+
+        assert [content for content, _ in results] == [
+            "The capstone fee structure totals ninety thousand rupees."
+        ]
+        assert [rank for _, rank in results] == [0]
+
+    def test_a_term_match_never_crosses_products(self) -> None:
+        """Isolation is not relaxed for getting an extra signal."""
+        alpha = make_product("r-alpha")
+        beta = make_product("r-beta")
+        make_knowledge(product_id=alpha, name="generic", content="Our programs run quarterly.")
+        make_knowledge(product_id=beta, name="pricing", content="The fee is final.")
+
+        assert search_keyword(alpha, "fee") == []
+
+    def test_unready_documents_stay_excluded(self) -> None:
+        product = make_product("r-alpha")
+        make_knowledge(
+            product_id=product,
+            name="pending",
+            content="Half-ingested fee schedule.",
+            status=DocumentStatus.PENDING,
+        )
+
+        assert search_keyword(product, "fee schedule") == []
+
+    def test_an_empty_query_matches_nothing(self) -> None:
+        product = make_product("r-alpha")
+        make_knowledge(product_id=product, name="kb", content="Some knowledge.")
+
+        assert search_keyword(product, "   ") == []

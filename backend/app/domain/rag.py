@@ -17,7 +17,8 @@ rather than letting the model improvise. That decision lives here, not in a prom
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 
 # pgvector cosine distance runs 0 (identical) to 2 (opposite); similarity is 1 - d.
 # The default threshold is deliberately permissive: over-filtering makes the assistant
@@ -26,6 +27,12 @@ from dataclasses import dataclass, field
 DEFAULT_MIN_SIMILARITY = 0.25
 DEFAULT_TOP_K = 5
 DEFAULT_MAX_CONTEXT_CHARS = 4000
+
+# Reciprocal-rank-fusion constant. Standard 60: a rank-1 hit outscores two
+# rank-10 hits, and depth past ~20 contributes noise rather than signal. A
+# ranking constant, not a tunable threshold — it shapes order, and order is
+# what fusion is for.
+RRF_K = 60
 
 # The delimiter that fences retrieved material. Chosen to be something a document is
 # vanishingly unlikely to contain, and stripped from content regardless.
@@ -44,13 +51,19 @@ _DELIMITER_LOOKALIKE = re.compile(r"<<<[^>]*>>>")
 
 @dataclass(frozen=True, slots=True)
 class RetrievedChunk:
-    """One chunk returned by similarity search."""
+    """One chunk returned by similarity search.
+
+    `keyword_rank` is the position in the term-match ranking (0-based), or None
+    when the chunk did not term-match. Set by fusion, never by either search
+    alone: a chunk's two signals travel together from there on.
+    """
 
     chunk_id: str
     document_id: str
     document_title: str
     content: str
     similarity: float
+    keyword_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,12 +107,26 @@ def select_chunks(
 ) -> list[RetrievedChunk]:
     """Keep the chunks worth showing the model.
 
-    Ordered by similarity and cut at the threshold. A weak match is worse than no
-    match: it gives the model plausible-looking material to answer from and turns
-    "I don't know" into a confident wrong answer.
+    Fused order is preserved when the candidates carry it (keyword ranks from
+    fusion); otherwise similarity order. Either way a chunk survives only by
+    clearing the dense threshold or by term-matching: a weak dense match is
+    worse than no match, but a term match is its own evidence — dense vectors
+    systematically underweight exact entities (names, prices, dates), which is
+    what the keyword path exists to catch.
+
+    Ordered by the ranking that produced them and cut at top_k: the union of two
+    top-k lists, so taking more would re-admit what both rankings rejected.
     """
-    ranked = sorted(candidates, key=lambda chunk: chunk.similarity, reverse=True)
-    return [chunk for chunk in ranked if chunk.similarity >= policy.min_similarity][: policy.top_k]
+    if any(chunk.keyword_rank is not None for chunk in candidates):
+        ranked = list(candidates)
+    else:
+        ranked = sorted(candidates, key=lambda chunk: chunk.similarity, reverse=True)
+    kept = [
+        chunk
+        for chunk in ranked
+        if chunk.similarity >= policy.min_similarity or chunk.keyword_rank is not None
+    ]
+    return kept[: policy.top_k]
 
 
 def build_context(chunks: list[RetrievedChunk], *, policy: RetrievalPolicy | None = None) -> str:
@@ -156,19 +183,64 @@ def sanitize_for_context(text: str) -> str:
 def has_sufficient_evidence(chunks: list[RetrievedChunk], *, policy: RetrievalPolicy) -> bool:
     """Whether the retrieved material can support an answer (§11).
 
-    Requires at least one chunk at or above the threshold. When this is False the
-    caller must use the approved fallback message rather than answering — §11 is
+    A dense match at or above the threshold, or a term match: `plainto_tsquery`
+    ANDs the query's terms, so a matched chunk contains every one of them, which
+    is evidence no matter what the vector says. When this is False the caller
+    must use the approved fallback message rather than answering — §11 is
     explicit that insufficient evidence must not become invention.
     """
-    return any(chunk.similarity >= policy.min_similarity for chunk in chunks)
+    return any(
+        chunk.similarity >= policy.min_similarity or chunk.keyword_rank is not None
+        for chunk in chunks
+    )
+
+
+def fuse_rankings(
+    dense: list[RetrievedChunk], keyword: list[RetrievedChunk], *, rrf_k: int = RRF_K
+) -> list[RetrievedChunk]:
+    """Reciprocal-rank fusion of the dense and keyword rankings.
+
+    Each list contributes 1/(k + rank) per chunk; absent from a list contributes
+    nothing. Dense similarity rides along untouched — fusion reorders, it never
+    re-scores — and keyword positions are stamped on for selection and evidence
+    downstream. Ties break by similarity, then ID, so the order is deterministic.
+    """
+    dense_rank = {chunk.chunk_id: index for index, chunk in enumerate(dense)}
+    keyword_rank = {chunk.chunk_id: index for index, chunk in enumerate(keyword)}
+    scores: dict[str, float] = {}
+    for chunk_id, index in dense_rank.items():
+        scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (rrf_k + index + 1)
+    for chunk_id, index in keyword_rank.items():
+        scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (rrf_k + index + 1)
+    by_id = {chunk.chunk_id: chunk for chunk in (*dense, *keyword)}
+    ordered = sorted(
+        scores,
+        key=lambda chunk_id: (
+            -scores[chunk_id],
+            -by_id[chunk_id].similarity,
+            chunk_id,
+        ),
+    )
+    return [
+        replace(by_id[chunk_id], keyword_rank=keyword_rank.get(chunk_id)) for chunk_id in ordered
+    ]
 
 
 def retrieve(
-    candidates: list[RetrievedChunk], *, policy: RetrievalPolicy | None = None
+    candidates: list[RetrievedChunk],
+    keyword: Sequence[RetrievedChunk] = (),
+    *,
+    policy: RetrievalPolicy | None = None,
 ) -> RetrievalResult:
-    """Apply the full retrieval policy to raw similarity-search candidates."""
+    """Apply the full retrieval policy to raw search candidates.
+
+    With a keyword list, dense and keyword rankings fuse first (reciprocal
+    rank); without one, the dense ranking stands alone — the legacy path, kept
+    so callers without a term index behave exactly as before.
+    """
     policy = policy or RetrievalPolicy()
-    selected = select_chunks(candidates, policy=policy)
+    ranked = fuse_rankings(list(candidates), list(keyword)) if keyword else candidates
+    selected = select_chunks(ranked, policy=policy)
 
     return RetrievalResult(
         chunks=selected,

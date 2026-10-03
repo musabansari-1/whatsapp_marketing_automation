@@ -162,6 +162,11 @@ gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --
 gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
   --args "run,python,-m,app.cli,configure-products,--file,config/products.json"
 
+# 1b. After changing EMBEDDING_MODEL: re-encode every chunk not on the new model.
+# Idempotent; re-running converges. Retrieval sees a partial index while it runs,
+# so do this in a quiet window, then verify a product answers from knowledge.
+gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
+  --args "run,python,-m,app.cli,re-embed-knowledge"
 # 2. Once only: copy Academicae's pre-Phase-27 environment configuration into its rows.
 #    Needs the retired variables in that execution's environment; --dry-run first.
 gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \

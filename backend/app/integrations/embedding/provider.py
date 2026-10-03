@@ -39,3 +39,9 @@ class EmbeddingProvider(ABC):
     @abstractmethod
     async def embed_query(self, text: str) -> Vector:
         """Embed a single customer question for retrieval."""
+
+    async def warmup(self) -> None:
+        """Load the model now rather than on first use. Optional: providers with
+        nothing to preload inherit this no-op, so callers never branch on
+        provider type before calling it."""
+        return

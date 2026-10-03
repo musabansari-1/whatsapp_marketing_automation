@@ -250,6 +250,17 @@ class TestVectorColumn:
         )
         assert index.dialect_options["postgresql"]["using"] == "hnsw"
 
+    def test_term_match_index_exists(self) -> None:
+        """Hybrid retrieval needs a term index beside the vector one."""
+        columns = _table("knowledge_chunks").c
+        assert "content_tsv" in columns
+        index = next(
+            i
+            for i in _table("knowledge_chunks").indexes
+            if i.name == "ix_knowledge_chunks_content_tsv"
+        )
+        assert index.dialect_options["postgresql"]["using"] == "gin"
+
 
 class TestLookupIndexes:
     """§15: indexes for lead/campaign/booking lookups and notifications."""

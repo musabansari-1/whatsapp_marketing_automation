@@ -1055,3 +1055,38 @@ class TestBookingFailedEnumValue:
 
         _alembic(scratch_database, BOOKING_FAILED_REVISION, direction="up")
         assert _scalar(scratch_database, BOOKING_FAILED_LABEL_SQL) == 1
+
+
+KEYWORD_REVISION = "a3b4c5d6e7f8"
+KEYWORD_PARENT = "c2d3e4f5a6b7"
+
+KEYWORD_COLUMN_SQL = (
+    "SELECT count(*) FROM information_schema.columns "
+    "WHERE table_name = 'knowledge_chunks' AND column_name = 'content_tsv'"
+)
+KEYWORD_INDEX_SQL = (
+    "SELECT count(*) FROM pg_indexes "
+    "WHERE tablename = 'knowledge_chunks' AND indexname = 'ix_knowledge_chunks_content_tsv'"
+)
+
+
+class TestKeywordSearchMigration:
+    """Migration `a3b4c5d6e7f8` adds the generated term vector and its GIN index
+    for hybrid retrieval. Unlike an enum label, both are droppable, so the
+    downgrade genuinely removes them — the data is derived from content and
+    regenerates on re-upgrade."""
+
+    def test_the_column_and_index_appear_downgrade_removes_and_reupgrade_restores(
+        self, scratch_database: str
+    ) -> None:
+        _ensure_revision(scratch_database, KEYWORD_REVISION)
+        assert _scalar(scratch_database, KEYWORD_COLUMN_SQL) == 1
+        assert _scalar(scratch_database, KEYWORD_INDEX_SQL) == 1
+
+        _alembic(scratch_database, KEYWORD_PARENT, direction="down")
+        assert _scalar(scratch_database, KEYWORD_COLUMN_SQL) == 0
+        assert _scalar(scratch_database, KEYWORD_INDEX_SQL) == 0
+
+        _alembic(scratch_database, KEYWORD_REVISION, direction="up")
+        assert _scalar(scratch_database, KEYWORD_COLUMN_SQL) == 1
+        assert _scalar(scratch_database, KEYWORD_INDEX_SQL) == 1

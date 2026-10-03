@@ -1,7 +1,7 @@
 """Text chunking for retrieval (specification §11, [D1]).
 
-Chunk size is not a free parameter. `all-MiniLM-L6-v2` truncates input at 256
-word-pieces and does so **silently** — a chunk longer than that is embedded from its
+Chunk size is not a free parameter. `bge-small-en-v1.5` truncates input at 512
+tokens and does so **silently** — a chunk longer than that is embedded from its
 opening words alone, and the rest becomes unretrievable without any error to show for
 it. The default target here sits well inside that limit.
 

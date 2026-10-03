@@ -69,6 +69,11 @@ class FakeEmbeddingProvider(EmbeddingProvider):
         self.embedded_queries.append(text)
         return self._vector_for(text)
 
+    async def warmup(self) -> None:
+        """No-op: nothing to preload. Present so consumers (worker lifespan, the
+        re-embed command) need no provider check before calling it."""
+        return
+
     # ---------------------------------------------------------------- test helpers
 
     def reset(self) -> None:

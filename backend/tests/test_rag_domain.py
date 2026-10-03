@@ -26,6 +26,7 @@ from app.domain.rag import (
     RetrievalPolicy,
     RetrievedChunk,
     build_context,
+    fuse_rankings,
     has_sufficient_evidence,
     retrieve,
     sanitize_for_context,
@@ -41,6 +42,17 @@ def a_chunk(similarity: float, content: str = "text", title: str = "Doc") -> Ret
         document_title=title,
         content=content,
         similarity=similarity,
+    )
+
+
+def a_keyword_chunk(similarity: float, rank: int, chunk_id: str = "k-1") -> RetrievedChunk:
+    return RetrievedChunk(
+        chunk_id=chunk_id,
+        document_id="d-1",
+        document_title="Doc",
+        content="text",
+        similarity=similarity,
+        keyword_rank=rank,
     )
 
 
@@ -144,7 +156,7 @@ class TestChunking:
         assert chunk_text("   ") == []
 
     def test_chunks_respect_the_size_limit(self) -> None:
-        """all-MiniLM-L6-v2 silently truncates past its window, so an over-long chunk
+        """bge-small-en-v1.5 silently truncates past its window, so an over-long chunk
         would be embedded from its opening words alone."""
         policy = ChunkingPolicy(max_chars=200, overlap_chars=0)
         text = " ".join(f"Sentence number {n} about refunds." for n in range(60))
@@ -264,6 +276,71 @@ class TestUnanswered:
     def test_one_strong_candidate_is_enough(self) -> None:
         policy = RetrievalPolicy(min_similarity=0.5)
         assert has_sufficient_evidence([a_chunk(0.55)], policy=policy)
+
+
+class TestHybridFusion:
+    """Dense vectors underweight exact entities (names, prices, dates); term
+    match catches them. Fusion orders by both signals; the threshold still
+    applies to dense similarity, and a term match is evidence in its own right."""
+
+    def test_a_term_match_outranks_a_denser_generic(self) -> None:
+        generic = RetrievedChunk(
+            chunk_id="generic",
+            document_id="d-1",
+            document_title="Doc",
+            content="generic",
+            similarity=0.6,
+        )
+        entity = RetrievedChunk(
+            chunk_id="entity",
+            document_id="d-1",
+            document_title="Doc",
+            content="entity",
+            similarity=0.2,
+        )
+        fused = fuse_rankings([generic, entity], [a_keyword_chunk(0.2, 0, chunk_id="entity")])
+
+        assert [c.chunk_id for c in fused[:2]] == ["entity", "generic"]
+        assert fused[0].keyword_rank == 0
+        assert fused[0].similarity == 0.2  # reordering never re-scores
+
+    def test_dense_only_input_keeps_input_order(self) -> None:
+        """Fusion never re-sorts on its own; `select_chunks` applies the
+        similarity order downstream exactly as before."""
+        fused = fuse_rankings([a_chunk(0.4), a_chunk(0.9)], [])
+
+        assert [c.similarity for c in fused] == [0.4, 0.9]
+        assert [c.similarity for c in select_chunks(fused, policy=RetrievalPolicy())] == [
+            0.9,
+            0.4,
+        ]
+
+    def test_fusion_is_deterministic(self) -> None:
+        dense = [a_chunk(0.5), a_chunk(0.5)]
+        keyword = [a_keyword_chunk(0.5, 1, "k-1"), a_keyword_chunk(0.5, 0, "k-0")]
+        first = [c.chunk_id for c in fuse_rankings(dense, keyword)]
+        second = [c.chunk_id for c in fuse_rankings(dense, keyword)]
+
+        assert first == second
+
+    def test_a_weak_dense_term_match_is_evidence(self) -> None:
+        """The entity-query case: below the dense bar, but the terms all match,
+        so answering beats the fallback."""
+        result = retrieve(
+            [a_chunk(0.2)],
+            [a_keyword_chunk(0.2, 0)],
+            policy=RetrievalPolicy(min_similarity=0.5),
+        )
+
+        assert result.has_sufficient_evidence
+        assert result.context != ""
+
+    def test_no_keyword_list_behaves_exactly_as_before(self) -> None:
+        """Callers without a term index (and all existing tests) see the legacy
+        dense-only path."""
+        policy = RetrievalPolicy(min_similarity=0.5)
+        assert retrieve([a_chunk(0.2)], policy=policy).has_sufficient_evidence is False
+        assert retrieve([a_chunk(0.6)], policy=policy).has_sufficient_evidence is True
 
 
 class TestMultiChunk:

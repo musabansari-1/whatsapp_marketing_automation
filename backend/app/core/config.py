@@ -171,13 +171,13 @@ class Settings(BaseSettings):
     ai_retrieval_enabled: bool = True
 
     # ---------------------------------------------------------------- embeddings [D1]
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_dimension: int = 384
     embedding_batch_size: int = 32
 
     # ---------------------------------------------------------------- RAG [§11]
     # Chunk size is bounded by the embedding model's input window, not by taste:
-    # all-MiniLM-L6-v2 silently truncates past 256 word-pieces, so an over-long chunk
+    # bge-small-en-v1.5 silently truncates past 512 tokens, so an over-long chunk
     # is embedded from its opening words alone.
     rag_chunk_chars: int = 800
     rag_chunk_overlap_chars: int = 120

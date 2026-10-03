@@ -187,5 +187,5 @@ jobs:
         run: |
           docker run --rm --network=none -e HF_HUB_OFFLINE=1 wa-worker:ci \
             python -c "from sentence_transformers import SentenceTransformer; \
-            m = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
+            m = SentenceTransformer('BAAI/bge-small-en-v1.5'); \
             print('dimension:', m.encode(['x']).shape[-1])"

@@ -96,9 +96,10 @@ class TestProviderConfigValidation:
 
 class TestEmbeddingConfig:
     def test_dimension_matches_initial_model(self, settings: Settings) -> None:
-        """[D1]: all-MiniLM-L6-v2 is 384-dimensional."""
+        """[D1]: bge-small-en-v1.5 is 384-dimensional, like the MiniLM it replaced —
+        so the upgrade re-embeds without a column migration."""
         assert settings.embedding_dimension == 384
-        assert settings.embedding_model == "sentence-transformers/all-MiniLM-L6-v2"
+        assert settings.embedding_model == "BAAI/bge-small-en-v1.5"
 
     def test_dimension_is_configurable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("EMBEDDING_DIMENSION", "768")
