@@ -556,6 +556,105 @@ class TestCustomerConfirmation:
         assert run_db(outbound) == []
 
 
+class TestRescheduleCancelsSuperseded:
+    """A "change my demo" books new without touching the old rows. The notify task
+    cancels this conversation's older confirmed bookings after the customer
+    already has the new confirmation — never before it, so the turn's latency is
+    untouched."""
+
+    def _book_two(self) -> tuple[Any, Any, FakeCalendarProvider]:
+        lead_id, conversation_id = seed(users=1)
+        calendar = FakeCalendarProvider()
+        assert book(lead_id, conversation_id, calendar=calendar).ok
+        assert book(lead_id, conversation_id, calendar=calendar).ok
+        rows = sorted(bookings(), key=lambda row: row.start_time)
+        assert len(rows) == 2
+        return rows[0], rows[1], calendar
+
+    def _use_calendar(
+        self, monkeypatch: pytest.MonkeyPatch, calendar: FakeCalendarProvider
+    ) -> None:
+        """The notify task resolves its own stateless calendar client; point it at
+        the test's fake so event deletion is observable."""
+        monkeypatch.setattr(
+            "app.worker.handlers.booking.resolve_booking_capability",
+            lambda settings, product: (None, calendar),
+        )
+
+    def test_older_bookings_are_cancelled_and_their_events_deleted(
+        self, booking_env: FakeWhatsAppProvider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        older, newer, calendar = self._book_two()
+        self._use_calendar(monkeypatch, calendar)
+
+        result = run_notify(str(newer.id))
+
+        assert result["cancelled"] == 1
+        assert _status(older.id) is BookingStatus.CANCELLED
+        assert _status(newer.id) is BookingStatus.CONFIRMED
+        assert older.calendar_event_id not in calendar.events
+        assert newer.calendar_event_id in calendar.events
+
+    def test_notify_for_the_only_booking_cancels_nothing(
+        self, booking_env: FakeWhatsAppProvider
+    ) -> None:
+        lead_id, conversation_id = seed(users=1)
+        book(lead_id, conversation_id, calendar=FakeCalendarProvider())
+
+        result = run_notify(str(bookings()[0].id))
+
+        assert result["cancelled"] == 0
+        assert bookings()[0].status is BookingStatus.CONFIRMED
+
+    def test_a_rerun_cancels_nothing_twice(
+        self, booking_env: FakeWhatsAppProvider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first run already cancelled the older row; the retry finds no
+        CONFIRMED older booking and changes nothing."""
+        older, newer, calendar = self._book_two()
+        self._use_calendar(monkeypatch, calendar)
+
+        run_notify(str(newer.id))
+        result = run_notify(str(newer.id))
+
+        assert result["cancelled"] == 0
+        assert _status(older.id) is BookingStatus.CANCELLED
+        assert _status(newer.id) is BookingStatus.CONFIRMED
+
+    def test_a_failed_event_delete_keeps_the_row_confirmed(
+        self, booking_env: FakeWhatsAppProvider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Diary truth over dashboard tidiness: an event that survives keeps its
+        row, loudly logged, rather than a dashboard that says free while Google
+        says busy."""
+
+        class UndeletableCalendar(FakeCalendarProvider):
+            async def delete_event(self, event_id: str) -> None:
+                raise RuntimeError("calendar delete failed")
+
+        lead_id, conversation_id = seed(users=1)
+        calendar = UndeletableCalendar()
+        assert book(lead_id, conversation_id, calendar=calendar).ok
+        assert book(lead_id, conversation_id, calendar=calendar).ok
+        rows = sorted(bookings(), key=lambda row: row.start_time)
+        self._use_calendar(monkeypatch, calendar)
+
+        result = run_notify(str(rows[1].id))
+
+        assert result["cancelled"] == 0
+        assert _status(rows[0].id) is BookingStatus.CONFIRMED
+        assert _status(rows[1].id) is BookingStatus.CONFIRMED
+
+
+def _status(booking_id: Any) -> BookingStatus:
+    async def fetch(session: AsyncSession) -> BookingStatus:
+        row = await session.get(Booking, uuid.UUID(str(booking_id)))
+        assert row is not None
+        return row.status
+
+    return run_db(fetch)
+
+
 class TestTaskValidation:
     def test_a_missing_booking_id_is_rejected(self, booking_env: FakeWhatsAppProvider) -> None:
         with pytest.raises(ValueError, match="booking_id"):

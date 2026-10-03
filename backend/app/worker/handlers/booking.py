@@ -21,15 +21,16 @@ from __future__ import annotations
 
 import uuid
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.logging import get_logger
-from app.domain.enums import NotificationType
+from app.domain.enums import BookingStatus, NotificationType
 from app.integrations.queue import TaskRequest
 from app.persistence.database import get_session_factory
 from app.persistence.models import Booking, Lead, Product
 from app.persistence.repositories import bookings as booking_repo
 from app.persistence.repositories import conversations as conversation_repo
+from app.worker.handlers.conversation import resolve_booking_capability
 from app.worker.handlers.crm_sync import queue_crm_sync
 
 logger = get_logger(__name__)
@@ -80,6 +81,13 @@ async def notify_booking(task: TaskRequest) -> dict[str, int | str]:
 
     logger.info("booking_notifications_created", notified=notified)
 
+    # Rescheduling cancels what this demo replaces — after the customer already
+    # has the new confirmation, never before it. Runs here, in the post-reply
+    # task, so the turn's latency is untouched.
+    cancelled = await _cancel_superseded_bookings(settings, uuid.UUID(str(booking_id)))
+    if cancelled:
+        logger.info("booking_superseded_cancelled", count=cancelled, booking_id=str(booking_id))
+
     # A booked demo is exactly what a salesperson expects to see in the CRM. Enqueued
     # rather than written here, and best-effort: §14 forbids a CRM failure affecting a
     # confirmed booking.
@@ -89,10 +97,75 @@ async def notify_booking(task: TaskRequest) -> dict[str, int | str]:
         "result": "notified",
         "booking_id": str(booking_id),
         "notified": notified,
+        "cancelled": cancelled,
     }
 
 
 # ---------------------------------------------------------------- internals
+
+
+async def _cancel_superseded_bookings(settings: Settings, booking_id: uuid.UUID) -> int:
+    """Cancel this conversation's older confirmed bookings now the new one exists.
+
+    A "change my demo" books new without touching the old rows, so without this
+    the diary and the dashboard accumulate demos for one person. Runs in the
+    notify task — after the customer already has the new confirmation — so the
+    turn's reply latency is untouched, exactly as asked.
+
+    Only strictly-older bookings: two concurrent notifies cannot cancel each
+    other, and the new booking itself is never eligible. Best-effort throughout:
+    a calendar event that refuses deletion keeps its row CONFIRMED (diary truth
+    over dashboard tidiness), failures are logged not raised, and the new booking
+    stands regardless. No bell: the DEMO_BOOKED fan-out for the new booking is the
+    team's work item; one bell per reschedule, not two.
+    """
+    factory = get_session_factory()
+
+    async with factory() as session:
+        booking = await booking_repo.get_booking(session, booking_id)
+        if booking is None or booking.conversation_id is None:
+            return 0
+        product = await session.get(Product, booking.product_id)
+        conversation_id = booking.conversation_id
+        created_at = booking.created_at
+        older = [
+            old
+            for old in await booking_repo.list_confirmed_for_conversation(session, conversation_id)
+            if old.id != booking.id and old.created_at < created_at
+        ]
+        if not older:
+            return 0
+        _, calendar = (
+            resolve_booking_capability(settings, product) if product is not None else (None, None)
+        )
+
+    cancelled = 0
+    for superseded in older:
+        if superseded.calendar_event_id is None:
+            # No event to delete (should not happen: the row exists because an
+            # event was confirmed). Left CONFIRMED and logged, like a failed delete.
+            logger.warning(
+                "booking_superseded_without_event",
+                booking_id=str(superseded.id),
+            )
+            continue
+        if calendar is not None:
+            try:
+                await calendar.delete_event(superseded.calendar_event_id)
+            except Exception as exc:  # noqa: BLE001 - logged, row left CONFIRMED
+                logger.warning(
+                    "booking_superseded_event_delete_failed",
+                    booking_id=str(superseded.id),
+                    error=str(exc),
+                )
+                continue
+        async with factory() as session:
+            row = await booking_repo.get_booking(session, superseded.id)
+            if row is not None and row.status is BookingStatus.CONFIRMED:
+                await booking_repo.mark_cancelled(session, row)
+                await session.commit()
+                cancelled += 1
+    return cancelled
 
 
 def _notification_title(product: Product | None) -> str:

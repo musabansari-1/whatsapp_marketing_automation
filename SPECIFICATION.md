@@ -1112,6 +1112,14 @@ per inbound message forbids it. Never imply the demo was added to the customer's
 own calendar: the event lives on the team's calendar, and the customer is emailed
 nothing.
 
+Rescheduling cancels what the new demo replaces, in the notify task — after the
+customer already has the new confirmation, never before it, so the turn's latency
+is untouched. Only strictly-older confirmed bookings in the same conversation, so
+concurrent notifies cannot cancel each other; the calendar event is deleted and the
+row marked CANCELLED, and an event that refuses deletion keeps its row rather than
+a dashboard that says free while the diary says busy. No second bell: the new
+booking's fan-out is the team's work item.
+
 **The already-booked check comes before the recheck, and that ordering is
 load-bearing.** On a retried turn the booking's own calendar event is now busy time, so
 rechecking first would find the slot occupied and tell the customer their demo was lost
