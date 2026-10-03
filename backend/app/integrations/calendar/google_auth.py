@@ -36,6 +36,7 @@ import httpx
 
 from app.core.errors import NonRetryableProviderError, ProviderError, RetryableProviderError
 from app.core.logging import get_logger
+from app.integrations.http import shared_async_client
 from app.integrations.secrets import SecretStore
 
 logger = get_logger(__name__)
@@ -360,8 +361,7 @@ class OAuthRefreshTokenAuthenticator(CalendarAuthenticator):
     async def _post_token(self, data: dict[str, str]) -> httpx.Response:
         if self._client is not None:
             return await self._client.post(TOKEN_URL, data=data, timeout=self._timeout)
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            return await client.post(TOKEN_URL, data=data)
+        return await shared_async_client().post(TOKEN_URL, data=data, timeout=self._timeout)
 
 
 def error_detail(response: httpx.Response) -> str:

@@ -25,6 +25,7 @@ import httpx
 
 from app.core.errors import NonRetryableProviderError, RetryableProviderError
 from app.core.logging import get_logger
+from app.integrations.http import shared_async_client
 from app.integrations.llm.provider import (
     CompletionRequest,
     LLMCompletion,
@@ -145,8 +146,9 @@ class OpenRouterLLMProvider(LLMProvider):
                     method, url, json=json, headers=headers, timeout=self._timeout
                 )
             else:
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
-                    response = await client.request(method, url, json=json, headers=headers)
+                response = await shared_async_client().request(
+                    method, url, json=json, headers=headers, timeout=self._timeout
+                )
         except httpx.TimeoutException as exc:
             # A timeout says nothing about whether the request was processed. It is
             # retryable, and the caller's idempotency key is what prevents the

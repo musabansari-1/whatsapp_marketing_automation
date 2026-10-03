@@ -39,6 +39,7 @@ from app.integrations.calendar.provider import (
     SlotUnavailableError,
     TimeInterval,
 )
+from app.integrations.http import shared_async_client
 
 logger = get_logger(__name__)
 
@@ -388,10 +389,15 @@ class GoogleCalendarProvider(CalendarProvider):
                 data=data,
                 timeout=self._timeout,
             )
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            return await client.request(
-                method, url, json=json, params=params, headers=headers, data=data
-            )
+        return await shared_async_client().request(
+            method,
+            url,
+            json=json,
+            params=params,
+            headers=headers,
+            data=data,
+            timeout=self._timeout,
+        )
 
     def _classify_error(self, response: httpx.Response) -> Exception:
         """The §20 retryable / permanent split."""

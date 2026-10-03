@@ -26,6 +26,7 @@ import httpx
 from app.core.errors import NonRetryableProviderError, RetryableProviderError
 from app.core.logging import get_logger
 from app.integrations.crm.provider import ContactUpsert, CRMContact, CRMProvider
+from app.integrations.http import shared_async_client
 
 logger = get_logger(__name__)
 
@@ -162,8 +163,9 @@ class HubSpotProvider(CRMProvider):
                     method, url, json=json, headers=headers, timeout=self._timeout
                 )
             else:
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
-                    response = await client.request(method, url, json=json, headers=headers)
+                response = await shared_async_client().request(
+                    method, url, json=json, headers=headers, timeout=self._timeout
+                )
         except httpx.TimeoutException as exc:
             # Says nothing about whether HubSpot processed it. Retryable — and because
             # the upsert searches before writing, a retry updates rather than

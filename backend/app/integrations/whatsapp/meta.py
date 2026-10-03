@@ -21,6 +21,7 @@ import httpx
 from app.core.errors import NonRetryableProviderError, RetryableProviderError
 from app.core.logging import get_logger
 from app.domain.enums import MessageStatus, TemplateCategory, TemplateHeaderType
+from app.integrations.http import shared_async_client
 from app.integrations.whatsapp.provider import (
     ApprovedTemplate,
     OutboundTemplateMessage,
@@ -216,10 +217,14 @@ class MetaWhatsAppProvider(WhatsAppProvider):
                     method, url, json=json, params=params, headers=headers, timeout=self._timeout
                 )
             else:
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
-                    response = await client.request(
-                        method, url, json=json, params=params, headers=headers
-                    )
+                response = await shared_async_client().request(
+                    method,
+                    url,
+                    json=json,
+                    params=params,
+                    headers=headers,
+                    timeout=self._timeout,
+                )
         except httpx.TimeoutException as exc:
             # A timeout says nothing about whether Meta processed the request, so it
             # is retryable and the caller's idempotency key is what prevents a double
