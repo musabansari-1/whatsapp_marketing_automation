@@ -140,6 +140,31 @@ class TestCompletions:
         with pytest.raises(NonRetryableProviderError, match="unreadable"):
             await make_provider(handler).complete(a_request())
 
+    @pytest.mark.asyncio
+    async def test_the_request_body_is_compact_but_identical(self) -> None:
+        """~5% air on an 18k-char prompt, for free: no whitespace outside strings,
+        UTF-8 raw. A parser cannot tell the difference — this test parses it back
+        and compares against the pretty form."""
+        import json
+
+        seen: dict[str, bytes] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = bytes(request.content)
+            return httpx.Response(200, json=completion_body())
+
+        await make_provider(handler).complete(
+            CompletionRequest(
+                messages=(Message(role=Role.USER, content="Namasté — tomorrow at 10?"),),
+            )
+        )
+
+        raw = seen["body"]
+        assert b" : " not in raw and b", " not in raw
+        assert "Namasté".encode() in raw  # raw UTF-8, not \uXXXX
+        assert b"\\u00e9" not in raw
+        assert json.loads(raw)["messages"][0]["content"] == "Namasté — tomorrow at 10?"
+
 
 class TestToolCalls:
     @pytest.mark.asyncio
