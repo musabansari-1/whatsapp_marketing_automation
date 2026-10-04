@@ -165,7 +165,11 @@ gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --
 # 1b. After changing EMBEDDING_MODEL: re-encode every chunk not on the new model.
 # Idempotent; re-running converges. Retrieval sees a partial index while it runs,
 # so do this in a quiet window, then verify a product answers from knowledge.
+# Must run where the local embedding provider exists: the wa-migrate job uses the
+# API image (EMBEDDING_PROVIDER=fake), so override it, or run the CLI locally
+# against the database with EMBEDDING_PROVIDER=local_sentence_transformer.
 gcloud run jobs execute wa-migrate --region "$REGION" --project "$PROJECT_ID" --wait \
+  --update-env-vars EMBEDDING_PROVIDER=local_sentence_transformer \
   --args "run,python,-m,app.cli,re-embed-knowledge"
 # 2. Once only: copy Academicae's pre-Phase-27 environment configuration into its rows.
 #    Needs the retired variables in that execution's environment; --dry-run first.
