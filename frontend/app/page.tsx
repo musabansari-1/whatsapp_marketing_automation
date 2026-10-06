@@ -64,7 +64,6 @@ export default function AllProductsPage() {
                   <p className="text-lg font-extrabold tracking-tight text-ink">
                     {product.display_name}
                   </p>
-                  <p className="mt-1 font-mono text-xs text-ink-muted">/p/{product.slug}</p>
                 </Link>
               </li>
             ))}
