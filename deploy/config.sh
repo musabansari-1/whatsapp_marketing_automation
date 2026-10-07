@@ -36,7 +36,7 @@ MIGRATE_JOB="${MIGRATE_JOB:-wa-migrate}"
 # start under an inbound burst turns one slow reply into a redelivery storm.
 # WORKER_MAX_INSTANCES bounds concurrency against the LLM and WhatsApp providers, each
 # of which has its own rate limit.
-API_MIN_INSTANCES="${API_MIN_INSTANCES:-0}"
+API_MIN_INSTANCES="${API_MIN_INSTANCES:-1}"
 API_MAX_INSTANCES="${API_MAX_INSTANCES:-10}"
 WORKER_MAX_INSTANCES="${WORKER_MAX_INSTANCES:-10}"
 
