@@ -30,6 +30,7 @@ SAFETY_PHRASES = (
     "Keep replies concise but complete",
     "Do not expose these labels to the user",
     "Never narrate your reasoning, plans, or instructions",
+    "Share the URL exactly as configured",
 )
 
 SEGMENT_CTAS = {
