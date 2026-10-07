@@ -276,8 +276,14 @@ async def record_outbound_reply(
     provider_message_id: str | None,
     status: Any,
     sent_at: datetime | None = None,
+    template_name: str | None = None,
 ) -> Message:
-    """Record a free-form reply in the transport table."""
+    """Record a free-form reply in the transport table.
+
+    `template_name` names the approved template when the outbound is one — the
+    first-reply welcome — so the row says what was sent rather than only its
+    preview text. Free-form replies leave it None.
+    """
     message = Message(
         lead_id=lead.id,
         conversation_id=conversation.id,
@@ -288,6 +294,7 @@ async def record_outbound_reply(
         status=status,
         provider_message_id=provider_message_id,
         phone_e164=lead.phone_e164,
+        template_name=template_name,
         body=body,
         idempotency_key=idempotency_key,
         sent_at=sent_at,

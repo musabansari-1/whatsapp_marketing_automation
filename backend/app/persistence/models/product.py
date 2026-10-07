@@ -144,6 +144,20 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     registration_url: Mapped[str | None] = mapped_column(Text)
 
+    # ---------------------------------------------------------------- first reply
+    #
+    # The Meta-approved template sent once, instead of the AI text reply, when a
+    # phone number messages this product for the first time. NULL (the placeholder
+    # state) disables it: the turn runs the normal AI path. Like ownership, this
+    # is runtime application data set through the first-reply API — template rows
+    # are created by Meta sync, so no catalog or migration can know their IDs —
+    # and never inferred. On template delete the reference clears (SET NULL)
+    # rather than blocking the delete.
+    first_reply_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("whatsapp_templates.id", ondelete="SET NULL"),
+    )
+
     segments: Mapped[list[Segment]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
     )

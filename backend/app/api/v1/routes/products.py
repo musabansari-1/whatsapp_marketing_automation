@@ -49,6 +49,7 @@ async def get_product(product: ProductScope, session: DbSession) -> ProductDetai
         has_calendar=bool(product.google_calendar_id),
         has_whatsapp_number=bool(product.whatsapp_phone_number_id),
         has_meeting_url=bool(product.meeting_url),
+        has_first_reply_template=bool(product.first_reply_template_id),
     )
 
 

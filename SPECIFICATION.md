@@ -745,6 +745,24 @@ There is no endpoint for sending a message into a conversation. The worker is wh
 the window and suppression checks live, and an endpoint bypassing them would be a way
 to message a customer who has opted out.
 
+### First-reply welcome template **[D68]**
+
+A phone number messaging a product for the first time receives the product's
+selected template instead of the AI text reply; the AI answers from the second
+message on. "First time" means the lead has never received a conversation reply —
+broadcast rows carry no conversation, so a campaign recipient still counts as
+unreached. The selection is `products.first_reply_template_id` (NULL disables the
+welcome); like ownership it is runtime application data set through the first-reply
+API, never inferred and never a placeholder name — an unset product behaves exactly
+as before. The template must already belong to the product (**[D57]**), be Meta
+APPROVED (**[D6]**), and carry its header media; selection refuses anything less,
+and any drift found at send time falls back to the normal AI path rather than
+losing the turn. Suppression and CLOSED still refuse first; the welcome is a
+template and therefore allowed outside the 24-hour window. One reply per inbound
+message still holds: the welcome replaces the text reply under the same
+`reply-{message}` idempotency key, and the transcript records the template's
+preview as the assistant turn.
+
 ## 11. RAG
 
 RAG is required.
@@ -2567,3 +2585,4 @@ assigned to a default product. Retrieval without a product is not expressible.
 | D65 | *Decided and implemented 2026-09-27 (static meeting link, Option 2).* **Each product may hold one permanent meeting link; the platform never generates a conference for it.** A service account ([D62]) is an IAM identity, not a Meet-licensed user, so Google answers `conferenceData.createRequest` with `400 Invalid conference type value` — and a secondary calendar in a personal account has no conference solutions at all. The operator creates one permanent Google Meet link in their own account per product and configures it as `products.meeting_url` via `configure-products` (catalog key `meeting_url`, an `https://` URL; absent leaves the product alone, `null` clears it). When set, the calendar provider sends no `conferenceData` and no `conferenceDataVersion`, puts the link in the event's `location` and description, and returns it as the event's join link; the booking, the customer's WhatsApp confirmation and the dashboard notification carry it like any generated link. Absent keeps the previous behaviour: a generated conference where the calendar supports it, else a time-only booking that is still a success. The link is product data, never a platform setting and never a secret; one link belongs to one product (a shared room is a readiness BLOCKER, and the catalog refuses it); missing it on a booking product is a readiness GAP, never a BLOCKER. |
 | D66 | *Decided 2026-09-27 (offline demos).* **Choosing offline is a handoff, not a booking.** Every demo-booking product offers both modes: the model asks online (video) or offline (in person) once the customer agrees, before offering slots. Online follows the existing booking flow unchanged. Offline records `offline_demo_requested: true` via `update_lead` and reassures the customer the team will contact them; it creates no calendar event and no booking row (there is no time, and a dummy one would block the diary dishonestly), changes no lead status, and sends the customer nothing beyond the turn's reply. The team hears about it through the existing `DEMO_BOOKED` fan-out with an "Offline demo requested" title naming the customer and phone, linked to the lead; a repeat request collapses at the fan-out's unique constraint. |
 | D67 | *Decided 2026-09-29 (bot detection).* **Detect automated senders; escalate only an unreviewed repeat to a block.** A runaway correspondent burned ~13M tokens over 12 days before anyone noticed on the token bill, because nothing watched inbound shape. An hourly `sweep_bot_activity` task now scores each conversation with recent inbound traffic on metadata only (pace, gap regularity, marathon length — never content) against configured thresholds, and flags suspects as `BOT_SUSPECTED` dashboard notifications linked to the lead, naming the phone and the stats. A suspect pattern still going an hour later, with the first flag unread by anyone, escalates on its own to a `MANUAL` suppression (same row, same consequences as `block-sender`); a read flag means a human owns the decision and is never overridden, and the escalation can be switched off to observe. Flagging itself never pauses, throttles or answers traffic, sends nothing, and changes no state except the notification — repeats collapse, suppressed senders are skipped. Per-sender throttling remains the unenacted real-time counterpart. |
+| D68 | *Decided 2026-10-06 (first-reply welcome template).* **A first-time sender gets the product's template, not the AI's text.** Per product, at most one welcome (`products.first_reply_template_id`, NULL disables); template-only on the first-ever conversation reply, AI text from the second message on. Selection is runtime application data through the ADMIN first-reply API — never a catalog value, never inferred, never a placeholder name — and requires the product's own Meta-APPROVED template with its header media; anything less is refused at selection, and send-time drift falls back to the AI path. Suppression and CLOSED still refuse first; the welcome may go outside the 24-hour window; one reply per inbound message holds under the same `reply-{message}` key. |

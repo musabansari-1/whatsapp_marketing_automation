@@ -122,6 +122,9 @@ class ProductDetailResponse(ProductResponse):
     has_calendar: bool
     has_whatsapp_number: bool
     has_meeting_url: bool = False
+    # Whether a first-reply welcome template is selected. False is the placeholder
+    # state: first-time senders get the normal AI reply until a real template is set.
+    has_first_reply_template: bool = False
 
 
 class ProductRef(BaseModel):

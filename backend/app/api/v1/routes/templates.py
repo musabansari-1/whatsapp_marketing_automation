@@ -174,6 +174,77 @@ async def set_template_header_media(
     return _with_usability(updated, product)
 
 
+first_reply_router = APIRouter(prefix=f"{PRODUCT_PREFIX}/first-reply-template", tags=["templates"])
+
+
+@first_reply_router.get("", response_model=ProductTemplateResponse)
+async def get_first_reply_template(
+    product: ProductScope, session: DbSession
+) -> ProductTemplateResponse:
+    """The welcome sent once to a first-time sender, or 404 when none is selected.
+
+    404 is the placeholder state, not an error: first-time senders get the normal
+    AI reply until a real template is selected with the PUT below.
+    """
+    if product.first_reply_template_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No first-reply template selected"
+        )
+    template = await session.get(WhatsAppTemplate, product.first_reply_template_id)
+    if template is None or template.product_id != product.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No first-reply template selected"
+        )
+    return _with_usability(template, product)
+
+
+@first_reply_router.put("/{template_id}", response_model=ProductTemplateResponse)
+async def set_first_reply_template(
+    template_id: uuid.UUID, product: ProductScope, user: AdminUser, session: DbSession
+) -> ProductTemplateResponse:
+    """Select the template sent once to a first-time sender of this product. ADMIN-only.
+
+    Template only — the AI still answers from the second message on. Allowed for an
+    inactive product: selecting a welcome is preparation, and it reaches no customer
+    until someone messages the product.
+
+    404 for a template this product does not own. 409 when Meta has not approved it
+    or a media header has no asset chosen yet. Repeating the current selection
+    succeeds and changes nothing; clearing is DELETE on this resource.
+    """
+    template = await session.get(WhatsAppTemplate, template_id)
+    if template is None or template.product_id != product.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    try:
+        selected = await template_repo.set_first_reply_template(
+            session, product_id=product.id, template_id=template.id
+        )
+    except (TemplateAssignmentError, TemplateNotApprovedError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    logger.info(
+        "whatsapp_first_reply_template_set",
+        template_id=str(selected.id),
+        product_id=str(product.id),
+        by_user_id=str(user.id),
+    )
+    return _with_usability(selected, product)
+
+
+@first_reply_router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_first_reply_template(
+    product: ProductScope, user: AdminUser, session: DbSession
+) -> None:
+    """Disable the first-reply welcome. ADMIN-only; first-time senders get the AI reply."""
+    await template_repo.clear_first_reply_template(session, product_id=product.id)
+    logger.info(
+        "whatsapp_first_reply_template_cleared",
+        product_id=str(product.id),
+        by_user_id=str(user.id),
+    )
+
+
 @global_router.get("/unassigned", response_model=list[WhatsAppTemplateResponse])
 async def list_unassigned_templates(
     user: CurrentUser, session: DbSession
@@ -188,4 +259,4 @@ async def list_unassigned_templates(
     return [WhatsAppTemplateResponse.model_validate(template) for template in templates]
 
 
-__all__ = ["global_router", "router", "usable_for_campaigns"]
+__all__ = ["first_reply_router", "global_router", "router", "usable_for_campaigns"]

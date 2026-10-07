@@ -39,7 +39,7 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import tools as ai_tools
@@ -55,13 +55,19 @@ from app.domain.ai_config import (
     with_audience_segment_context,
     with_lead_context,
 )
+from app.domain.campaign import assert_header_media_available
 from app.domain.conversation import LeadStateError, can_transition_conversation
 from app.domain.conversion import (
     uses_calendar_booking,
     with_conversion_guidance,
     with_today_context,
 )
-from app.domain.enums import ConversationStatus, LeadStatus, MessageStatus
+from app.domain.enums import (
+    ConversationStatus,
+    LeadStatus,
+    MessageDirection,
+    MessageStatus,
+)
 from app.domain.product import ProductInactiveError, assert_accepts_new_activity
 from app.domain.qualification import rules_from_settings
 from app.domain.rag import RetrievalPolicy, RetrievalResult, retrieve
@@ -81,16 +87,19 @@ from app.integrations.registry import (
     build_queue_provider,
     build_whatsapp_provider,
 )
-from app.integrations.whatsapp import OutboundTextMessage
+from app.integrations.whatsapp import OutboundTemplateMessage, OutboundTextMessage
 from app.persistence.database import get_session_factory
 from app.persistence.models import (
     AIRun,
     Conversation,
     Lead,
+    Message,
     Product,
     Segment,
     WhatsAppSuppression,
+    WhatsAppTemplate,
 )
+from app.persistence.models.campaign import META_STATUS_APPROVED
 from app.persistence.repositories import ai_configurations as ai_config_repo
 from app.persistence.repositories import conversations as conversation_repo
 from app.persistence.repositories import knowledge as knowledge_repo
@@ -249,6 +258,25 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         if await _is_suppressed(session, lead.phone_e164):
             logger.info("conversation_turn_skipped", reason="suppressed")
             return TurnOutcome("suppressed", str(conversation.id)).as_dict()
+
+        # First-reply welcome: a phone number messaging this product for the first
+        # time gets the product's selected template instead of the AI text reply.
+        # An unset selection (the placeholder state) skips this entirely, and a
+        # template is sendable outside the 24-hour window — so this sits before
+        # the window gate. Any misconfiguration falls through to the normal AI
+        # path: a welcome must never lose the customer's turn.
+        first_reply = await _maybe_send_first_reply_template(
+            session,
+            conversation=conversation,
+            lead=lead,
+            message=message,
+            settings=settings,
+        )
+        if first_reply is not None:
+            await session.commit()
+            await queue_crm_sync(settings, lead.id)
+            logger.info("conversation_turn_completed", first_reply_template=True)
+            return first_reply
 
         # §8: outside the 24-hour window Meta permits only an approved template, and
         # [D24] leaves that template's content with the client. The turn is recorded
@@ -785,6 +813,153 @@ async def _advance_to_responded(session: AsyncSession, lead: Lead) -> None:
     """
     if lead.status in {LeadStatus.NEW, LeadStatus.CONTACTED}:
         await conversation_repo.transition_lead(session, lead, LeadStatus.RESPONDED)
+
+
+async def _maybe_send_first_reply_template(
+    session: AsyncSession,
+    *,
+    conversation: Conversation,
+    lead: Lead,
+    message: Message,
+    settings: Settings,
+) -> dict[str, str | bool] | None:
+    """Send the product's welcome template to a first-time sender, once.
+
+    Returns the turn outcome when the welcome applied, else None to continue the
+    normal AI path. "First time" means this lead has never received a
+    conversation reply: broadcast rows carry no conversation, so a customer who
+    only ever got a campaign still counts as unreached.
+
+    Every exit except the send itself returns None — an unset selection (the
+    placeholder state), a previous reply, a missing or misowned template, a
+    revoked approval, missing header media, a lost number. A welcome must never
+    lose the customer's turn; the AI path is always the fallback.
+    """
+    product = await session.get(Product, conversation.product_id)
+    if product is None or product.first_reply_template_id is None:
+        return None
+
+    replied_before = (
+        await session.execute(
+            select(
+                exists().where(
+                    Message.lead_id == lead.id,
+                    Message.direction == MessageDirection.OUTBOUND,
+                    Message.conversation_id.is_not(None),
+                )
+            )
+        )
+    ).scalar()
+    if replied_before:
+        return None
+
+    _turn, created = await conversation_repo.record_turn_once(
+        session,
+        conversation=conversation,
+        role=conversation_repo.ROLE_USER,
+        content=message.body or "",
+        message_id=message.id,
+    )
+    if created:
+        await _advance_to_responded(session, lead)
+
+    template = await session.get(WhatsAppTemplate, product.first_reply_template_id)
+    if (
+        template is None
+        or template.product_id != product.id
+        or template.provider_status != META_STATUS_APPROVED
+    ):
+        logger.warning(
+            "conversation_first_reply_skipped",
+            reason="template_unusable",
+            template_id=str(product.first_reply_template_id),
+        )
+        return None
+
+    try:
+        assert_header_media_available(
+            header_type=template.header_type, media_url=template.header_media_url
+        )
+    except Exception as exc:  # noqa: BLE001 - media config is data, never fatal
+        logger.warning(
+            "conversation_first_reply_skipped", reason="template_media_missing", error=str(exc)
+        )
+        return None
+
+    try:
+        whatsapp = build_whatsapp_provider(settings, product=product)
+    except WhatsAppNotConfiguredError as exc:
+        logger.warning(
+            "conversation_first_reply_skipped", reason="whatsapp_not_configured", error=str(exc)
+        )
+        return None
+
+    idempotency_key = reply_idempotency_key(str(message.id))
+    try:
+        sent = await whatsapp.send_template_message(
+            OutboundTemplateMessage(
+                to_e164=lead.phone_e164,
+                template_name=template.name,
+                language=template.language,
+                variables=_first_reply_variables(template, lead),
+                idempotency_key=idempotency_key,
+                header_type=template.header_type,
+                header_media_url=template.header_media_url,
+            )
+        )
+    except ProviderError as exc:
+        await _record_failed_run(conversation.id, template.name, str(exc))
+        _raise_if_retryable(settings, exc)
+        logger.warning("conversation_first_reply_send_failed", error=str(exc))
+        return TurnOutcome("send_failed", str(conversation.id)).as_dict()
+
+    body = template.body_preview or ""
+    sent_message = await conversation_repo.record_outbound_reply(
+        session,
+        lead=lead,
+        conversation=conversation,
+        body=body,
+        idempotency_key=idempotency_key,
+        provider_message_id=sent.provider_message_id,
+        status=MessageStatus.SENT,
+        sent_at=datetime.now(UTC),
+        template_name=template.name,
+    )
+    await conversation_repo.record_turn(
+        session,
+        conversation=conversation,
+        role=conversation_repo.ROLE_ASSISTANT,
+        content=body,
+        message_id=sent_message.id,
+    )
+    await conversation_repo.touch_outbound(session, conversation)
+
+    if conversation.status is ConversationStatus.ACTIVE:
+        await conversation_repo.transition_conversation(
+            session, conversation, ConversationStatus.WAITING_FOR_USER
+        )
+
+    logger.info(
+        "conversation_first_reply_sent",
+        template_name=template.name,
+        lead_id=str(lead.id),
+    )
+    return TurnOutcome("first_reply_template", str(conversation.id), replied=True).as_dict()
+
+
+def _first_reply_variables(template: WhatsAppTemplate, lead: Lead | None) -> tuple[str, ...]:
+    """Fill the welcome template's positional variables.
+
+    The twin of `campaign_send._variables_for`: only the first is populated,
+    with the contact's name, because that is the one convention the platform can
+    rely on without knowing the template's text. Remaining variables are sent
+    empty rather than guessed.
+    """
+    if template.variable_count <= 0:
+        return ()
+
+    name = (lead.full_name if lead else None) or "there"
+    return (name, *("" for _ in range(template.variable_count - 1)))
 
 
 async def _apply_conversation_state(

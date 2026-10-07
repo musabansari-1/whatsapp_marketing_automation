@@ -22,7 +22,15 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.campaign import TemplateAssignmentError, TemplateNotFoundError, needs_assignment
+from app.domain.campaign import (
+    TemplateAssignmentError,
+    TemplateMediaMissingError,
+    TemplateNotApprovedError,
+    TemplateNotFoundError,
+    assert_header_media_available,
+    assert_template_owned_by,
+    needs_assignment,
+)
 from app.integrations.whatsapp import ApprovedTemplate
 from app.persistence.models import Product, WhatsAppTemplate
 
@@ -97,6 +105,56 @@ async def set_header_media(
     template.header_media_url = media_url
     await session.flush()
     return template
+
+
+async def set_first_reply_template(
+    session: AsyncSession, *, product_id: uuid.UUID, template_id: uuid.UUID
+) -> WhatsAppTemplate:
+    """Select the template sent once to a first-time sender of this product.
+
+    The only writer of `products.first_reply_template_id`, explicit like
+    ownership: the template must already belong to this product ([D57]), Meta
+    must have approved it ([D6]), and a media header must have its asset, or
+    the welcome fails the same way a broadcast would. Clearing (None) is done
+    with `clear_first_reply_template`, which disables the welcome.
+    """
+    from app.persistence.models.campaign import META_STATUS_APPROVED
+
+    product = await session.get(Product, product_id)
+    if product is None:
+        raise TemplateAssignmentError("Product not found")
+
+    template = await session.get(WhatsAppTemplate, template_id)
+    if template is None:
+        raise TemplateNotFoundError("Template not found")
+
+    assert_template_owned_by(
+        template_product_id=template.product_id, campaign_product_id=product_id
+    )
+    if template.provider_status != META_STATUS_APPROVED:
+        raise TemplateNotApprovedError(
+            f"Template status is {template.provider_status!r}; only "
+            f"{META_STATUS_APPROVED!r} templates may be used"
+        )
+    try:
+        assert_header_media_available(
+            header_type=template.header_type, media_url=template.header_media_url
+        )
+    except TemplateMediaMissingError as exc:
+        raise TemplateAssignmentError(str(exc)) from exc
+
+    product.first_reply_template_id = template.id
+    await session.flush()
+    return template
+
+
+async def clear_first_reply_template(session: AsyncSession, *, product_id: uuid.UUID) -> None:
+    """Disable the first-reply welcome: first-time senders get the AI reply."""
+    product = await session.get(Product, product_id)
+    if product is None:
+        raise TemplateAssignmentError("Product not found")
+    product.first_reply_template_id = None
+    await session.flush()
 
 
 async def list_owned(session: AsyncSession, *, product_id: uuid.UUID) -> Sequence[WhatsAppTemplate]:
