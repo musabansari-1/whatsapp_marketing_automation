@@ -1,8 +1,7 @@
 # WhatsApp AI Marketing Platform
 
 Internal WhatsApp marketing platform. See `SPECIFICATION.md` for the product and
-architecture source of truth, `CLAUDE.md` for development rules, and
-`PROJECT_STATUS.md` for the current implementation state.
+architecture source of truth.
 
 **Current state: every feature phase is complete (1–13).** A customer replies, the
 platform retrieves knowledge, asks a model, checks calendar availability, books a demo,
