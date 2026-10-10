@@ -33,13 +33,22 @@ rules decide what goes:
 - a reply narrating its own thinking ("looking at my instructions", "the user is
   asking", "let me make the function call") blanks whole — the plan fragments it
   would leave behind read worse than the approved fallback.
+- Markdown and unpaired WhatsApp markers are normalised to WhatsApp formatting:
+  `**bold**` becomes `*bold*`, a `*` bullet becomes `•`, and a marker with no
+  partner is removed rather than shown literally. The model writes formatting one
+  token at a time with no syntax check, so an opened `*` it never closes (staging
+  2026-10-10: `*Wellness supplements: *SUKOON HERB …`) would otherwise reach the
+  customer as stray stars. Paired markers pass through — emphasis survives, broken
+  syntax does not.
 
 Unparseable text and JSON embedded in the middle of a sentence are left alone: half-
 deleting something is worse than letting a human see it. The same caution applies to
 the invite and device rules: a sentence carrying a negation ("no invite will be
 emailed", "I can't record your screen") is left alone, and novel phrasings the
 patterns do not recognise still pass — the prompts and the tool result remain the
-first layers.
+first layers. The formatting rule is equally conservative: markers inside URLs,
+math (`5*3`) and intra-word underscores (`record_id`) are literals and are never
+touched.
 
 Delivery is not re-tried here. When nothing survives the strip the caller falls back to
 the approved wording ([D21]) exactly as it does for an empty completion.
@@ -233,6 +242,18 @@ _OPENERS = {"{": "}", "[": "]"}
 
 _UNPARSEABLE = object()
 
+# Markdown the model emits by default, converted to the WhatsApp spelling before
+# pairing so `**offer**` becomes `*offer*` rather than two stray stars.
+_MARKDOWN_BOLD = re.compile(r"\*\*(?P<body>[^*\n]+)\*\*")
+_MARKDOWN_ITALIC = re.compile(r"__(?P<body>[^_\n]+)__")
+
+#: URLs, inside which no character is ever formatting.
+_URL = re.compile(r"https?://[^\s<>\")\]]+")
+
+#: A `*` list bullet at a line start. WhatsApp has no bullet syntax, so the star
+#: would show literally; a dot reads the same and cannot break.
+_BULLET_STAR = re.compile(r"(?m)^([ \t]*)\* ")
+
 
 def clean_customer_reply(text: str) -> str:
     """Return the reply with leaked tool payloads removed.
@@ -249,6 +270,7 @@ def clean_customer_reply(text: str) -> str:
     cleaned = _strip_payload_spans(cleaned)
     cleaned = _cut_blob_lines(cleaned)
     cleaned = _drop_tool_label_lines(cleaned)
+    cleaned = _normalize_whatsapp_formatting(cleaned)
     cleaned = _without_emailed_invite_claims(cleaned)
     cleaned = _without_device_claims(cleaned)
 
@@ -323,6 +345,81 @@ def _drop_tool_label_lines(text: str) -> str:
     The pattern is anchored to the line, so a name mentioned inside a sentence is untouched.
     """
     return "\n".join(line for line in text.splitlines() if not _TOOL_LABEL_LINE.match(line))
+
+
+def _normalize_whatsapp_formatting(text: str) -> str:
+    """Convert Markdown markers to WhatsApp formatting and drop unpaired ones.
+
+    WhatsApp understands `*bold*` and `_italic_` (plus `~strike~`, which the
+    model rarely emits and is left alone). A marker is only a marker at a word
+    boundary: alphanumeric on the inner side, non-alphanumeric on the outer —
+    so `5*3`, `a*b` and `record_id` are literals and survive. Markers inside
+    URLs are shielded before scanning and restored after.
+
+    Pairing is stack-based in reading order: an opener with no closer and a
+    closer with no opener are removed. A lone `*` bullet at a line start becomes
+    `•`, which cannot break.
+    """
+    urls: list[str] = []
+
+    def _stash(match: re.Match[str]) -> str:
+        urls.append(match.group(0))
+        return f"URLPLACEHOLDER{len(urls) - 1}URLPLACEHOLDER"
+
+    def _restore(match: re.Match[str]) -> str:
+        return urls[int(match.group(1))]
+
+    shielded = _URL.sub(_stash, text)
+    shielded = _MARKDOWN_BOLD.sub(r"*\g<body>*", shielded)
+    shielded = _MARKDOWN_ITALIC.sub(r"_\g<body>_", shielded)
+    shielded = _BULLET_STAR.sub(r"\1• ", shielded)
+    for marker in "*_":
+        shielded = _drop_unpaired_markers(shielded, marker)
+    return re.sub(r"URLPLACEHOLDER(\d+)URLPLACEHOLDER", _restore, shielded)
+
+
+def _drop_unpaired_markers(text: str, marker: str) -> str:
+    """Remove `marker` characters that form no `*x*` / `_x_` pair.
+
+    A character is a candidate opener only with a non-alphanumeric outer side
+    and an alphanumeric inner side, and vice versa for a closer — so stars
+    spaced as math and underscores inside identifiers never enter pairing.
+    Anything left unpaired is stray syntax the customer would read literally.
+    """
+    stack: list[int] = []
+    drop: set[int] = set()
+    for index, char in enumerate(text):
+        if char != marker:
+            continue
+        prev = text[index - 1] if index > 0 else ""
+        nxt = text[index + 1] if index + 1 < len(text) else ""
+        is_opener = (prev == "" or not prev.isalnum()) and nxt != "" and nxt.isalnum()
+        is_closer = (nxt == "" or not nxt.isalnum()) and prev != "" and prev.isalnum()
+        if is_opener and not is_closer:
+            stack.append(index)
+        elif is_closer and not is_opener:
+            if stack:
+                stack.pop()
+            else:
+                drop.add(index)
+        elif is_opener and is_closer:
+            # Between punctuation on both sides: close what is open, else open.
+            if stack:
+                stack.pop()
+            else:
+                stack.append(index)
+        elif nxt == "" and prev != "" and not prev.isspace():
+            # Trailing syntax (`Life Herba!*`): a closer with punctuation before
+            # it, owed to nothing when the stack is empty.
+            if stack:
+                stack.pop()
+            else:
+                drop.add(index)
+        # Otherwise a literal (spaces or alphanumerics on both sides): kept.
+    drop.update(stack)
+    if not drop:
+        return text
+    return "".join(char for index, char in enumerate(text) if index not in drop)
 
 
 def _without_emailed_invite_claims(text: str) -> str:

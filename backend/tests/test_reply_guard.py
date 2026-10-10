@@ -357,3 +357,46 @@ class TestThinkingAloudIsBlanked:
     )
     def test_ordinary_prose_survives(self, prose: str) -> None:
         assert clean_customer_reply(prose) == prose
+
+
+class TestWhatsAppFormattingIsNormalised:
+    """Staging 2026-10-10: a reply arrived as `*Wellness supplements: *SUKOON
+    HERB …` — an opened `*` the model never closed. The model writes formatting
+    one token at a time with no syntax check, so pairing is enforced here:
+    emphasis survives, stray syntax never reaches the customer."""
+
+    def test_markdown_bold_becomes_whatsapp_bold(self) -> None:
+        assert clean_customer_reply("Try our **new plan** today.") == "Try our *new plan* today."
+
+    def test_paired_whatsapp_markers_survive(self) -> None:
+        text = "See *Practitioner consultations* and _teleconsultation_ options."
+        assert clean_customer_reply(text) == text
+
+    def test_the_staging_stray_stars_are_removed(self) -> None:
+        text = "*Wellness supplements: *SUKOON HERB and SUKOON PLUS are listed here."
+        assert (
+            clean_customer_reply(text)
+            == "Wellness supplements: SUKOON HERB and SUKOON PLUS are listed here."
+        )
+
+    def test_a_lone_closer_is_removed(self) -> None:
+        assert clean_customer_reply("Welcome to Life Herba!*") == "Welcome to Life Herba!"
+
+    def test_math_and_identifiers_are_literals(self) -> None:
+        assert clean_customer_reply("Take 2 * 3 tablets daily.") == "Take 2 * 3 tablets daily."
+        assert clean_customer_reply("Your record_id is 42.") == "Your record_id is 42."
+        assert clean_customer_reply("A*B testing is underway.") == "A*B testing is underway."
+
+    def test_markers_inside_urls_survive(self) -> None:
+        text = "Browse https://lifeherbagroup.com/app/a*b_c for details."
+        assert clean_customer_reply(text) == text
+
+    def test_star_bullets_become_dots(self) -> None:
+        assert clean_customer_reply("* Yoga\n* Supplements") == "• Yoga\n• Supplements"
+
+    def test_unpaired_underscore_is_removed_but_italic_survives(self) -> None:
+        assert (
+            clean_customer_reply("_Teleconsultation_ is available.")
+            == "_Teleconsultation_ is available."
+        )
+        assert clean_customer_reply("Call us on _this number.") == "Call us on this number."
