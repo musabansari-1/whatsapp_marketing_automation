@@ -1,8 +1,8 @@
 """Campaign endpoint tests (specification §7, §16, [D6], [D16]).
 
 Templates are inserted directly as fixtures, never through an API. [D6] puts
-approval with Meta and the synchronization in Phase 6, so nothing in this phase may
-create or approve a template — the fixtures stand in for what that sync will provide.
+approval with Meta, and templates reach this platform only through the sync.
+The fixtures stand in for what Meta's answer via that sync will provide.
 """
 
 from __future__ import annotations
@@ -72,10 +72,11 @@ def seed_template(
     category: TemplateCategory = TemplateCategory.MARKETING,
     assigned: bool = True,
 ) -> str:
-    """Insert a template as the Meta sync will, then assign it as an admin would.
+    """Insert a template the way Meta's answer ultimately stores one, then assign it.
 
-    Direct insertion is deliberate: [D6] forbids this application creating or
-    approving templates, so there is no endpoint to do it through.
+    Direct insertion keeps these tests about campaigns. Even under [D69] the API
+    cannot decide an approval, so a test that wants an APPROVED template states it
+    here rather than asking the application to produce one.
 
     Assigned to the test's product by default, because since [D57] an unassigned
     template is usable by no campaign. `assigned=False` leaves it exactly as the sync
@@ -247,10 +248,17 @@ class TestTemplateApproval:
         }
         assert names == {"approved_marketing"}
 
-    def test_no_endpoint_creates_a_template(self, client: TestClient) -> None:
-        """[D6] forbids the application inventing approval, so there is no way in."""
+    def test_no_request_can_manufacture_an_approved_template(self, client: TestClient) -> None:
+        """[D6]: templates arrive only through the sync. There is no creation endpoint
+        at all — neither the draft submit nor the media upload exists — so no request
+        can introduce a template, let alone an approved one, and the list campaigns may
+        draw from stays empty until Meta itself has approved something."""
         login(client)
-        assert client.post(f"{scoped_prefix()}/whatsapp-templates", json={}).status_code == 405
+        submit = client.post(f"{scoped_prefix()}/whatsapp-templates", json={})
+        assert submit.status_code in (404, 405)
+        upload = client.post(f"{scoped_prefix()}/template-media")
+        assert upload.status_code in (404, 405)
+        assert client.get(f"{scoped_prefix()}/whatsapp-templates").json() == []
 
     def test_the_list_is_empty_before_the_meta_sync(self, client: TestClient) -> None:
         """Phase 6 populates it; until then a campaign cannot be created at all."""

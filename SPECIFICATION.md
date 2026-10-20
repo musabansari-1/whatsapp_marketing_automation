@@ -437,7 +437,9 @@ Automated tests must never send real WhatsApp messages.
 
 Meta-approved templates are the source of truth. The application synchronizes approved template metadata from Meta into `whatsapp_templates`.
 
-The application must never invent or locally assign a Meta approval status. Campaigns may only use templates known to be approved, and marketing broadcasts must use the appropriate approved template type for marketing messages.
+The application must never invent or locally assign a Meta approval status. Campaigns may only use templates known to be approved, and marketing broadcasts must use the appropriate approved template type for marketing messages. Submitting a template through Meta's own API is not approval: **[D69]** added that wizard, and a submitted template arrives PENDING and stays unusable until Meta reviews it.
+
+A media header also needs a sendable asset. When a template synchronizes with no asset chosen, the sync mirrors Meta's sample into the platform's media store and records that durable URL; Meta's own sample URL is signed and expires, so it is never stored directly. An asset explicitly chosen in the dashboard is never overwritten (**[D70]**).
 
 Real Meta-approved templates are required before production broadcasting **[D23]**. Tests may continue to use fixtures and mocks, but the production campaign system admits only templates actually synchronized from Meta.
 
@@ -1530,9 +1532,34 @@ Campaign permissions **[D33]**: `POST /campaigns`, `POST /campaigns/{id}/send` a
 `POST /campaigns/{id}/cancel` are **ADMIN-only**. The read routes remain open to any
 authenticated internal user.
 
-`GET /whatsapp-templates` is read-only and returns only APPROVED MARKETING templates.
-There is deliberately no endpoint that creates or approves a template: **[D6]** puts
-approval with Meta, and rows appear only from the Phase 6 synchronization.
+`GET /whatsapp-templates` lists the product's templates with a
+`usable_for_campaigns` flag; the campaign picker filters on that flag, so a template Meta
+paused or rejected stays visible instead of vanishing.
+
+**[D69]** added submission without touching approval — **and it was removed the same
+day**: templates are authored in WhatsApp Manager and reach the platform only through
+sync. What remains product-scoped (ADMIN-only, like assignment):
+
+```text
+PUT  /whatsapp-templates/{id}/header-media
+POST /whatsapp-templates/{id}/assign
+```
+
+Global, outside a product ([D59]):
+
+```text
+GET  /api/v1/whatsapp-templates/unassigned
+POST /api/v1/whatsapp-templates/sync
+```
+
+There is no creation path: `POST /whatsapp-templates` and `POST /template-media` do not
+exist (404/405), so no request can introduce a template, let alone an approved one.
+A template is stored with the status Meta answered — PENDING on the happy path —
+and no route can set APPROVED: **[D6]** puts approval with Meta, and a row becomes usable
+only when Meta's review and the synchronization say so. The platform's media store
+survives the removal because the sync mirrors Meta's expiring sample into it
+(**[D70]**); the create route that used to fetch back its own URLs is gone with the
+rest of submission.
 
 Creating a campaign freezes its recipient snapshot immediately, so the preview an
 admin confirms against is exactly the set that will be messaged. `POST
@@ -2586,3 +2613,5 @@ assigned to a default product. Retrieval without a product is not expressible.
 | D66 | *Decided 2026-09-27 (offline demos).* **Choosing offline is a handoff, not a booking.** Every demo-booking product offers both modes: the model asks online (video) or offline (in person) once the customer agrees, before offering slots. Online follows the existing booking flow unchanged. Offline records `offline_demo_requested: true` via `update_lead` and reassures the customer the team will contact them; it creates no calendar event and no booking row (there is no time, and a dummy one would block the diary dishonestly), changes no lead status, and sends the customer nothing beyond the turn's reply. The team hears about it through the existing `DEMO_BOOKED` fan-out with an "Offline demo requested" title naming the customer and phone, linked to the lead; a repeat request collapses at the fan-out's unique constraint. |
 | D67 | *Decided 2026-09-29 (bot detection).* **Detect automated senders; escalate only an unreviewed repeat to a block.** A runaway correspondent burned ~13M tokens over 12 days before anyone noticed on the token bill, because nothing watched inbound shape. An hourly `sweep_bot_activity` task now scores each conversation with recent inbound traffic on metadata only (pace, gap regularity, marathon length — never content) against configured thresholds, and flags suspects as `BOT_SUSPECTED` dashboard notifications linked to the lead, naming the phone and the stats. A suspect pattern still going an hour later, with the first flag unread by anyone, escalates on its own to a `MANUAL` suppression (same row, same consequences as `block-sender`); a read flag means a human owns the decision and is never overridden, and the escalation can be switched off to observe. Flagging itself never pauses, throttles or answers traffic, sends nothing, and changes no state except the notification — repeats collapse, suppressed senders are skipped. Per-sender throttling remains the unenacted real-time counterpart. |
 | D68 | *Decided 2026-10-06 (first-reply welcome template).* **A first-time sender gets the product's template, not the AI's text.** Per product, at most one welcome (`products.first_reply_template_id`, NULL disables); template-only on the first-ever conversation reply, AI text from the second message on. Selection is runtime application data through the ADMIN first-reply API — never a catalog value, never inferred, never a placeholder name — and requires the product's own Meta-APPROVED template with its header media; anything less is refused at selection, and send-time drift falls back to the AI path. Suppression and CLOSED still refuse first; the welcome may go outside the 24-hour window; one reply per inbound message holds under the same `reply-{message}` key. |
+| D69 | *Decided and implemented 2026-10-20 (template creation).* **A template may be submitted from the dashboard through Meta's API; Meta still decides approval.** The recurring "header media is missing" friction came from authoring templates in Meta first, so the builder covers Meta's documented component surface: text, image, video, document and location headers; positional or named variables; footers; quick-reply, URL, phone-number, copy-code, flow, catalog, multi-product, single-product and voice-call buttons; carousels; limited-time offers; and authentication templates. The draft rules are validated locally, by name, before the request (variable continuity, category-specific structure, button combinations); everything only Meta can decide — the name being free, the account's allowance, the review — arrives as Meta's own error. Media is uploaded once through `POST /p/{product_slug}/template-media` into the platform's store (`MEDIA_PROVIDER=gcs`, the project's public-read media bucket under the product's own folder; `fake` in tests, Cloudinary still selectable) and the create route fetches back only URLs its store issued, matching content type to the header format — Meta's Resumable Upload API takes bytes, not public URLs, and `WHATSAPP_APP_ID` is required for it. The response is stored exactly as Meta returns it (PENDING on the happy path): no route can set APPROVED, and **[D6]**'s rule that campaigns use only approved marketing templates is unchanged. `assign_to_product` defaults on, and unchecking it leaves the template unassigned for later assignment, never inferred (**[D57]**). Because the send path fills a body's variables and one media header and nothing else, `whatsapp_templates.send_limitations` (JSONB, codes `CAROUSEL`, `BUTTON_PARAMETERS`, `HEADER_VARIABLE`, `HEADER_LOCATION`, `NAMED_PARAMETERS`, `LIMITED_TIME_OFFER`) is computed from Meta's components by the sync alone — the draft-side half of that sentence left with creation on 2026-10-20; campaign creation refuses a template by reason instead of discovering the mismatch once per recipient. Duplicate names in a language (Meta 2388024) answer 409, other provider refusals 422, outages 503. Migration `8c4d2e6f9a1b` adds the column and the `LOCATION` header type; its downgrade keeps the enum value PostgreSQL cannot remove. **Removed 2026-10-20 (same day, at the product owner's request): the entire submission surface** — the create route, the sample-upload route and their media router, the request/response schemas, the UI builder page and its draft library, and their tests — leaving edit-only: WhatsApp Manager authors content, sync brings it in, and the dashboard assigns ownership, swaps header media and lists sendability. What deliberately stays: the draft domain module (still consumed by campaign sendability and the provider's limits), the provider's create capability (unused by any route), the media store (now owned by the sync's sample mirroring, [D70]), and migration `8c4d2e6f9a1b` (the sync computes `send_limitations` regardless of how a template arrived). |
+| D70 | *Decided 2026-10-20 (template media from Meta samples).* **A template authored or edited in WhatsApp Manager arrives with a media sample, not a sendable asset; the sync mirrors that sample into the platform's store.** Meta returns the sample under `example.header_handle`, but its URL is signed and expires, so storing it would break later sends. During template sync, every media-header template with a NULL `header_media_url` has its sample downloaded from a Meta media host (allowlist, streamed size limit, content type checked against the header), uploaded to the platform's media store, and recorded as the durable send URL. A non-NULL `header_media_url` is never overwritten, so an explicit operator choice wins; the sync also never fails because one sample is unavailable — it logs and retries on the next run. This makes Manager-authored templates usable without a second upload and keeps the same sample as the media campaigns send. |

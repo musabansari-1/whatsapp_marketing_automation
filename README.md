@@ -228,12 +228,12 @@ preserved in each row's stored `raw_row`.
 ## Campaigns
 
 ```text
-GET    /api/v1/whatsapp-templates            approved marketing templates (read-only)
-POST   /api/v1/campaigns                     create + freeze the recipient snapshot
-GET    /api/v1/campaigns                     list
-GET    /api/v1/campaigns/{id}                detail, with template preview
-GET    /api/v1/campaigns/{id}/recipients     the frozen snapshot, paged
-POST   /api/v1/campaigns/{id}/send           the Send Broadcast confirmation
+GET    /api/v1/p/{product_slug}/whatsapp-templates   owned templates, with a usable flag
+POST   /api/v1/p/{product_slug}/campaigns            create + freeze the recipient snapshot
+GET    /api/v1/p/{product_slug}/campaigns            list
+GET    /api/v1/p/{product_slug}/campaigns/{id}       detail, with template preview
+GET    /api/v1/p/{product_slug}/campaigns/{id}/recipients  the frozen snapshot, paged
+POST   /api/v1/p/{product_slug}/campaigns/{id}/send  the Send Broadcast confirmation
 ```
 
 Creating a campaign **prepares** it: the recipient list is frozen at creation so later
@@ -246,9 +246,13 @@ pending recipient and returns — the worker does the actual delivery (§4).
 the WhatsApp integration itself is Phase 6, so the queue records the work and stops
 there.
 
-**Templates come from Meta, not from here.** There is no endpoint that creates or
-approves a template ([D6]); `whatsapp_templates` is populated by the Phase 6
-synchronization. Until that exists the list is empty and no campaign can be created.
+**Templates are authored in Meta's WhatsApp Manager, never here.** The dashboard lists
+them, syncs them from Meta, assigns ownership, swaps header media and reads their
+sendability ([D69]); it creates nothing, so no request can introduce a template, let
+alone an approved one. No endpoint can set APPROVED ([D6]),
+and the periodic synchronization keeps the stored copy current. A campaign may use only a
+template that is approved, owned by the same product and sendable by the current send
+path; the list explains why a template is not usable.
 
 ## WhatsApp
 
@@ -280,8 +284,14 @@ so "STOP" opts out but "please don't stop sending these" does not.
 webhooks cannot walk a status backwards — a late `delivered` will not overwrite `read`.
 
 **Templates** are synchronized from Meta into `whatsapp_templates` with their status
-carried through unchanged. Campaigns filter on that value; nothing here decides
-approval ([D6]).
+carried through unchanged ([D69]). Campaigns filter on that value; nothing
+here decides approval ([D6]). The sync also derives `send_limitations` from Meta's
+components, so a template whose shape the send path cannot reproduce - carousel, a
+location header, named variables - is refused with a reason instead of failing once per
+recipient. When a media-header template has no asset of its own, the sync mirrors Meta's
+sample into the platform's store and records that durable URL; a sample URL is signed
+and expires, so it is never stored directly, and an asset chosen in the dashboard is
+never overwritten ([D70]).
 
 ### The 24-hour messaging window
 
