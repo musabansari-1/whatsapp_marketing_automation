@@ -400,3 +400,18 @@ class TestWhatsAppFormattingIsNormalised:
             == "_Teleconsultation_ is available."
         )
         assert clean_customer_reply("Call us on _this number.") == "Call us on this number."
+
+    def test_colon_closing_star_keeps_its_pair(self) -> None:
+        """Staging 2026-10-10: `**Registration URL …:**` came out as
+        `Registration URL …:*` — the punctuation-adjacent closer was not
+        classified as a closer, so its partner opener was dropped and the
+        stray star reached the customer. The pair must survive whole."""
+        text = "**Registration URL (share exactly as configured):**"
+        assert clean_customer_reply(text) == "*Registration URL (share exactly as configured):*"
+
+    def test_trailing_star_after_punctuation_is_removed(self) -> None:
+        assert clean_customer_reply("What to do next:*") == "What to do next:"
+
+    def test_stars_around_a_quoted_phrase_survive(self) -> None:
+        text = 'Select *"Consumer / General User"* inside the app.'
+        assert clean_customer_reply(text) == text

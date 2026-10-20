@@ -381,10 +381,18 @@ def _normalize_whatsapp_formatting(text: str) -> str:
 def _drop_unpaired_markers(text: str, marker: str) -> str:
     """Remove `marker` characters that form no `*x*` / `_x_` pair.
 
-    A character is a candidate opener only with a non-alphanumeric outer side
-    and an alphanumeric inner side, and vice versa for a closer — so stars
-    spaced as math and underscores inside identifiers never enter pairing.
-    Anything left unpaired is stray syntax the customer would read literally.
+    WhatsApp's own rule decides candidacy. A marker *opens* only with whitespace,
+    punctuation, or nothing before it and non-space after; it *closes* only with
+    non-space before it and whitespace, punctuation, or end after. The old
+    alphanumeric test on both inner sides misclassified the very shape a
+    `**Title:**` conversion produces — a closer sitting after `:` was not a
+    closer (its predecessor was punctuation), so its partner opener was dropped
+    as unpaired and the punctuation-adjacent star leaked as a literal
+    (staging 2026-10-10: `Registration URL …):*`). Markers spaced as math
+    (`5*3`, `a*b`) have non-space on both sides with alphanumeric inner
+    characters, enter no pair, and survive — as do `record_id`-style
+    underscores and anything inside URLs (shielded upstream). Anything left
+    unpaired is stray syntax the customer would read literally.
     """
     stack: list[int] = []
     drop: set[int] = set()
@@ -393,8 +401,16 @@ def _drop_unpaired_markers(text: str, marker: str) -> str:
             continue
         prev = text[index - 1] if index > 0 else ""
         nxt = text[index + 1] if index + 1 < len(text) else ""
-        is_opener = (prev == "" or not prev.isalnum()) and nxt != "" and nxt.isalnum()
-        is_closer = (nxt == "" or not nxt.isalnum()) and prev != "" and prev.isalnum()
+        is_opener = (
+            (prev == "" or prev.isspace() or not prev.isalnum())
+            and nxt not in ("", marker)
+            and not nxt.isspace()
+        )
+        is_closer = (
+            prev not in ("", marker)
+            and not prev.isspace()
+            and (nxt == "" or nxt.isspace() or not nxt.isalnum())
+        )
         if is_opener and not is_closer:
             stack.append(index)
         elif is_closer and not is_opener:
@@ -403,19 +419,12 @@ def _drop_unpaired_markers(text: str, marker: str) -> str:
             else:
                 drop.add(index)
         elif is_opener and is_closer:
-            # Between punctuation on both sides: close what is open, else open.
+            # Punctuation on both sides: close what is open, else open.
             if stack:
                 stack.pop()
             else:
                 stack.append(index)
-        elif nxt == "" and prev != "" and not prev.isspace():
-            # Trailing syntax (`Life Herba!*`): a closer with punctuation before
-            # it, owed to nothing when the stack is empty.
-            if stack:
-                stack.pop()
-            else:
-                drop.add(index)
-        # Otherwise a literal (spaces or alphanumerics on both sides): kept.
+        # Otherwise a literal (alphanumeric inner, non-space outer): kept.
     drop.update(stack)
     if not drop:
         return text
