@@ -254,6 +254,13 @@ _URL = re.compile(r"https?://[^\s<>\")\]]+")
 #: would show literally; a dot reads the same and cannot break.
 _BULLET_STAR = re.compile(r"(?m)^([ \t]*)\* ")
 
+#: An ATX heading marker at a line start — `# ` … `###### `, or a run of hashes alone.
+#: WhatsApp has no heading syntax, so the hashes show literally. The prompts forbid
+#: them, but a model echoes `###` out of retrieved Markdown knowledge often enough
+#: that the guard has to strip them too. Anchored to the line start and requiring
+#: whitespace after the hashes, so `#tag`, `C#` and `#1` are never touched.
+_MARKDOWN_HEADING = re.compile(r"(?m)^[ \t]*#{1,6}(?:[ \t]+|$)")
+
 
 def clean_customer_reply(text: str) -> str:
     """Return the reply with leaked tool payloads removed.
@@ -354,7 +361,8 @@ def _normalize_whatsapp_formatting(text: str) -> str:
     model rarely emits and is left alone). A marker is only a marker at a word
     boundary: alphanumeric on the inner side, non-alphanumeric on the outer —
     so `5*3`, `a*b` and `record_id` are literals and survive. Markers inside
-    URLs are shielded before scanning and restored after.
+    URLs are shielded before scanning and restored after. Heading markers
+    (`### Title`) are stripped: WhatsApp renders the hashes literally.
 
     Pairing is stack-based in reading order: an opener with no closer and a
     closer with no opener are removed. A lone `*` bullet at a line start becomes
@@ -373,6 +381,7 @@ def _normalize_whatsapp_formatting(text: str) -> str:
     shielded = _MARKDOWN_BOLD.sub(r"*\g<body>*", shielded)
     shielded = _MARKDOWN_ITALIC.sub(r"_\g<body>_", shielded)
     shielded = _BULLET_STAR.sub(r"\1• ", shielded)
+    shielded = _MARKDOWN_HEADING.sub("", shielded)
     for marker in "*_":
         shielded = _drop_unpaired_markers(shielded, marker)
     return re.sub(r"URLPLACEHOLDER(\d+)URLPLACEHOLDER", _restore, shielded)

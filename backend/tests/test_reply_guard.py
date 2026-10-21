@@ -415,3 +415,33 @@ class TestWhatsAppFormattingIsNormalised:
     def test_stars_around_a_quoted_phrase_survive(self) -> None:
         text = 'Select *"Consumer / General User"* inside the app.'
         assert clean_customer_reply(text) == text
+
+    def test_heading_markers_are_stripped(self) -> None:
+        """WhatsApp renders `###` literally, and the model echoes heading markers
+        straight out of retrieved Markdown knowledge however often the prompt
+        forbids them."""
+        text = "### 🌿 LifeHerba\nDigestion support from herbal formulations."
+        assert (
+            clean_customer_reply(text)
+            == "🌿 LifeHerba\nDigestion support from herbal formulations."
+        )
+        assert clean_customer_reply("## How it works") == "How it works"
+
+    def test_a_hashes_only_line_vanishes(self) -> None:
+        assert clean_customer_reply("###\nDownload the app to register.") == (
+            "Download the app to register."
+        )
+
+    def test_heading_markers_run_of_one_to_six(self) -> None:
+        assert clean_customer_reply("# One") == "One"
+        assert clean_customer_reply("###### Six") == "Six"
+
+    def test_heading_containing_bold_keeps_the_bold(self) -> None:
+        assert clean_customer_reply("## **Benefits**") == "*Benefits*"
+
+    def test_hashtags_and_hash_characters_are_literals(self) -> None:
+        """Only a line-start `#` followed by whitespace is a heading: `#tag`,
+        `C#` and `#1` are ordinary text."""
+        assert clean_customer_reply("#immunity and #metabolism") == "#immunity and #metabolism"
+        assert clean_customer_reply("C# is a language") == "C# is a language"
+        assert clean_customer_reply("#1 choice for wellness") == "#1 choice for wellness"
