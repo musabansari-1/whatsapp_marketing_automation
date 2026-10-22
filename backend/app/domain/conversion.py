@@ -68,10 +68,8 @@ def registration_guidance(
         "understand needs, then nudge once genuine interest exists.",
         "If they directly ask how to join, register, download the app, or become a partner,",
         "send the registration destination immediately.",
-        "Treat the Registration URL as the starting point (for example, the website where",
-        "they download the app). The Segment registration instruction gives the exact",
-        "follow-through steps and the option to choose, including when registration",
-        "itself happens inside the app rather than on the website.",
+        "Share the Registration URL exactly as given. The Segment registration instruction",
+        "says what opening it does; describe that, not buttons or menus inside the app.",
     ]
     if registration_url:
         lines.extend(["", f"Registration URL: {registration_url}"])

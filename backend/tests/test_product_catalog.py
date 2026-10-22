@@ -108,7 +108,10 @@ class TestTheShippedCatalog:
         product = products["life-herba"]
         academicae = products["academicae"]
         assert product.conversion_mode == "external_registration"
-        assert product.registration_url == "https://lifeherbagroup.com/"
+        assert product.registration_url == (
+            "https://lifeherbagroup.com/download"
+            "?utm_source=whatsapp&utm_medium=chat&utm_campaign=lifeherba_inbound"
+        )
         assert product.ai_configuration is not None
         assert product.ai_configuration.qualification_mode == "ai_judgement"
         assert set(product.segment_ai_overrides) == {
@@ -132,6 +135,7 @@ class TestTheShippedCatalog:
         for segment in product.segments:
             assert segment.cta_label
             assert segment.cta_instruction
+            assert segment.registration_url
 
     def test_academicae_has_confirmed_launch_configuration(self) -> None:
         academicae = {p.slug: p for p in load_catalog(SHIPPED_CATALOG).products}["academicae"]

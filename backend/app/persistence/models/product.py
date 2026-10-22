@@ -225,6 +225,9 @@ class Segment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # the product prompt and registration_url still apply.
     cta_label: Mapped[str | None] = mapped_column(String(255))
     cta_instruction: Mapped[str | None] = mapped_column(Text)
+    # This segment's own signup link, overriding the product's registration_url. NULL
+    # inherits the product's.
+    registration_url: Mapped[str | None] = mapped_column(Text)
 
     product: Mapped[Product] = relationship(back_populates="segments")
 

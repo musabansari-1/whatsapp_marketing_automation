@@ -383,7 +383,7 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             system_prompt = with_conversion_guidance(
                 ai_config.system_prompt,
                 mode=None if product is None else product.conversion_mode,
-                registration_url=None if product is None else product.registration_url,
+                registration_url=_registration_url(product, segment),
                 cta_label=None if segment is None else segment.cta_label,
                 cta_instruction=None if segment is None else segment.cta_instruction,
             )
@@ -664,6 +664,13 @@ async def _queue_booking_failed_notification(
 
 
 # ---------------------------------------------------------------- internals
+
+
+def _registration_url(product: Product | None, segment: Segment | None) -> str | None:
+    """The signup link this conversation is sent to: the segment's own, else the product's."""
+    if segment is not None and segment.registration_url:
+        return segment.registration_url
+    return None if product is None else product.registration_url
 
 
 def _history_messages(history: list[Any]) -> list[LLMMessage]:

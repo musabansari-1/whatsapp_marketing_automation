@@ -145,6 +145,9 @@ class SegmentEntry(_Strict):
     is_active: bool | None = None
     cta_label: str | None = None
     cta_instruction: str | None = None
+    #: Overrides the product's registration_url for this segment: Life Herba sends each
+    #: audience to its own signup link (`/join/doctor`, `/join/pharmacy`, ...).
+    registration_url: str | None = None
 
     @field_validator("slug")
     @classmethod
@@ -160,6 +163,11 @@ class SegmentEntry(_Strict):
     @classmethod
     def _cta_not_blank(cls, value: str | None) -> str | None:
         return _optional_text(value)
+
+    @field_validator("registration_url")
+    @classmethod
+    def _https_registration_url(cls, value: str | None) -> str | None:
+        return _optional_https_url(value)
 
 
 class AIConfigurationEntry(_Strict):
@@ -551,6 +559,7 @@ async def _apply_segments(
                     is_active=True if entry.is_active is None else entry.is_active,
                     cta_label=entry.cta_label,
                     cta_instruction=entry.cta_instruction,
+                    registration_url=entry.registration_url,
                 )
             )
             changes.append(f"{label}: segment {entry.slug} created")
@@ -565,6 +574,10 @@ async def _apply_segments(
             changes.extend(_set(existing, "cta_label", entry.cta_label, segment_label))
         if "cta_instruction" in entry.model_fields_set:
             changes.extend(_set(existing, "cta_instruction", entry.cta_instruction, segment_label))
+        if "registration_url" in entry.model_fields_set:
+            changes.extend(
+                _set(existing, "registration_url", entry.registration_url, segment_label)
+            )
     await session.flush()
     return changes
 

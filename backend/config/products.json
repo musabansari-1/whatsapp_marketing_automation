@@ -74,7 +74,7 @@
       "slug": "life-herba",
       "display_name": "Life Herba",
       "conversion_mode": "external_registration",
-      "registration_url": "https://lifeherbagroup.com/",
+      "registration_url": "https://lifeherbagroup.com/download?utm_source=whatsapp&utm_medium=chat&utm_campaign=lifeherba_inbound",
       "whatsapp_phone_number_id": "1340886312439722",
       "whatsapp_business_account_id": "2034571340595521",
       "audience_column_schema": [
@@ -88,29 +88,33 @@
           "slug": "healthcare-practitioners",
           "display_name": "Healthcare Practitioners",
           "display_order": 10,
-          "cta_label": "Join as Doctor / Practitioner",
-          "cta_instruction": "Go to the Life Herba website at the Registration URL to download the Life Herba app, then open the app and select the practitioner / Join as Doctor registration option inside the app."
+          "cta_label": "Doctor / Practitioner signup",
+          "cta_instruction": "Share the Registration URL exactly as given. Opening it on their phone goes straight to the doctor / practitioner signup in the Life Herba app, or to the Play Store first if the app is not installed and then straight to that signup. Do not name buttons or menu options inside the app.",
+          "registration_url": "https://lifeherbagroup.com/join/doctor?utm_source=whatsapp&utm_medium=chat&utm_campaign=lifeherba_doctors"
         },
         {
           "slug": "wellness-centres",
           "display_name": "Wellness Centres",
           "display_order": 20,
-          "cta_label": "Join as Wellness Centre",
-          "cta_instruction": "Go to the Life Herba website at the Registration URL to download the Life Herba app, then open the app and select the Join as Wellness Centre registration option inside the app."
+          "cta_label": "Wellness Centre signup",
+          "cta_instruction": "Share the Registration URL exactly as given. Opening it on their phone goes straight to the wellness centre signup in the Life Herba app, or to the Play Store first if the app is not installed and then straight to that signup. Do not name buttons or menu options inside the app.",
+          "registration_url": "https://lifeherbagroup.com/join/wellness-center?utm_source=whatsapp&utm_medium=chat&utm_campaign=lifeherba_wellness_centres"
         },
         {
           "slug": "pharmacies",
           "display_name": "Pharmacies",
           "display_order": 30,
-          "cta_label": "Join as Pharmacy",
-          "cta_instruction": "Go to the Life Herba website at the Registration URL to download the Life Herba app, then open the app and select the Join as Pharmacy registration option inside the app."
+          "cta_label": "Pharmacy signup",
+          "cta_instruction": "Share the Registration URL exactly as given. Opening it on their phone goes straight to the pharmacy signup in the Life Herba app, or to the Play Store first if the app is not installed and then straight to that signup. Do not name buttons or menu options inside the app.",
+          "registration_url": "https://lifeherbagroup.com/join/pharmacy?utm_source=whatsapp&utm_medium=chat&utm_campaign=lifeherba_pharmacies"
         },
         {
           "slug": "consumers",
           "display_name": "Consumers",
           "display_order": 40,
           "cta_label": "Register on LifeHerba",
-          "cta_instruction": "Go to the Life Herba website at the Registration URL to download the Life Herba app, then open the app and complete the normal / general user registration inside the app."
+          "cta_instruction": "Share the Registration URL exactly as given. It is the Life Herba download page: Android users get the Play Store app, iPhone users get the Life Herba web app. They sign up with their mobile number and a one-time code.",
+          "registration_url": "https://lifeherbagroup.com/download?utm_source=whatsapp&utm_medium=chat&utm_campaign=lifeherba_consumers"
         }
       ],
       "ai_configuration": {

@@ -33,6 +33,8 @@ rules decide what goes:
 - a reply narrating its own thinking ("looking at my instructions", "the user is
   asking", "let me make the function call") blanks whole — the plan fragments it
   would leave behind read worse than the approved fallback.
+- a reply mixing two or more non-Latin writing systems (Tamil with Telugu and
+  Katakana, say) blanks whole: the model lost the language it was asked for.
 - Markdown and unpaired WhatsApp markers are normalised to WhatsApp formatting:
   `**bold**` becomes `*bold*`, a `*` bullet becomes `•`, heading hashes and
   inline-code backticks are stripped (WhatsApp renders both literally), and a
@@ -199,6 +201,29 @@ _THINKING_LEAK = re.compile(
     re.IGNORECASE,
 )
 
+#: Writing systems a reply might use, by Unicode block. A real reply is in one of
+#: them, plus Latin for English words and URLs. A reply carrying two is a model that
+#: ran out of vocabulary in the language it was asked for and borrowed look-alike
+#: letters from others: a Life Herba Tamil reply (2026-10-22) mixed Tamil with
+#: Katakana, Devanagari and Telugu and ended "ஒரு காதல் உதவியை தேவை?" ("need a love
+#: help?"). Nothing in such a reply can be trusted, so it blanks like a thinking leak.
+_SCRIPTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("devanagari", re.compile("[ऀ-ॿ]")),
+    ("bengali", re.compile("[ঀ-৿]")),
+    ("gurmukhi", re.compile("[਀-੿]")),
+    ("gujarati", re.compile("[઀-૿]")),
+    ("oriya", re.compile("[଀-୿]")),
+    ("tamil", re.compile("[஀-௿]")),
+    ("telugu", re.compile("[ఀ-౿]")),
+    ("kannada", re.compile("[ಀ-೿]")),
+    ("malayalam", re.compile("[ഀ-ൿ]")),
+    ("arabic", re.compile("[؀-ۿݐ-ݿ]")),
+    ("cyrillic", re.compile("[Ѐ-ӿ]")),
+    ("kana", re.compile("[぀-ヿ]")),
+    ("han", re.compile("[一-鿿]")),
+    ("hangul", re.compile("[가-힯]")),
+)
+
 #: Sentence boundaries for the claim scan. URLs carry periods without trailing space,
 #: so only punctuation followed by whitespace (or the end) splits.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
@@ -299,6 +324,11 @@ def clean_customer_reply(text: str) -> str:
         # approved wording, so the reply becomes empty and the caller falls back.
         return ""
 
+    if _mixes_scripts(cleaned):
+        # Garbled across writing systems: the approved wording is better than a
+        # reply nobody can read, or one that says something unintended.
+        return ""
+
     if _has_json_residue(cleaned):
         # What is left is still a payload: a blob that was cut off mid-object, or quoted
         # plumbing the span pass could not parse. Sending it would defeat the point of the
@@ -315,6 +345,17 @@ def clean_customer_reply(text: str) -> str:
 
 
 # ---------------------------------------------------------------- internals
+
+
+def _mixes_scripts(text: str) -> bool:
+    """Whether more than one non-Latin writing system appears in the reply."""
+    seen = 0
+    for _name, pattern in _SCRIPTS:
+        if pattern.search(text):
+            seen += 1
+            if seen > 1:
+                return True
+    return False
 
 
 def _without_payload_fences(match: re.Match[str]) -> str:
