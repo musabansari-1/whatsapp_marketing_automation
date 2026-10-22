@@ -34,12 +34,15 @@ rules decide what goes:
   asking", "let me make the function call") blanks whole — the plan fragments it
   would leave behind read worse than the approved fallback.
 - Markdown and unpaired WhatsApp markers are normalised to WhatsApp formatting:
-  `**bold**` becomes `*bold*`, a `*` bullet becomes `•`, and a marker with no
-  partner is removed rather than shown literally. The model writes formatting one
-  token at a time with no syntax check, so an opened `*` it never closes (staging
-  2026-10-10: `*Wellness supplements: *SUKOON HERB …`) would otherwise reach the
-  customer as stray stars. Paired markers pass through — emphasis survives, broken
-  syntax does not.
+  `**bold**` becomes `*bold*`, a `*` bullet becomes `•`, heading hashes and
+  inline-code backticks are stripped (WhatsApp renders both literally), and a
+  marker with no partner is removed rather than shown literally. The model
+  writes formatting one token at a time with no syntax check, so an opened `*`
+  it never closes (staging 2026-10-10: `*Wellness supplements: *SUKOON HERB …`)
+  would otherwise reach the customer as stray stars — as did a `**` glued to a
+  URL (staging 2026-10-22: `https://lifeherbagroup.com/**`) and a doubled
+  closer (`*practitioner … Doctor**`). Paired markers pass through — emphasis
+  survives, broken syntax does not.
 
 Unparseable text and JSON embedded in the middle of a sentence are left alone: half-
 deleting something is worse than letting a human see it. The same caution applies to
@@ -247,12 +250,20 @@ _UNPARSEABLE = object()
 _MARKDOWN_BOLD = re.compile(r"\*\*(?P<body>[^*\n]+)\*\*")
 _MARKDOWN_ITALIC = re.compile(r"__(?P<body>[^_\n]+)__")
 
+#: Inline code spans: WhatsApp has no code syntax, so the backticks would show
+#: literally. The pair goes and the content stays; a stray backtick left over
+#: from a broken span goes too — it is never meaningful in a chat message.
+_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_STRAY_BACKTICK = re.compile(r"`")
+
 #: URLs, inside which no character is ever formatting.
 _URL = re.compile(r"https?://[^\s<>\")\]]+")
 
-#: A `*` list bullet at a line start. WhatsApp has no bullet syntax, so the star
-#: would show literally; a dot reads the same and cannot break.
-_BULLET_STAR = re.compile(r"(?m)^([ \t]*)\* ")
+#: A `*` list bullet at a line start — one star or a run of them (`** item`).
+#: WhatsApp has no bullet syntax, so the stars would show literally; a dot reads
+#: the same and cannot break. The whitespace lookahead keeps a star glued to
+#: text (`*bold`) out of this pass, and `$` catches a line that is only stars.
+_BULLET_STAR = re.compile(r"(?m)^([ \t]*)\*+(?=[ \t]|$)")
 
 #: An ATX heading marker at a line start — `# ` … `###### `, or a run of hashes alone.
 #: WhatsApp has no heading syntax, so the hashes show literally. The prompts forbid
@@ -358,21 +369,33 @@ def _normalize_whatsapp_formatting(text: str) -> str:
     """Convert Markdown markers to WhatsApp formatting and drop unpaired ones.
 
     WhatsApp understands `*bold*` and `_italic_` (plus `~strike~`, which the
-    model rarely emits and is left alone). A marker is only a marker at a word
-    boundary: alphanumeric on the inner side, non-alphanumeric on the outer —
-    so `5*3`, `a*b` and `record_id` are literals and survive. Markers inside
-    URLs are shielded before scanning and restored after. Heading markers
-    (`### Title`) are stripped: WhatsApp renders the hashes literally.
+    model rarely emits). A marker is only a marker at a word boundary:
+    alphanumeric on the inner side, non-alphanumeric on the outer — so `5*3`,
+    `a*b` and `record_id` are literals and survive. Markers inside URLs are
+    shielded before scanning and restored after; markers *trailing* a URL are
+    pulled out of the shield first, so `…com/**` is scanned like any other
+    stray instead of being re-emitted beside the link (staging 2026-10-22).
+    Heading hashes (`### Title`) and inline-code backticks are stripped: the
+    model cannot resist echoing Markdown the prompt forbids, and WhatsApp
+    renders both literally.
 
-    Pairing is stack-based in reading order: an opener with no closer and a
-    closer with no opener are removed. A lone `*` bullet at a line start becomes
-    `•`, which cannot break.
+    Pairing is stack-based in reading order, one line at a time — WhatsApp
+    pairs within a line, so `*Start` on one line and `middle*` on the next are
+    two strays, never a pair. An opener with no closer and a closer with no
+    opener are removed. A doubled run the bold pass missed (`word**`, a
+    `Doctor**` closer) collapses to one marker before pairing, unless
+    whitespace on both sides marks it as math (`2 ** 3`). A lone `*` bullet at
+    a line start becomes `•`, which cannot break.
     """
     urls: list[str] = []
 
     def _stash(match: re.Match[str]) -> str:
-        urls.append(match.group(0))
-        return f"URLPLACEHOLDER{len(urls) - 1}URLPLACEHOLDER"
+        url = match.group(0)
+        keep = url.rstrip("*_~")
+        urls.append(keep)
+        # Whatever was stripped stays in the text, right after the placeholder,
+        # where pairing can see and judge it.
+        return f"URLPLACEHOLDER{len(urls) - 1}URLPLACEHOLDER{url[len(keep) :]}"
 
     def _restore(match: re.Match[str]) -> str:
         return urls[int(match.group(1))]
@@ -380,11 +403,28 @@ def _normalize_whatsapp_formatting(text: str) -> str:
     shielded = _URL.sub(_stash, text)
     shielded = _MARKDOWN_BOLD.sub(r"*\g<body>*", shielded)
     shielded = _MARKDOWN_ITALIC.sub(r"_\g<body>_", shielded)
-    shielded = _BULLET_STAR.sub(r"\1• ", shielded)
+    shielded = _INLINE_CODE.sub(r"\1", shielded)
+    shielded = _STRAY_BACKTICK.sub("", shielded)
+    shielded = _BULLET_STAR.sub(r"\1•", shielded)
     shielded = _MARKDOWN_HEADING.sub("", shielded)
+    for marker in "*_~":
+        shielded = _collapse_marker_runs(shielded, marker)
     for marker in "*_":
-        shielded = _drop_unpaired_markers(shielded, marker)
+        shielded = "\n".join(_drop_unpaired_markers(line, marker) for line in shielded.split("\n"))
     return re.sub(r"URLPLACEHOLDER(\d+)URLPLACEHOLDER", _restore, shielded)
+
+
+def _collapse_marker_runs(text: str, marker: str) -> str:
+    """Reduce a run of two or more `marker` characters to a single one.
+
+    A run the bold/italic passes did not convert cannot pair: the inner markers
+    see a marker on their inner side and fail WhatsApp's candidacy test, so part
+    of the run would reach the customer as stray syntax (staging 2026-10-22 —
+    `Doctor**` kept its second star, `word**` kept one). A run with space or tab
+    on *both* sides is math (`2 ** 3`, `a __ b`) and stays as written.
+    """
+    pattern = re.compile(rf"(?<![ \t]){re.escape(marker)}{{2,}}|{re.escape(marker)}{{2,}}(?![ \t])")
+    return pattern.sub(marker, text)
 
 
 def _drop_unpaired_markers(text: str, marker: str) -> str:

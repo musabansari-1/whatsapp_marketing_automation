@@ -445,3 +445,60 @@ class TestWhatsAppFormattingIsNormalised:
         assert clean_customer_reply("#immunity and #metabolism") == "#immunity and #metabolism"
         assert clean_customer_reply("C# is a language") == "C# is a language"
         assert clean_customer_reply("#1 choice for wellness") == "#1 choice for wellness"
+
+    def test_stars_glued_to_a_url_are_removed(self) -> None:
+        """Staging 2026-10-22: `…at https://lifeherbagroup.com/** to download` — the
+        URL regex swallowed the trailing `**` inside the shielded placeholder, so
+        pairing never saw the stars and they reached the customer next to the link."""
+        assert (
+            clean_customer_reply("Visit https://lifeherbagroup.com/** to download it.")
+            == "Visit https://lifeherbagroup.com/ to download it."
+        )
+
+    def test_bold_wrapped_url_becomes_whatsapp_bold(self) -> None:
+        assert (
+            clean_customer_reply("Open **https://lifeherbagroup.com/** now.")
+            == "Open *https://lifeherbagroup.com/* now."
+        )
+
+    def test_italic_wrapped_url_becomes_whatsapp_italic(self) -> None:
+        assert (
+            clean_customer_reply("Open _https://lifeherbagroup.com/_ now.")
+            == "Open _https://lifeherbagroup.com/_ now."
+        )
+
+    def test_double_closer_after_a_single_opener_pairs_up(self) -> None:
+        """Staging 2026-10-22: `…the *practitioner / Join as Doctor** registration
+        option` — the first star of the `**` closer closed the opener, the second sat
+        next to another star, failed both candidacy tests (its predecessor is a marker)
+        and leaked as a literal."""
+        assert (
+            clean_customer_reply("Choose the *practitioner / Join as Doctor** option.")
+            == "Choose the *practitioner / Join as Doctor* option."
+        )
+
+    def test_doubled_closer_after_a_word_is_removed(self) -> None:
+        """`word**` leaks one star today: the first star is dropped as a bare closer,
+        the second fails candidacy (marker predecessor) and survives."""
+        assert clean_customer_reply("Welcome to Life Herba!**") == "Welcome to Life Herba!"
+
+    def test_double_star_bullet_becomes_a_dot(self) -> None:
+        assert clean_customer_reply("** Yoga\n** Supplements") == "• Yoga\n• Supplements"
+
+    def test_math_double_star_survives(self) -> None:
+        assert clean_customer_reply("2 ** 3 is 8.") == "2 ** 3 is 8."
+
+    def test_strikethrough_run_collapses_to_whatsapp_spelling(self) -> None:
+        assert clean_customer_reply("~~offer~~ ends today.") == "~offer~ ends today."
+
+    def test_inline_code_backticks_are_removed(self) -> None:
+        """WhatsApp has no code syntax: the backticks would show literally."""
+        assert clean_customer_reply("The field `record_id` holds it.") == (
+            "The field record_id holds it."
+        )
+        assert clean_customer_reply("Run `2 * 3` first.") == "Run 2 * 3 first."
+
+    def test_markers_pair_per_line_not_across_lines(self) -> None:
+        """WhatsApp pairs markers within one line, so `*Start\nmiddle*` renders both
+        stars literally. Each line is paired on its own and unpaired stars go."""
+        assert clean_customer_reply("*Start\nmiddle* end") == "Start\nmiddle end"
