@@ -85,13 +85,17 @@ async def test_rename_when_only_obsolete_exists(db: async_sessionmaker[AsyncSess
     assert any("renamed to healthcare-practitioners" in c for c in changes)
     async with db() as session:
         slugs = (
-            await session.execute(
-                select(Segment.slug)
-                .join(Product)
-                .where(Product.slug == "life-herba")
-                .order_by(Segment.slug)
+            (
+                await session.execute(
+                    select(Segment.slug)
+                    .join(Product)
+                    .where(Product.slug == "life-herba")
+                    .order_by(Segment.slug)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert slugs == ["healthcare-practitioners"]
 
 
@@ -155,18 +159,26 @@ async def test_remaps_references_then_deletes_obsolete_duplicate(
     async with db() as session:
         assert await session.get(Segment, obsolete_id) is None
         remaining = (
-            await session.execute(select(Segment.slug).where(Segment.product_id == product_id))
-        ).scalars().all()
+            (await session.execute(select(Segment.slug).where(Segment.product_id == product_id)))
+            .scalars()
+            .all()
+        )
         assert "wellness-centers" not in remaining
         assert "wellness-centres" in remaining
-        conversation = await session.get(Conversation, conversation_id)
-        assert conversation is not None
-        assert conversation.segment_id == canonical_id
+        reloaded = await session.get(Conversation, conversation_id)
+        assert reloaded is not None
+        assert reloaded.segment_id == canonical_id
         leftover = (
-            await session.execute(
-                select(AIConfiguration).where(AIConfiguration.system_prompt == "Obsolete override.")
+            (
+                await session.execute(
+                    select(AIConfiguration).where(
+                        AIConfiguration.system_prompt == "Obsolete override."
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert leftover == []
 
 
@@ -193,12 +205,14 @@ async def test_other_products_are_untouched(db: async_sessionmaker[AsyncSession]
 
     async with db() as session:
         other_slugs = (
-            await session.execute(
-                select(Segment.slug)
-                .join(Product)
-                .where(Product.slug == "other-product")
+            (
+                await session.execute(
+                    select(Segment.slug).join(Product).where(Product.slug == "other-product")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert other_slugs == ["healthcare-professionals"]
 
 
@@ -226,13 +240,17 @@ async def test_configure_products_collapses_obsolete_then_seeds_canonical(
 
     async with db() as session:
         slugs = (
-            await session.execute(
-                select(Segment.slug)
-                .join(Product)
-                .where(Product.slug == "life-herba")
-                .order_by(Segment.display_order, Segment.slug)
+            (
+                await session.execute(
+                    select(Segment.slug)
+                    .join(Product)
+                    .where(Product.slug == "life-herba")
+                    .order_by(Segment.display_order, Segment.slug)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert slugs == [
             "healthcare-practitioners",
             "wellness-centres",

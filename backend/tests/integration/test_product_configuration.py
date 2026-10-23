@@ -123,6 +123,8 @@ def ready_entry(slug: str = "cfg-ready", **overrides: Any) -> dict[str, Any]:
         "whatsapp_phone_number_id": f"{slug}-number",
         "whatsapp_business_account_id": "cfg-shared-account",
         "google_calendar_id": f"{slug}@calendar.example",
+        # Without one, a calendar product is READY WITH GAPS ([D65]).
+        "meeting_url": f"https://meet.example/{slug}",
         "ai_configuration": {
             "system_prompt": f"The {slug} prompt.",
             "qualification_required_fields": ["interested"],

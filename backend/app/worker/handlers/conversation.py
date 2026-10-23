@@ -1210,9 +1210,7 @@ def _build_run(
                 "used_fallback": outcome.used_fallback,
                 "reply_sanitized": outcome.reply_sanitized,
             }
-            if outcome.retrieved_chunk_ids
-            or outcome.used_fallback
-            or outcome.reply_sanitized
+            if outcome.retrieved_chunk_ids or outcome.used_fallback or outcome.reply_sanitized
             else None
         ),
     )

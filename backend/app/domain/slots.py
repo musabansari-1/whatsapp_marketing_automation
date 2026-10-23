@@ -254,9 +254,7 @@ def _day_slots(
             continue
 
         slots.append(
-            TimeInterval(
-                start=candidate.start.astimezone(UTC), end=candidate.end.astimezone(UTC)
-            )
+            TimeInterval(start=candidate.start.astimezone(UTC), end=candidate.end.astimezone(UTC))
         )
     return slots
 

@@ -194,7 +194,7 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         CheckConstraint(
             "conversion_mode IN ('calendar_booking', 'external_registration')",
-            name="ck_products_conversion_mode",
+            name="conversion_mode",
         ),
     )
 
@@ -325,5 +325,10 @@ class AIConfiguration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             ["segments.product_id", "segments.id"],
             name="fk_ai_configurations_segment_within_product",
             ondelete="CASCADE",
+        ),
+        # Created by migration a1b2c3d4e5f6; declared here so the model and the schema agree.
+        CheckConstraint(
+            "qualification_mode IS NULL OR qualification_mode IN ('required_fields', 'ai_judgement')",
+            name="qualification_mode",
         ),
     )

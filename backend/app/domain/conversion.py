@@ -32,9 +32,10 @@ def parse_conversion_mode(value: str | None) -> ConversionMode:
 
 
 def uses_calendar_booking(mode: ConversionMode | str | None) -> bool:
-    return parse_conversion_mode(
-        mode.value if isinstance(mode, ConversionMode) else mode
-    ) is ConversionMode.CALENDAR_BOOKING
+    return (
+        parse_conversion_mode(mode.value if isinstance(mode, ConversionMode) else mode)
+        is ConversionMode.CALENDAR_BOOKING
+    )
 
 
 def with_today_context(system_prompt: str, *, now: datetime, zone: ZoneInfo) -> str:

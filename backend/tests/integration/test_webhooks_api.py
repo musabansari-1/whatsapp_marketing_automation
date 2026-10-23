@@ -720,20 +720,18 @@ class TestConversationTurnQueueing:
         "message",
         [
             {"type": "sticker", "sticker": {"mime_type": "image/webp", "id": "s1"}},
-            {"type": "image", "image": {"mime_type": "image/jpeg", "id": "i1"}},
             {
                 "type": "reaction",
                 "reaction": {"message_id": "wamid.0", "emoji": "\U0001f44d"},
             },
         ],
-        ids=["sticker", "photo", "reaction"],
+        ids=["sticker", "reaction"],
     )
     def test_a_message_without_text_is_stored_but_queues_no_turn(
         self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch, message: dict[str, Any]
     ) -> None:
-        """A sticker, photo or reaction carries nothing to answer. Storing it keeps
-        the transcript complete, but a full model turn would burn context and quota
-        to reply to it — then reply, which is worse."""
+        """A sticker or reaction carries nothing to answer. Storing it keeps the
+        transcript complete, but a turn would only reply to it, which is worse."""
         queued = capture_queue(monkeypatch)
 
         post_webhook(webhook_client, inbound_media(message, message_id="wamid.m1"))
@@ -746,6 +744,27 @@ class TestConversationTurnQueueing:
             return list(rows)
 
         assert run_db(bodies) == [None]
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            {"type": "image", "image": {"mime_type": "image/jpeg", "id": "i1"}},
+            {"type": "audio", "audio": {"mime_type": "audio/ogg", "id": "a1", "voice": True}},
+            {"type": "document", "document": {"mime_type": "application/pdf", "id": "d1"}},
+        ],
+        ids=["photo", "voice", "document"],
+    )
+    def test_a_photo_voice_note_or_file_queues_a_turn(
+        self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch, message: dict[str, Any]
+    ) -> None:
+        """Someone who sends a photo, voice note or file expects an answer. The turn
+        replies with the fixed "please type your question" message, not the model."""
+        queued = capture_queue(monkeypatch)
+
+        post_webhook(webhook_client, inbound_media(message, message_id="wamid.m2"))
+        process_all()
+
+        assert len(queued) == 1
 
     def test_a_text_beside_a_sticker_still_queues_its_turn(
         self, webhook_client: TestClient, monkeypatch: pytest.MonkeyPatch

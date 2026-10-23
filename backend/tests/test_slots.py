@@ -269,9 +269,7 @@ class TestFirstDayWithSlots:
         all_day = busy(local(2026, 9, 2, 10, 0), 8 * 60)
 
         assert (
-            first_day_with_slots(
-                policy=policy, busy=[all_day], now=WEDNESDAY_9AM, window_days=1
-            )
+            first_day_with_slots(policy=policy, busy=[all_day], now=WEDNESDAY_9AM, window_days=1)
             == []
         )
 

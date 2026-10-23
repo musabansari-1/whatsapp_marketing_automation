@@ -257,9 +257,7 @@ def _evaluate_ai_judgement(*, current: LeadStatus, data: dict[str, Any]) -> Qual
     if needs_context and can_transition_lead(current, LeadStatus.QUALIFYING):
         return QualificationResult(
             status=LeadStatus.QUALIFYING,
-            reasons=(
-                "AI judgement mode: more context needed, or interest without demo intent",
-            ),
+            reasons=("AI judgement mode: more context needed, or interest without demo intent",),
         )
     if (
         needs_context

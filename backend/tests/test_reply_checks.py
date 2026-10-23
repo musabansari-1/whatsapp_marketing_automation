@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.ai.reply_eval import run_case, run_reply_eval, system_prompt_for
-from app.configuration.catalog import load_catalog
+from app.configuration.catalog import ProductEntry, load_catalog
 from app.domain.reply_checks import ReplyCase, check_reply, load_cases
 from app.integrations.llm import FakeLLMProvider, LLMCompletion, ToolCall
 
@@ -17,7 +17,7 @@ CATALOG = ROOT / "config" / "products.json"
 CASES = ROOT / "evals" / "life-herba.json"
 
 
-def _life_herba():  # type: ignore[no-untyped-def]
+def _life_herba() -> ProductEntry:
     return {p.slug: p for p in load_catalog(CATALOG).products}["life-herba"]
 
 

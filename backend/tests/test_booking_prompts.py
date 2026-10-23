@@ -10,6 +10,7 @@ errors in `app.ai.tools` carry the same guidance for the moment the failure happ
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from app.configuration.catalog import load_catalog
 
@@ -24,7 +25,7 @@ FORBIDDEN_PROMISES = (
 )
 
 
-def _product(slug: str):
+def _product(slug: str) -> Any:
     return {p.slug: p for p in load_catalog(SHIPPED).products}[slug]
 
 

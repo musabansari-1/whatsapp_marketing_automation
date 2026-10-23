@@ -11,6 +11,7 @@ import pytest
 from app.core.config import Settings
 from app.core.errors import ProviderNotImplementedError
 from app.integrations.calendar import CalendarProvider, FakeCalendarProvider
+from app.integrations.calendar.google_auth import OAuthRefreshTokenAuthenticator
 from app.integrations.crm import CRMProvider, FakeCRMProvider
 from app.integrations.embedding import EmbeddingProvider, FakeEmbeddingProvider
 from app.integrations.llm import FakeLLMProvider, LLMProvider
@@ -146,6 +147,7 @@ class TestFakeSelection:
 
         assert isinstance(provider, GoogleCalendarProvider)
         # Laziness is the point: nothing has read a secret yet.
+        assert isinstance(provider._auth, OAuthRefreshTokenAuthenticator)  # noqa: SLF001
         assert provider._auth._refresh_token is None  # noqa: SLF001
 
     def test_the_secret_store_is_in_memory_without_the_google_calendar(self) -> None:
@@ -273,6 +275,8 @@ class TestCalendarAuthMode:
         shared = build_calendar_auth(Settings(), product=a_product())
         separate = build_calendar_auth(Settings(), product=own)
 
+        assert isinstance(shared, OAuthRefreshTokenAuthenticator)
+        assert isinstance(separate, OAuthRefreshTokenAuthenticator)
         assert shared._client_id == separate._client_id == "client-id"  # noqa: SLF001
         assert shared._refresh_token_secret_name == "shared-refresh-token"  # noqa: SLF001
         assert separate._refresh_token_secret_name == "herba-refresh-token"  # noqa: SLF001

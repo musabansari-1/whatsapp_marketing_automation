@@ -158,9 +158,7 @@ async def respond_to_customer(
     used_fallback = False
 
     if reply_sanitized:
-        logger.warning(
-            "ai_reply_tool_payload_removed", removed_chars=len(raw_reply) - len(reply)
-        )
+        logger.warning("ai_reply_tool_payload_removed", removed_chars=len(raw_reply) - len(reply))
 
     if not reply:
         # A turn that produces nothing to say is worse than the approved fallback:
