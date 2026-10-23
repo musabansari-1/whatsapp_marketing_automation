@@ -155,7 +155,13 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # rather than blocking the delete.
     first_reply_template_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
-        ForeignKey("whatsapp_templates.id", ondelete="SET NULL"),
+        # Named as migration d4e5f6a7b8c9 created it, so metadata and a migrated
+        # database agree (the naming convention would give a different name).
+        ForeignKey(
+            "whatsapp_templates.id",
+            ondelete="SET NULL",
+            name="fk_products_first_reply_template",
+        ),
     )
 
     segments: Mapped[list[Segment]] = relationship(
