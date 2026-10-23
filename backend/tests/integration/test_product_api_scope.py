@@ -351,7 +351,7 @@ class TestForeignRecordsAre404:
         for path in reads:
             assert admin.get(alpha_base + path).status_code == 404, path
 
-        writes = [
+        writes: list[tuple[str, str, dict[str, Any]]] = [
             ("patch", f"/leads/{beta.lead}", {"json": {"city": "Pune"}}),
             ("post", f"/audiences/{beta.audience}/confirm", {}),
             ("post", f"/campaigns/{beta.campaign}/send", {}),

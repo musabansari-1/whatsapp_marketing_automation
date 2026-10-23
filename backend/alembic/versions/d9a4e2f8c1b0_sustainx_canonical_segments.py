@@ -51,9 +51,7 @@ FK_TABLES: tuple[str, ...] = (
 
 def upgrade() -> None:
     conn = op.get_bind()
-    product_id = conn.execute(
-        text("SELECT id FROM products WHERE slug = 'sustainx'")
-    ).scalar()
+    product_id = conn.execute(text("SELECT id FROM products WHERE slug = 'sustainx'")).scalar()
     if product_id is None:
         return
 
@@ -91,10 +89,7 @@ def _reconcile(
 
     if new_id is None:
         conn.execute(
-            text(
-                "UPDATE segments SET slug = :slug, display_name = :name "
-                "WHERE id = :id"
-            ),
+            text("UPDATE segments SET slug = :slug, display_name = :name WHERE id = :id"),
             {"slug": canonical, "name": display_name, "id": old_id},
         )
         return
@@ -104,10 +99,8 @@ def _reconcile(
 
     for table in FK_TABLES:
         conn.execute(
-            text(
-                f"UPDATE {table} SET segment_id = :new_id "
-                f"WHERE segment_id = :old_id"
-            ),
+            # Table names come from the fixed FK_TABLES tuple, never from input.
+            text(f"UPDATE {table} SET segment_id = :new_id WHERE segment_id = :old_id"),  # noqa: S608
             {"new_id": new_id, "old_id": old_id},
         )
 

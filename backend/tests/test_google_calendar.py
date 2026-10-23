@@ -364,7 +364,7 @@ class TestServiceAccountAuthentication:
         from google.auth.exceptions import DefaultCredentialsError
 
         def no_credentials(*_: Any, **__: Any) -> Any:
-            raise DefaultCredentialsError("no credentials")
+            raise DefaultCredentialsError("no credentials")  # type: ignore[no-untyped-call]
 
         monkeypatch.setattr("google.auth.default", no_credentials)
         provider, _ = make_service_account_provider(routed(), credentials=None)
@@ -380,7 +380,7 @@ class TestServiceAccountAuthentication:
         identically, so the turn must not burn its retry budget on it."""
         from google.auth.exceptions import RefreshError
 
-        credentials = FakeServiceAccountCredentials(raises=RefreshError("invalid_grant"))
+        credentials = FakeServiceAccountCredentials(raises=RefreshError("invalid_grant"))  # type: ignore[no-untyped-call]
         provider, _ = make_service_account_provider(routed(), credentials=credentials)
 
         with pytest.raises(NonRetryableProviderError, match="service account"):
@@ -393,7 +393,7 @@ class TestServiceAccountAuthentication:
         """The metadata server being briefly unreachable is worth another attempt."""
         from google.auth.exceptions import TransportError
 
-        credentials = FakeServiceAccountCredentials(raises=TransportError("network down"))
+        credentials = FakeServiceAccountCredentials(raises=TransportError("network down"))  # type: ignore[no-untyped-call]
         provider, _ = make_service_account_provider(routed(), credentials=credentials)
 
         with pytest.raises(RetryableProviderError, match="Could not reach Google"):

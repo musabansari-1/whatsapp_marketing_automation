@@ -502,3 +502,30 @@ class TestWhatsAppFormattingIsNormalised:
         """WhatsApp pairs markers within one line, so `*Start\nmiddle*` renders both
         stars literally. Each line is paired on its own and unpaired stars go."""
         assert clean_customer_reply("*Start\nmiddle* end") == "Start\nmiddle end"
+
+
+class TestMixedScriptRepliesAreBlanked:
+    """A reply in one language, plus English words and URLs, passes. A reply that
+    borrows letters from several writing systems is garbled and becomes empty, so
+    the caller sends the approved fallback."""
+
+    def test_live_tamil_reply_mixing_four_scripts_is_blanked(self) -> None:
+        garbled = (
+            "LifeHerba உதவியுடன் டாக்டர் registering இenna:\n"
+            "2. உங்கள் பைனில் LifeHerba app தウン்லோவில்்.\n"
+            '3. "Join as Doctor" विकल्प ఎంచుకోవి.\n'
+            "ஒரு காதல் உதவியை தேவை?"
+        )
+        assert clean_customer_reply(garbled) == ""
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "LifeHerba पर doctor बनने के लिए यह link खोलें: https://lifeherbagroup.com/join/doctor",
+            "டாக்டராகப் பதிவு செய்ய: https://lifeherbagroup.com/join/doctor",
+            "Website par jayein aur app download karein.",
+            "افتح الرابط: https://lifeherbagroup.com/join/doctor",
+        ],
+    )
+    def test_one_script_with_english_and_urls_survives(self, reply: str) -> None:
+        assert clean_customer_reply(reply) == reply

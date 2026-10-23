@@ -157,9 +157,9 @@ async def test_remaps_references_then_deletes_obsolete_duplicate(
         )
         assert "industry" not in remaining
         assert "industries" in remaining
-        conversation = await session.get(Conversation, conversation_id)
-        assert conversation is not None
-        assert conversation.segment_id == canonical_id
+        reloaded = await session.get(Conversation, conversation_id)
+        assert reloaded is not None
+        assert reloaded.segment_id == canonical_id
 
 
 @pytest.mark.asyncio

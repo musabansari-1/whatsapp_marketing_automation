@@ -33,6 +33,7 @@ from app.ai.reply_guard import clean_customer_reply
 from app.core.logging import get_logger
 from app.domain.rag import RetrievalResult
 from app.integrations.llm import (
+    AuthorizedTool,
     CompletionRequest,
     LLMCompletion,
     LLMProvider,
@@ -96,6 +97,7 @@ async def respond_to_customer(
     fallback_message: str,
     max_rounds: int = MAX_TOOL_ROUNDS,
     include_booking_tools: bool = True,
+    accept_reply_with_facts: bool = True,
 ) -> AgentOutcome:
     """Produce one reply, running authorized tools as the model requests them."""
     messages = _build_messages(
@@ -127,8 +129,10 @@ async def respond_to_customer(
 
         messages.append(_assistant_tool_request(completion))
 
+        results: list[tuple[ToolCall, ai_tools.ToolResult]] = []
         for call in completion.tool_calls:
             result = await ai_tools.dispatch(call.name, call.arguments, context)
+            results.append((call, result))
             executed.append(_record(call, result))
             messages.append(
                 Message(
@@ -137,6 +141,12 @@ async def respond_to_customer(
                     tool_call_id=call.id,
                 )
             )
+
+        # Latency: most turns are "record what they said, then answer". When the model
+        # already wrote the answer alongside a fact-recording call, a second round would
+        # only re-generate it, costing the customer a whole model call of waiting.
+        if accept_reply_with_facts and _reply_written_with_facts(completion, results):
+            break
     else:
         round_number = max_rounds
 
@@ -148,9 +158,7 @@ async def respond_to_customer(
     used_fallback = False
 
     if reply_sanitized:
-        logger.warning(
-            "ai_reply_tool_payload_removed", removed_chars=len(raw_reply) - len(reply)
-        )
+        logger.warning("ai_reply_tool_payload_removed", removed_chars=len(raw_reply) - len(reply))
 
     if not reply:
         # A turn that produces nothing to say is worse than the approved fallback:
@@ -207,6 +215,25 @@ def _build_messages(
 
     messages.extend(history)
     return messages
+
+
+def _reply_written_with_facts(
+    completion: LLMCompletion, results: list[tuple[ToolCall, ai_tools.ToolResult]]
+) -> bool:
+    """Whether this round's text is a finished reply that needs no tool output.
+
+    Only `update_lead` qualifies: its result changes nothing the reply could say,
+    unless the rules still need fields, which the model must then ask for. Any other
+    tool returns information (slots, lead details, a booking) the reply depends on.
+    """
+    if not clean_customer_reply(completion.text or "").strip():
+        return False
+    return all(
+        call.name == AuthorizedTool.UPDATE_LEAD
+        and result.ok
+        and not result.data.get("still_needed")
+        for call, result in results
+    )
 
 
 def _assistant_tool_request(completion: LLMCompletion) -> Message:

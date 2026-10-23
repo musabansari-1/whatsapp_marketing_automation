@@ -1,4 +1,5 @@
 import { cx } from '@/lib/cx';
+import { humanizeStatus } from '@/lib/format';
 
 const TONES = {
   success: 'bg-forest-soft text-forest ring-forest/10',
@@ -62,7 +63,7 @@ export function StatusBadge({ status, className }: { status: string; className?:
       )}
     >
       <span className="size-1.5 rounded-full bg-current opacity-70" />
-      {status.replaceAll('_', ' ')}
+      {humanizeStatus(status)}
     </span>
   );
 }

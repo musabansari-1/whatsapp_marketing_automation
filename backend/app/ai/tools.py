@@ -126,6 +126,9 @@ class ToolContext:
     # the team hears about it once. A request is not a booking: no calendar event,
     # no time, no second message to the customer.
     notify_offline_demo: bool = False
+    # Set when this turn newly recorded registration intent or a request for a
+    # person, with the reason, so the team hears about a hot lead once.
+    notify_attention: str | None = None
     proposed_status: Any = None
 
 
@@ -176,7 +179,9 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
             description=(
                 "Record facts the customer has told you. Only record what they "
                 "actually said; do not guess. You cannot set the lead's status — the "
-                "system decides that from what you record."
+                "system decides that from what you record. Write your reply to the "
+                "customer in the same response as this call: the customer is waiting, "
+                "and a reply written alongside it is sent without another round."
             ),
             parameters={
                 "type": "object",
@@ -195,7 +200,9 @@ def tool_specs(*, include_booking: bool = True) -> tuple[ToolSpec, ...]:
                             "(QUALIFIED | NEEDS_MORE_CONTEXT | NOT_QUALIFIED), "
                             "offline_demo_requested (true when the customer chose "
                             "an offline demo instead of booking a time), "
-                            "registration_intent, team_size, budget or use_case. You "
+                            "registration_intent, human_requested (true when they "
+                            "ask to speak to or hear from a person), team_size, "
+                            "budget or use_case. You "
                             "cannot set lead status — record facts only."
                         ),
                         "additionalProperties": True,
@@ -402,10 +409,12 @@ async def _update_lead(arguments: dict[str, Any], context: ToolContext) -> ToolR
         # Read before the merge: only a newly introduced offline request notifies
         # the team. A repeat collaborates with the fan-out's own collapse rather
         # than re-announcing ([D66]).
-        had_offline_request = bool((lead.qualification_data or {}).get("offline_demo_requested"))
+        before = dict(lead.qualification_data or {})
+        had_offline_request = bool(before.get("offline_demo_requested"))
         await conversation_repo.merge_qualification_data(context.session, lead, facts)
         if facts.get("offline_demo_requested") is True and not had_offline_request:
             context.notify_offline_demo = True
+        context.notify_attention = _attention_reason(before, facts) or context.notify_attention
 
     # The rules run on the merged facts, and their conclusion is proposed rather than
     # applied: the caller decides, after the turn, through the §10 table.
@@ -871,6 +880,24 @@ def _positive_int(value: Any, *, default: int, maximum: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         return default
     return min(value, maximum)
+
+
+def _attention_reason(before: dict[str, Any], facts: dict[str, Any]) -> str | None:
+    """Why the team should hear about this lead now, or None.
+
+    Only a fact this call newly turns true counts: the facts are re-recorded on many
+    turns, and a bell per turn would teach the team to ignore it.
+    """
+    fields = (
+        (qualification.FIELD_HUMAN_REQUESTED, "asked to speak to a person"),
+        (qualification.FIELD_REGISTRATION_INTENT, "wants to register"),
+    )
+    for field_name, reason in fields:
+        if qualification.is_affirmative(facts.get(field_name)) and not qualification.is_affirmative(
+            before.get(field_name)
+        ):
+            return reason
+    return None
 
 
 def _clean(value: Any) -> str | None:

@@ -11,7 +11,9 @@ export const LOGIN_PATH = '/login';
 const PUBLIC_PATHS = new Set<string>([LOGIN_PATH]);
 
 /** Prefixes middleware never touches. */
-const UNGUARDED_PREFIXES = ['/_next', '/favicon', '/api'];
+// `/icon` is the browser tab icon and `/brand` holds product logos: both are needed
+// on the login page, before there is a session.
+const UNGUARDED_PREFIXES = ['/_next', '/favicon', '/icon', '/brand', '/api'];
 
 /**
  * Whether middleware should evaluate this path at all.

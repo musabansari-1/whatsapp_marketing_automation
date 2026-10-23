@@ -10,8 +10,10 @@ Run with `python -m app.cli <command>`:
     deactivate-product      stop one product starting new customer activity
     block-sender            stop all platform activity for one phone number
     unblock-sender          lift an operator block (never an opt-out)
+    eval-replies            check reply quality against a fixed case set (calls the model)
 
-None of them calls Meta, Google or HubSpot, and none sends a message. Configuration and
+None of them calls Meta, Google or HubSpot, and none sends a message. Only eval-replies
+calls the model, and it writes nothing. Configuration and
 activation are separate on purpose: no amount of configuration activates a product.
 """
 
@@ -405,6 +407,33 @@ async def re_embed_knowledge(settings: Settings, *, out: TextIO | None = None) -
     return EXIT_OK
 
 
+async def eval_replies(
+    settings: Settings,
+    *,
+    product: str,
+    cases: Path,
+    catalog: Path,
+    only: str | None = None,
+    out: TextIO | None = None,
+) -> int:
+    """Run the reply cases; non-zero exit when any fails, so CI and deploys can gate on it."""
+    from app.ai.reply_eval import run_reply_eval
+    from app.integrations.registry import build_llm_provider
+
+    results = await run_reply_eval(
+        build_llm_provider(settings),
+        catalog_path=catalog,
+        product_slug=product,
+        cases_path=cases,
+        out=out or sys.stdout,
+        only=only,
+    )
+    if not results:
+        _say(out, "No cases matched.")
+        return EXIT_FAILED
+    return EXIT_OK if all(result.passed for result in results) else EXIT_FAILED
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="app.cli", description="Administrative commands")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -457,6 +486,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="re-encode chunks not on the configured embedding model ([D1])",
     )
 
+    evals = commands.add_parser(
+        "eval-replies", help="check reply quality against a fixed case set (calls the model)"
+    )
+    evals.add_argument("--product", required=True, help="the product slug")
+    evals.add_argument("--cases", required=True, type=Path, help="the cases JSON file")
+    evals.add_argument(
+        "--catalog",
+        type=Path,
+        default=Path("config/products.json"),
+        help="the catalog the prompts and links are read from",
+    )
+    evals.add_argument("--only", default=None, help="run one case by id")
+
     return parser
 
 
@@ -485,6 +527,14 @@ async def _run(args: argparse.Namespace) -> int:
                 return await unblock_sender(settings, args.phone)
             case "re-embed-knowledge":
                 return await re_embed_knowledge(settings)
+            case "eval-replies":
+                return await eval_replies(
+                    settings,
+                    product=args.product,
+                    cases=args.cases,
+                    catalog=args.catalog,
+                    only=args.only,
+                )
             case _:
                 logger.error("unknown_command", command=args.command)
                 return EXIT_FAILED

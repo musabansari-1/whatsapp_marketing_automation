@@ -67,6 +67,10 @@ class Conversation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_outbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set when a team member replies from the dashboard: until then the assistant
+    # records the customer's turns but does not answer, so it never talks over a
+    # person. NULL, or a time in the past, means the assistant answers.
+    ai_paused_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     lead: Mapped[Lead] = relationship(back_populates="conversations")
     messages: Mapped[list[ConversationMessage]] = relationship(

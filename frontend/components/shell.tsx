@@ -25,6 +25,7 @@ import {
   NAV_ICONS,
 } from '@/components/icons';
 import { useOptionalProduct, type ProductContextValue } from '@/components/product-context';
+import { ProductLogo } from '@/components/product-logo';
 import { Alert } from '@/components/ui';
 import { api, type SessionUser } from '@/lib/api';
 import { cx } from '@/lib/cx';
@@ -115,22 +116,29 @@ function ProductSwitcher({
       >
         Product
       </label>
-      <select
-        id="product-switcher"
-        value={context.slug}
-        onChange={(event) => {
-          onNavigate();
-          router.push(switchProductPath(pathname, event.target.value));
-        }}
-        className="w-full rounded-xl border border-sidebar-line bg-sidebar-hover px-3 py-2.5 text-sm font-semibold text-sidebar-fg outline-none transition focus:border-forest-bright/60"
-      >
-        {options.map((product) => (
-          <option key={product.id} value={product.slug}>
-            {product.display_name}
-            {product.is_active ? '' : ' (inactive)'}
-          </option>
-        ))}
-      </select>
+      <div className="relative">
+        <ProductLogo
+          slug={context.slug}
+          name={context.product.display_name}
+          className="pointer-events-none absolute left-2 top-1/2 size-7 -translate-y-1/2"
+        />
+        <select
+          id="product-switcher"
+          value={context.slug}
+          onChange={(event) => {
+            onNavigate();
+            router.push(switchProductPath(pathname, event.target.value));
+          }}
+          className="w-full rounded-xl border border-sidebar-line bg-sidebar-hover py-2.5 pl-11 pr-3 text-sm font-semibold text-sidebar-fg outline-none transition focus:border-forest-bright/60"
+        >
+          {options.map((product) => (
+            <option key={product.id} value={product.slug}>
+              {product.display_name}
+              {product.is_active ? '' : ' (inactive)'}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
@@ -165,8 +173,10 @@ function SidebarNav({
       <div className="relative flex items-center gap-3 px-5 pb-5 pt-6">
         <IconMark className="size-9 shrink-0 drop-shadow-[0_4px_12px_rgb(16_185_129/0.35)]" />
         <div className="min-w-0">
-          <p className="truncate text-sm font-bold tracking-tight text-sidebar-fg">WhatsApp AI</p>
-          <p className="truncate text-[11px] text-sidebar-muted">Marketing console</p>
+          <p className="truncate text-sm font-bold tracking-tight text-sidebar-fg">
+            GlobalPact Holdings
+          </p>
+          <p className="truncate text-[11px] text-sidebar-muted">WhatsApp API Marketing</p>
         </div>
       </div>
 
@@ -177,8 +187,12 @@ function SidebarNav({
       <nav className="relative flex-1 space-y-6 overflow-y-auto px-3 pb-6">
         {context && within !== null
           ? PRODUCT_GROUPS.map((group) => {
-              const sections = PRODUCT_SECTIONS.filter((section) =>
-                group.keys.includes(section.key),
+              // A product with no demo calendar converts by signup link: Demos would
+              // only ever be empty there.
+              const sections = PRODUCT_SECTIONS.filter(
+                (section) =>
+                  group.keys.includes(section.key) &&
+                  (section.key !== 'bookings' || context.product.has_calendar),
               );
               return (
                 <div key={group.label ?? 'home'}>
@@ -335,9 +349,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               {context ? (
                 <Link
                   href={productHref(context.slug)}
-                  className="truncate rounded-lg bg-forest-soft px-2 py-0.5 font-bold text-forest"
+                  className="flex min-w-0 items-center gap-1.5 rounded-lg bg-forest-soft py-0.5 pl-0.5 pr-2 font-bold text-forest"
                 >
-                  {context.product.display_name}
+                  <ProductLogo
+                    slug={context.slug}
+                    name={context.product.display_name}
+                    className="size-5 rounded-md text-[8px]"
+                  />
+                  <span className="truncate">{context.product.display_name}</span>
                 </Link>
               ) : (
                 <span className="hidden font-medium text-ink-faint sm:inline">Console</span>

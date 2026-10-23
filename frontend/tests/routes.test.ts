@@ -22,6 +22,11 @@ describe('isGuardedPath', () => {
     expect(isGuardedPath('/_next/static/chunk.js')).toBe(false);
     expect(isGuardedPath('/favicon.ico')).toBe(false);
   });
+
+  it('leaves the tab icon and product logos alone, for the login page', () => {
+    expect(isGuardedPath('/icon.svg')).toBe(false);
+    expect(isGuardedPath('/brand/life-herba.png')).toBe(false);
+  });
 });
 
 describe('isPublicPath', () => {

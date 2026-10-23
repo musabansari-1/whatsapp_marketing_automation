@@ -155,7 +155,13 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # rather than blocking the delete.
     first_reply_template_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
-        ForeignKey("whatsapp_templates.id", ondelete="SET NULL"),
+        # Named as migration d4e5f6a7b8c9 created it, so metadata and a migrated
+        # database agree (the naming convention would give a different name).
+        ForeignKey(
+            "whatsapp_templates.id",
+            ondelete="SET NULL",
+            name="fk_products_first_reply_template",
+        ),
     )
 
     segments: Mapped[list[Segment]] = relationship(
@@ -194,7 +200,7 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         CheckConstraint(
             "conversion_mode IN ('calendar_booking', 'external_registration')",
-            name="ck_products_conversion_mode",
+            name="conversion_mode",
         ),
     )
 
@@ -225,6 +231,9 @@ class Segment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # the product prompt and registration_url still apply.
     cta_label: Mapped[str | None] = mapped_column(String(255))
     cta_instruction: Mapped[str | None] = mapped_column(Text)
+    # This segment's own signup link, overriding the product's registration_url. NULL
+    # inherits the product's.
+    registration_url: Mapped[str | None] = mapped_column(Text)
 
     product: Mapped[Product] = relationship(back_populates="segments")
 
@@ -322,5 +331,10 @@ class AIConfiguration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             ["segments.product_id", "segments.id"],
             name="fk_ai_configurations_segment_within_product",
             ondelete="CASCADE",
+        ),
+        # Created by migration a1b2c3d4e5f6; declared here so the model and the schema agree.
+        CheckConstraint(
+            "qualification_mode IS NULL OR qualification_mode IN ('required_fields', 'ai_judgement')",
+            name="qualification_mode",
         ),
     )

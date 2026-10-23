@@ -1,10 +1,11 @@
 """Lead and conversation endpoints, per product (specification §9, §10, §16, §17, §28).
 
 Read-mostly. The dashboard shows what the AI and the customer said and lets a human
-correct a lead's details; it does not let anyone type a message into a conversation.
-Outbound free-form replies come from the worker, which is where the 24-hour window and
-suppression checks live — an endpoint that bypassed them would be a way to message a
-customer who has opted out.
+correct a lead's details. A team member may also reply into an open conversation: the
+endpoint checks the window, suppression and conversation state so the dashboard can say
+why at once, then *queues* the reply. The worker sends it and checks again, because it
+is where the 24-hour window and suppression checks live, and consent can be withdrawn
+between the click and the send.
 
 Every route is inside one product (Phase 26). One person who enquired about two products
 is two leads ([D41]), each with its own address under its own product; nothing here
@@ -16,26 +17,38 @@ never re-derives either.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.api.deps import CurrentUser, DbSession, SettingsDep
+from app.api.deps import CurrentUser, DbSession, Queue, SettingsDep
 from app.api.schemas import (
     ConversationDetailResponse,
+    ConversationListItem,
     ConversationPage,
     ConversationResponse,
     ConversationTurnResponse,
     LeadPage,
     LeadResponse,
+    TeamReplyAccepted,
+    TeamReplyRequest,
     UpdateLeadRequest,
 )
-from app.api.scope import PRODUCT_PREFIX, ProductScope, SegmentFilter, owned_by
+from app.api.scope import (
+    PRODUCT_PREFIX,
+    ActiveProductScope,
+    ProductScope,
+    SegmentFilter,
+    owned_by,
+)
 from app.core.logging import get_logger
 from app.domain.conversation import LeadStateError
-from app.domain.enums import ConversationStatus, LeadStatus
+from app.domain.enums import ConversationStatus, LeadStatus, MessageDirection
 from app.domain.whatsapp_webhook import is_within_service_window
+from app.integrations.queue import TaskRequest, TaskType
 from app.persistence.models import Conversation, Lead, Product
 from app.persistence.repositories import conversations as conversation_repo
+from app.persistence.repositories import suppressions as suppression_repo
 
 router = APIRouter(prefix=PRODUCT_PREFIX, tags=["conversations"])
 logger = get_logger(__name__)
@@ -149,6 +162,99 @@ async def get_lead_conversation(
     return await _detail(session, settings, conversation, lead, limit)
 
 
+@router.post(
+    "/leads/{lead_id}/conversation/reply",
+    response_model=TeamReplyAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def reply_to_lead(
+    lead_id: uuid.UUID,
+    payload: TeamReplyRequest,
+    user: CurrentUser,
+    product: ActiveProductScope,
+    session: DbSession,
+    settings: SettingsDep,
+    queue: Queue,
+) -> TeamReplyAccepted:
+    """Queue a team member's reply into the lead's open conversation.
+
+    The assistant is paused for `pause_assistant_hours` before the reply is queued, so
+    it cannot answer the customer's next message over the person. 409 with the reason
+    when the reply cannot be sent at all.
+    """
+    lead = await _require_lead(session, product, lead_id)
+    conversation = await conversation_repo.get_latest_conversation_for_lead(session, lead.id)
+    if conversation is None or conversation.status is ConversationStatus.CLOSED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This lead has no open conversation to reply into",
+        )
+    if await suppression_repo.is_suppressed(session, lead.phone_e164):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This customer has opted out, so they cannot be messaged",
+        )
+    if not is_within_service_window(
+        conversation.last_inbound_at, window_hours=settings.customer_service_window_hours
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The customer last wrote over {settings.customer_service_window_hours} hours "
+                "ago, so WhatsApp only allows an approved template now"
+            ),
+        )
+
+    if payload.pause_assistant_hours:
+        conversation.ai_paused_until = datetime.now(UTC) + timedelta(
+            hours=payload.pause_assistant_hours
+        )
+    await session.commit()
+
+    request_id = str(uuid.uuid4())
+    await queue.enqueue(
+        TaskRequest(
+            task_type=TaskType.SEND_TEAM_REPLY,
+            task_id=f"team-reply-{request_id}",
+            payload={
+                "conversation_id": str(conversation.id),
+                "request_id": request_id,
+                "body": payload.body.strip(),
+                "user_id": str(user.id),
+            },
+        )
+    )
+    logger.info(
+        "team_reply_queued",
+        lead_id=str(lead.id),
+        user_id=str(user.id),
+        pause_hours=payload.pause_assistant_hours,
+    )
+    return TeamReplyAccepted(queued=True, ai_paused_until=conversation.ai_paused_until)
+
+
+@router.post("/leads/{lead_id}/conversation/resume-assistant", response_model=ConversationResponse)
+async def resume_assistant(
+    lead_id: uuid.UUID, user: CurrentUser, product: ProductScope, session: DbSession
+) -> ConversationResponse:
+    """Hand the conversation back to the assistant.
+
+    Set to now rather than cleared, so messages that arrived during the pause stay
+    the team's: the stranded sweep skips anything older than the pause's end, and
+    the assistant answers only what the customer writes next.
+    """
+    lead = await _require_lead(session, product, lead_id)
+    conversation = await conversation_repo.get_latest_conversation_for_lead(session, lead.id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="This lead has no conversation yet"
+        )
+    conversation.ai_paused_until = datetime.now(UTC)
+    await session.commit()
+    logger.info("assistant_resumed", lead_id=str(lead.id), user_id=str(user.id))
+    return ConversationResponse.model_validate(conversation)
+
+
 @router.get("/conversations", response_model=ConversationPage)
 async def list_conversations(
     product: ProductScope,
@@ -171,12 +277,24 @@ async def list_conversations(
         limit=limit,
         offset=offset,
     )
-    return ConversationPage(
-        total=total,
-        limit=limit,
-        offset=offset,
-        items=[ConversationResponse.model_validate(row) for row in conversations],
+    summaries = await conversation_repo.summarize_conversations(
+        session, [row.id for row in conversations]
     )
+    items = []
+    for row in conversations:
+        summary = summaries.get(row.id, {})
+        opted_out = bool(summary.pop("opted_out", False))
+        items.append(
+            ConversationListItem.model_validate(row).model_copy(
+                update={
+                    **summary,
+                    # An opted-out customer is never someone to answer.
+                    "awaiting_reply": not opted_out
+                    and summary.get("last_message_direction") == MessageDirection.INBOUND,
+                }
+            )
+        )
+    return ConversationPage(total=total, limit=limit, offset=offset, items=items)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)

@@ -18,8 +18,8 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'WhatsApp AI Marketing Platform',
-  description: 'Internal marketing platform',
+  title: 'GlobalPact Holdings · WhatsApp API Marketing',
+  description: 'WhatsApp API marketing for GlobalPact Holdings products',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

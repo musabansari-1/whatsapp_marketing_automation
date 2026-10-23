@@ -99,7 +99,9 @@
   .ui-table-wrap {
     @apply overflow-x-auto rounded-2xl border bg-white;
     border-color: rgb(var(--color-line));
-    box-shadow: 0 1px 2px rgb(23 25 24 / 0.03), 0 12px 32px -12px rgb(23 25 24 / 0.07);
+    box-shadow:
+      0 1px 2px rgb(23 25 24 / 0.03),
+      0 12px 32px -12px rgb(23 25 24 / 0.07);
   }
 
   .ui-table {
@@ -145,14 +147,30 @@
     animation: shimmer 1.8s linear infinite;
   }
 
-  .stagger > *:nth-child(1) { animation-delay: 0ms; }
-  .stagger > *:nth-child(2) { animation-delay: 60ms; }
-  .stagger > *:nth-child(3) { animation-delay: 120ms; }
-  .stagger > *:nth-child(4) { animation-delay: 180ms; }
-  .stagger > *:nth-child(5) { animation-delay: 240ms; }
-  .stagger > *:nth-child(6) { animation-delay: 300ms; }
-  .stagger > *:nth-child(7) { animation-delay: 360ms; }
-  .stagger > *:nth-child(8) { animation-delay: 420ms; }
+  .stagger > *:nth-child(1) {
+    animation-delay: 0ms;
+  }
+  .stagger > *:nth-child(2) {
+    animation-delay: 60ms;
+  }
+  .stagger > *:nth-child(3) {
+    animation-delay: 120ms;
+  }
+  .stagger > *:nth-child(4) {
+    animation-delay: 180ms;
+  }
+  .stagger > *:nth-child(5) {
+    animation-delay: 240ms;
+  }
+  .stagger > *:nth-child(6) {
+    animation-delay: 300ms;
+  }
+  .stagger > *:nth-child(7) {
+    animation-delay: 360ms;
+  }
+  .stagger > *:nth-child(8) {
+    animation-delay: 420ms;
+  }
 }
 
 @keyframes fade-up {

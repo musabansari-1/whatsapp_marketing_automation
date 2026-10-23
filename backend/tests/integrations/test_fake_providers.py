@@ -216,9 +216,7 @@ class TestFakeCalendar:
         assert event.meeting_link == "https://meet.google.com/fake-evt-1"
         assert fake_calendar.event_count == 1
 
-    async def test_meet_link_is_stable_on_replay(
-        self, fake_calendar: FakeCalendarProvider
-    ) -> None:
+    async def test_meet_link_is_stable_on_replay(self, fake_calendar: FakeCalendarProvider) -> None:
         request = EventRequest(
             event_id="evt-1", interval=_interval(10), timezone="Asia/Kolkata", summary="Demo"
         )

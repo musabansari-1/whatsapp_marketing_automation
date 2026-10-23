@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.configuration.catalog import load_catalog
+from app.configuration.catalog import ProductEntry, load_catalog
 from app.domain.conversion import with_conversion_guidance
 
 SHIPPED = Path(__file__).resolve().parents[1] / "config" / "products.json"
@@ -34,14 +34,14 @@ SAFETY_PHRASES = (
 )
 
 SEGMENT_CTAS = {
-    "healthcare-practitioners": "Join as Doctor / Practitioner",
-    "wellness-centres": "Join as Wellness Centre",
-    "pharmacies": "Join as Pharmacy",
+    "healthcare-practitioners": "Doctor / Practitioner signup",
+    "wellness-centres": "Wellness Centre signup",
+    "pharmacies": "Pharmacy signup",
     "consumers": "Register on LifeHerba",
 }
 
 
-def _life_herba():
+def _life_herba() -> ProductEntry:
     return {p.slug: p for p in load_catalog(SHIPPED).products}["life-herba"]
 
 
@@ -75,23 +75,54 @@ class TestLifeHerbaPromptSafety:
             resolved = with_conversion_guidance(
                 override.system_prompt,
                 mode=product.conversion_mode,
-                registration_url=product.registration_url,
+                registration_url=segment.registration_url or product.registration_url,
                 cta_label=segment.cta_label,
                 cta_instruction=segment.cta_instruction,
             )
-            assert "https://lifeherbagroup.com/" in resolved
-            assert segment.cta_label in resolved
-            assert segment.cta_instruction in resolved
+            assert segment.registration_url is not None
+            assert segment.registration_url in resolved
+            assert segment.cta_label is not None and segment.cta_label in resolved
+            assert segment.cta_instruction is not None and segment.cta_instruction in resolved
 
 
 class TestLifeHerbaExternalRegistration:
     def test_catalog_declares_external_registration(self) -> None:
         product = _life_herba()
         assert product.conversion_mode == "external_registration"
-        assert product.registration_url == "https://lifeherbagroup.com/"
+        assert product.registration_url is not None
+        assert product.registration_url.startswith("https://lifeherbagroup.com/download?")
         assert product.google_calendar_id is None
 
     def test_academicae_remains_calendar_booking_by_omission(self) -> None:
         academicae = {p.slug: p for p in load_catalog(SHIPPED).products}["academicae"]
         assert "conversion_mode" not in academicae.model_fields_set
         assert academicae.google_calendar_id
+
+
+class TestLifeHerbaSegmentLinks:
+    """Each audience goes to its own signup link, built in the LifeHerba app and website
+    (`/join/doctor`, `/join/pharmacy`, `/join/wellness-center`, `/download`), tagged so
+    LifeHerba can attribute installs and signups to WhatsApp."""
+
+    EXPECTED_PATHS = {
+        "healthcare-practitioners": "/join/doctor?",
+        "wellness-centres": "/join/wellness-center?",
+        "pharmacies": "/join/pharmacy?",
+        "consumers": "/download?",
+    }
+
+    def test_every_segment_has_its_own_tagged_link(self) -> None:
+        segments = {segment.slug: segment for segment in _life_herba().segments}
+        for slug, path in self.EXPECTED_PATHS.items():
+            url = segments[slug].registration_url
+            assert url is not None
+            assert url.startswith(f"https://lifeherbagroup.com{path}"), slug
+            assert "utm_source=whatsapp" in url
+
+    def test_prompts_no_longer_name_in_app_options(self) -> None:
+        product = _life_herba()
+        prompts = [product.ai_configuration.system_prompt or ""] if product.ai_configuration else []
+        prompts += [o.system_prompt or "" for o in product.segment_ai_overrides.values() if o]
+        for prompt in prompts:
+            assert "Join as" not in prompt
+            assert "Never start a reply with" in prompt

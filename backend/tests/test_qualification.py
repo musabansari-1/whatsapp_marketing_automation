@@ -15,6 +15,7 @@ from app.domain.qualification import (
     FIELD_INTERESTED,
     FIELD_JUDGEMENT,
     FIELD_NOT_INTERESTED,
+    FIELD_REGISTRATION_INTENT,
     JUDGEMENT_NEEDS_MORE_CONTEXT,
     JUDGEMENT_NOT_QUALIFIED,
     JUDGEMENT_QUALIFIED,
@@ -218,7 +219,33 @@ class TestAIJudgementMode:
         assert from_responded.status is LeadStatus.QUALIFYING
 
         from_qualifying = evaluate(current=LeadStatus.QUALIFYING, data=data, rules=self.AI)
-        assert from_qualifying.status is LeadStatus.INTERESTED
+        assert from_qualifying.status is None
+
+    def test_registration_intent_qualifies(self) -> None:
+        data = {FIELD_REGISTRATION_INTENT: True}
+        result = evaluate(current=LeadStatus.QUALIFYING, data=data, rules=self.AI)
+        assert result.status is LeadStatus.QUALIFIED
+
+    def test_registration_intent_reaches_qualified_over_turns(self) -> None:
+        # The same facts are re-evaluated every turn; they must converge, not oscillate.
+        data = {FIELD_INTERESTED: True, FIELD_REGISTRATION_INTENT: True}
+        status = LeadStatus.RESPONDED
+        for _ in range(3):
+            result = evaluate(current=status, data=data, rules=self.AI)
+            if result.status is not None:
+                status = result.status
+        assert status is LeadStatus.QUALIFIED
+
+    def test_interest_alone_does_not_flip_out_of_qualifying(self) -> None:
+        data = {FIELD_INTERESTED: True}
+        seen = []
+        status = LeadStatus.RESPONDED
+        for _ in range(4):
+            result = evaluate(current=status, data=data, rules=self.AI)
+            if result.status is not None:
+                status = result.status
+            seen.append(status)
+        assert seen[-2:] == [LeadStatus.QUALIFYING, LeadStatus.QUALIFYING]
 
     def test_not_qualified_maps_to_not_interested(self) -> None:
         data = {FIELD_JUDGEMENT: JUDGEMENT_NOT_QUALIFIED}

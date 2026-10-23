@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -764,7 +764,7 @@ class TestAgentGrounding:
         never the model's internal monologue."""
         llm = FakeLLMProvider(
             default_text=(
-                'The user is asking about therapy details. Looking at my instructions, '
+                "The user is asking about therapy details. Looking at my instructions, "
                 "I need to answer first and be careful with the tool call format. "
                 "Let me make the function call properly."
             )

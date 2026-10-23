@@ -123,6 +123,8 @@ def ready_entry(slug: str = "cfg-ready", **overrides: Any) -> dict[str, Any]:
         "whatsapp_phone_number_id": f"{slug}-number",
         "whatsapp_business_account_id": "cfg-shared-account",
         "google_calendar_id": f"{slug}@calendar.example",
+        # Without one, a calendar product is READY WITH GAPS ([D65]).
+        "meeting_url": f"https://meet.example/{slug}",
         "ai_configuration": {
             "system_prompt": f"The {slug} prompt.",
             "qualification_required_fields": ["interested"],
@@ -269,7 +271,10 @@ class TestTheShippedCatalog:
             {"source": "City", "field": "city", "required": False},
         ]
         assert life_herba.conversion_mode == "external_registration"
-        assert life_herba.registration_url == "https://lifeherbagroup.com/"
+        assert life_herba.registration_url == (
+            "https://lifeherbagroup.com/download"
+            "?utm_source=whatsapp&utm_medium=chat&utm_campaign=lifeherba_inbound"
+        )
 
     async def test_keeps_the_existing_academicae_row_its_id_and_does_not_flip_activation(
         self, cli_env: None, db: async_sessionmaker[AsyncSession]

@@ -21,6 +21,7 @@ from app.domain.enums import (
     ConversationStatus,
     DocumentStatus,
     LeadStatus,
+    MessageDirection,
     NotificationType,
     RecipientStatus,
     TemplateCategory,
@@ -482,7 +483,22 @@ class ConversationResponse(BaseModel):
     last_inbound_at: datetime | None
     last_outbound_at: datetime | None
     closed_at: datetime | None
+    ai_paused_until: datetime | None = None
     created_at: datetime
+
+
+class TeamReplyRequest(BaseModel):
+    """A reply typed by a team member in the dashboard."""
+
+    body: str = Field(min_length=1, max_length=4096)
+    # Hours the assistant stays quiet after this reply, so it does not answer over
+    # the person. 0 sends the reply and leaves the assistant running.
+    pause_assistant_hours: int = Field(default=12, ge=0, le=72)
+
+
+class TeamReplyAccepted(BaseModel):
+    queued: bool
+    ai_paused_until: datetime | None
 
 
 class ConversationDetailResponse(BaseModel):
@@ -500,11 +516,23 @@ class ConversationDetailResponse(BaseModel):
     turns: list[ConversationTurnResponse]
 
 
+class ConversationListItem(ConversationResponse):
+    """A conversation as the inbox lists it: who it is with and the latest message."""
+
+    lead_name: str | None = None
+    lead_phone: str | None = None
+    last_message: str | None = None
+    last_message_direction: MessageDirection | None = None
+    last_message_at: datetime | None = None
+    # The customer wrote last and nobody has answered yet.
+    awaiting_reply: bool = False
+
+
 class ConversationPage(BaseModel):
     total: int
     limit: int
     offset: int
-    items: list[ConversationResponse]
+    items: list[ConversationListItem]
 
 
 # ---------------------------------------------------------------- bookings (§12, §16)

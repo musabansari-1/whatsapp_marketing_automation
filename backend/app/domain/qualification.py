@@ -37,7 +37,13 @@ from app.domain.enums import LeadStatus
 # the model is asked for and the schema the rules read cannot drift apart.
 FIELD_INTERESTED = "interested"
 FIELD_DEMO_INTENT = "demo_intent"
+# The external-registration counterpart of demo intent: the customer wants to join or
+# sign up. Life Herba's prompt records it as its strongest signal.
+FIELD_REGISTRATION_INTENT = "registration_intent"
 FIELD_NOT_INTERESTED = "not_interested"
+# The customer asked to speak to or hear from a person. Not a qualification signal:
+# it rings the team bell, because the assistant promises them a reply in the chat.
+FIELD_HUMAN_REQUESTED = "human_requested"
 FIELD_JUDGEMENT = "qualification_judgement"
 
 JUDGEMENT_QUALIFIED = "QUALIFIED"
@@ -200,7 +206,11 @@ def evaluate(
                 missing_fields=missing,
                 reasons=(*reasons, "collecting the remaining information"),
             )
-        if can_transition_lead(current, LeadStatus.INTERESTED):
+        # Never back out of QUALIFYING: the same facts would move it forward again on
+        # the next turn, flipping the lead between the two states.
+        if current is not LeadStatus.QUALIFYING and can_transition_lead(
+            current, LeadStatus.INTERESTED
+        ):
             return QualificationResult(
                 status=LeadStatus.INTERESTED,
                 missing_fields=missing,
@@ -215,11 +225,19 @@ def _evaluate_ai_judgement(*, current: LeadStatus, data: dict[str, Any]) -> Qual
 
     A direct demo request (`demo_intent`) with interest is enough to qualify — booking
     must not wait on a rigid field checklist. An explicit QUALIFIED judgement does the
-    same. Unclear intent stays in QUALIFYING / INTERESTED rather than being forced out.
+    same, and so does `registration_intent`: for an external-registration product,
+    asking how to join is the conversion intent itself. Unclear intent stays in
+    QUALIFYING / INTERESTED rather than being forced out.
+
+    A lead already in QUALIFYING is never walked back to INTERESTED. The facts persist
+    across turns, so stepping back made the next turn step forward again and the lead
+    flipped between the two on every message.
     """
     judgement = _judgement(data)
-    qualifies = judgement == JUDGEMENT_QUALIFIED or (
-        _is_true(data.get(FIELD_INTERESTED)) and _is_true(data.get(FIELD_DEMO_INTENT))
+    qualifies = (
+        judgement == JUDGEMENT_QUALIFIED
+        or _is_true(data.get(FIELD_REGISTRATION_INTENT))
+        or (_is_true(data.get(FIELD_INTERESTED)) and _is_true(data.get(FIELD_DEMO_INTENT)))
     )
 
     if qualifies and can_transition_lead(current, LeadStatus.QUALIFIED):
@@ -239,11 +257,13 @@ def _evaluate_ai_judgement(*, current: LeadStatus, data: dict[str, Any]) -> Qual
     if needs_context and can_transition_lead(current, LeadStatus.QUALIFYING):
         return QualificationResult(
             status=LeadStatus.QUALIFYING,
-            reasons=(
-                "AI judgement mode: more context needed, or interest without demo intent",
-            ),
+            reasons=("AI judgement mode: more context needed, or interest without demo intent",),
         )
-    if needs_context and can_transition_lead(current, LeadStatus.INTERESTED):
+    if (
+        needs_context
+        and current is not LeadStatus.QUALIFYING
+        and can_transition_lead(current, LeadStatus.INTERESTED)
+    ):
         return QualificationResult(
             status=LeadStatus.INTERESTED,
             reasons=("AI judgement mode: the customer expressed interest",),
@@ -273,6 +293,11 @@ def _has_value(value: Any) -> bool:
     if isinstance(value, list | dict | tuple | set):
         return bool(value)
     return True
+
+
+def is_affirmative(value: Any) -> bool:
+    """The loose boolean reading the rules use, for callers outside this module."""
+    return _is_true(value)
 
 
 def _is_true(value: Any) -> bool:

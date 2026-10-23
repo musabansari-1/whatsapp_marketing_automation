@@ -22,15 +22,15 @@ export function PageHeader({
             href={back.href}
             className="group mb-2 inline-flex items-center gap-1.5 text-xs font-semibold text-ink-muted transition hover:text-forest"
           >
-            <span aria-hidden className="transition-transform group-hover:-translate-x-0.5">←</span>
+            <span aria-hidden className="transition-transform group-hover:-translate-x-0.5">
+              ←
+            </span>
             {back.label}
           </Link>
         ) : null}
         <h1 className="text-[1.75rem] font-extrabold tracking-tight text-ink">{title}</h1>
         {description ? (
-          <div className="mt-2 max-w-2xl text-sm leading-relaxed text-ink-muted">
-            {description}
-          </div>
+          <div className="mt-2 max-w-2xl text-sm leading-relaxed text-ink-muted">{description}</div>
         ) : null}
       </div>
       {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
@@ -82,10 +82,7 @@ export function ButtonLink({
   children: ReactNode;
 }) {
   return (
-    <Link
-      href={href}
-      className={cx(buttonBase(), BUTTON_VARIANTS[variant], className)}
-    >
+    <Link href={href} className={cx(buttonBase(), BUTTON_VARIANTS[variant], className)}>
       {children}
     </Link>
   );
@@ -101,13 +98,7 @@ export function Card({
   padding?: string;
 }) {
   return (
-    <div
-      className={cx(
-        'rounded-2xl border border-line bg-white shadow-card',
-        padding,
-        className,
-      )}
-    >
+    <div className={cx('rounded-2xl border border-line bg-white shadow-card', padding, className)}>
       {children}
     </div>
   );
@@ -192,9 +183,7 @@ export function StatCard({
     <Card className="group relative h-full overflow-hidden p-5 transition-all duration-200 ease-out-expo hover:-translate-y-0.5 hover:border-ink/15 hover:shadow-lift">
       <div className="pointer-events-none absolute -right-8 -top-8 size-24 rounded-full bg-forest-bright/10 opacity-0 blur-2xl transition-opacity duration-300 group-hover:opacity-100" />
       <div className="relative">
-        <p className="text-[11px] font-bold uppercase tracking-section text-ink-muted">
-          {label}
-        </p>
+        <p className="text-[11px] font-bold uppercase tracking-section text-ink-muted">{label}</p>
         <p
           className={cx(
             'mt-2 text-[1.9rem] font-extrabold leading-none tabular-nums tracking-tight',
@@ -244,8 +233,6 @@ export function FilterChip({
 
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <h2 className="text-[11px] font-bold uppercase tracking-section text-ink-muted">
-      {children}
-    </h2>
+    <h2 className="text-[11px] font-bold uppercase tracking-section text-ink-muted">{children}</h2>
   );
 }

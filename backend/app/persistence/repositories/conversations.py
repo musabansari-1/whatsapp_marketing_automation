@@ -115,6 +115,44 @@ async def list_conversations(
     return int(total or 0), result.scalars().all()
 
 
+async def summarize_conversations(
+    session: AsyncSession, conversation_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """Who each conversation is with and its latest message, for the inbox list.
+
+    Two queries for the whole page, not one per row: the leads, and the newest message
+    of each conversation (`DISTINCT ON`, so each conversation's row is its latest).
+    """
+    if not conversation_ids:
+        return {}
+
+    leads = await session.execute(
+        select(Conversation.id, Lead.full_name, Lead.phone_e164, Lead.opted_out)
+        .join(Lead, Lead.id == Conversation.lead_id)
+        .where(Conversation.id.in_(conversation_ids))
+    )
+    summaries: dict[uuid.UUID, dict[str, Any]] = {
+        conversation_id: {"lead_name": name, "lead_phone": phone, "opted_out": opted_out}
+        for conversation_id, name, phone, opted_out in leads.all()
+    }
+
+    latest = await session.execute(
+        select(Message.conversation_id, Message.body, Message.direction, Message.created_at)
+        .where(Message.conversation_id.in_(conversation_ids))
+        .distinct(Message.conversation_id)
+        .order_by(Message.conversation_id, Message.created_at.desc())
+    )
+    for conversation_id, body, direction, created_at in latest.all():
+        if conversation_id is None or conversation_id not in summaries:
+            continue
+        summaries[conversation_id].update(
+            last_message=body,
+            last_message_direction=direction,
+            last_message_at=created_at,
+        )
+    return summaries
+
+
 async def transition_conversation(
     session: AsyncSession, conversation: Conversation, target: ConversationStatus
 ) -> None:

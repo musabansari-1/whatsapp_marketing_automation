@@ -71,6 +71,8 @@ class OpenRouterLLMProvider(LLMProvider):
         timeout_seconds: float = 60.0,
         app_url: str | None = None,
         app_title: str | None = None,
+        provider_sort: str | None = None,
+        reasoning_effort: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not model:
@@ -87,6 +89,10 @@ class OpenRouterLLMProvider(LLMProvider):
         self._timeout = timeout_seconds
         self._app_url = app_url
         self._app_title = app_title
+        # Reply-speed routing: see `Settings.openrouter_provider_sort` and
+        # `openrouter_reasoning_effort`. None sends nothing and keeps the defaults.
+        self._provider_sort = provider_sort or None
+        self._reasoning_effort = reasoning_effort or None
         # Injectable so tests supply a mock transport and never touch the network.
         self._client = client
 
@@ -108,6 +114,10 @@ class OpenRouterLLMProvider(LLMProvider):
             payload["temperature"] = request.temperature
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
+        if self._provider_sort:
+            payload["provider"] = {"sort": self._provider_sort}
+        if self._reasoning_effort:
+            payload["reasoning"] = {"effort": self._reasoning_effort}
 
         body = await self._request("POST", f"{self._base_url}/chat/completions", json=payload)
         return self._parse_completion(body)

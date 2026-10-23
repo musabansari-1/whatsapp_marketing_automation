@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import ConversationStatus, LeadStatus
+from app.domain.enums import ConversationStatus, LeadStatus, MessageDirection, MessageStatus
 from app.persistence.models import (
     AIRun,
     Conversation,
@@ -495,3 +495,186 @@ class TestTranscriptOrdering:
         assert [turn["content"] for turn in body["turns"]] == ["turn 7", "turn 8", "turn 9"]
         # The count reports the whole transcript, not the page.
         assert body["total_turns"] == 10
+
+
+class TestTeamReply:
+    """A team member replies from the dashboard: validated here, sent by the worker."""
+
+    def _queued(self) -> list[Any]:
+        from app.api.deps import get_queue_provider
+        from app.core.config import Settings
+
+        return list(get_queue_provider(Settings()).enqueued)  # type: ignore[attr-defined]
+
+    def test_a_reply_is_queued_and_pauses_the_assistant(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        lead_id = seed_lead()
+        conversation_id = seed_conversation(lead_id)
+
+        response = client.post(
+            f"{scoped_prefix()}/leads/{lead_id}/conversation/reply",
+            json={"body": "Hi, Riya from the team here."},
+        )
+
+        assert response.status_code == 202
+        assert response.json()["ai_paused_until"] is not None
+        replies = [t for t in self._queued() if t.task_type.value == "send_team_reply"]
+        assert len(replies) == 1
+        assert replies[0].payload["conversation_id"] == conversation_id
+        assert replies[0].payload["body"] == "Hi, Riya from the team here."
+
+    def test_no_pause_when_asked_not_to(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        lead_id = seed_lead()
+        seed_conversation(lead_id)
+
+        response = client.post(
+            f"{scoped_prefix()}/leads/{lead_id}/conversation/reply",
+            json={"body": "Quick note", "pause_assistant_hours": 0},
+        )
+
+        assert response.status_code == 202
+        assert response.json()["ai_paused_until"] is None
+
+    def test_outside_the_window_is_refused_with_the_reason(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        lead_id = seed_lead()
+        seed_conversation(lead_id, last_inbound_age=timedelta(hours=30))
+        before = len(self._queued())
+
+        response = client.post(
+            f"{scoped_prefix()}/leads/{lead_id}/conversation/reply", json={"body": "Hello"}
+        )
+
+        assert response.status_code == 409
+        assert "template" in response.json()["detail"]
+        assert len(self._queued()) == before
+
+    def test_an_opted_out_customer_is_refused(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        lead_id = seed_lead(phone="+919876500099")
+        seed_conversation(lead_id)
+
+        async def suppress(session: AsyncSession) -> None:
+            session.add(WhatsAppSuppression(phone_e164="+919876500099", lead_id=uuid.UUID(lead_id)))
+
+        run_db(suppress)
+
+        response = client.post(
+            f"{scoped_prefix()}/leads/{lead_id}/conversation/reply", json={"body": "Hello"}
+        )
+        assert response.status_code == 409
+
+    def test_resume_hands_the_chat_back(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        lead_id = seed_lead()
+        seed_conversation(lead_id)
+        client.post(f"{scoped_prefix()}/leads/{lead_id}/conversation/reply", json={"body": "Hi"})
+
+        response = client.post(f"{scoped_prefix()}/leads/{lead_id}/conversation/resume-assistant")
+
+        assert response.status_code == 200
+        resumed = datetime.fromisoformat(response.json()["ai_paused_until"])
+        assert resumed <= datetime.now(UTC)
+
+
+def seed_messages(lead_id: str, conversation_id: str, *bodies: tuple[str, str]) -> None:
+    """WhatsApp messages in order, oldest first: ("in" | "out", body)."""
+
+    async def seed(session: AsyncSession) -> None:
+        start = datetime.now(UTC) - timedelta(minutes=30)
+        for offset, (way, body) in enumerate(bodies):
+            session.add(
+                Message(
+                    product_id=await ensure_product_id(session),
+                    lead_id=uuid.UUID(lead_id),
+                    conversation_id=uuid.UUID(conversation_id),
+                    direction=(
+                        MessageDirection.INBOUND if way == "in" else MessageDirection.OUTBOUND
+                    ),
+                    status=MessageStatus.DELIVERED,
+                    phone_e164="+919876500010",
+                    body=body,
+                    created_at=start + timedelta(minutes=offset),
+                )
+            )
+        await session.flush()
+
+    run_db(seed)
+
+
+class TestInboxSummary:
+    """The conversation list names the person and shows the latest message."""
+
+    def test_each_row_carries_the_lead_and_the_latest_message(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        lead_id = seed_lead(name="Dr. Meera Iyer")
+        conversation_id = seed_conversation(lead_id)
+        seed_messages(
+            lead_id, conversation_id, ("in", "How do I join?"), ("out", "Here is the link")
+        )
+
+        [row] = client.get(f"{scoped_prefix()}/conversations").json()["items"]
+
+        assert row["lead_name"] == "Dr. Meera Iyer"
+        assert row["lead_phone"] == "+919876500010"
+        assert row["last_message"] == "Here is the link"
+        assert row["last_message_direction"] == "OUTBOUND"
+        assert row["awaiting_reply"] is False
+
+    def test_a_customer_message_last_is_awaiting_a_reply(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        lead_id = seed_lead()
+        conversation_id = seed_conversation(lead_id)
+        seed_messages(lead_id, conversation_id, ("out", "Hello"), ("in", "Can someone call me?"))
+
+        [row] = client.get(f"{scoped_prefix()}/conversations").json()["items"]
+
+        assert row["last_message"] == "Can someone call me?"
+        assert row["awaiting_reply"] is True
+
+    def test_a_conversation_without_messages_still_lists(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        seed_conversation(seed_lead(name="Asha Rao"))
+
+        [row] = client.get(f"{scoped_prefix()}/conversations").json()["items"]
+
+        assert row["lead_name"] == "Asha Rao"
+        assert row["last_message"] is None
+        assert row["awaiting_reply"] is False
+
+    def test_an_opted_out_customer_is_not_awaiting_a_reply(
+        self, client: TestClient, seeded_users: dict[str, str]
+    ) -> None:
+        login(client, email=SALES_EMAIL)
+        lead_id = seed_lead(status=LeadStatus.OPTED_OUT)
+        conversation_id = seed_conversation(lead_id)
+
+        async def opt_out(session: AsyncSession) -> None:
+            lead = await session.get(Lead, uuid.UUID(lead_id))
+            assert lead is not None
+            lead.opted_out = True
+
+        run_db(opt_out)
+        seed_messages(lead_id, conversation_id, ("in", "STOP"))
+
+        [row] = client.get(f"{scoped_prefix()}/conversations").json()["items"]
+
+        assert row["last_message"] == "STOP"
+        assert row["awaiting_reply"] is False

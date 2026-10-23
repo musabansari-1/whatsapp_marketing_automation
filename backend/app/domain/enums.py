@@ -219,6 +219,11 @@ class NotificationType(StrEnum):
     #: on 2026-10-01). A taken slot is not this: the model offers another time,
     #: so no bell for that.
     BOOKING_FAILED = "BOOKING_FAILED"
+    #: A lead asked to register or to speak to a person. External-registration
+    #: products (Life Herba) never book a demo, so without this the team never
+    #: hears about its hottest leads; and a lead asking for a human is promised
+    #: a reply in the chat, which only the bell makes real.
+    LEAD_NEEDS_ATTENTION = "LEAD_NEEDS_ATTENTION"
 
 
 class SuppressionReason(StrEnum):

@@ -33,6 +33,7 @@ from app.domain.qualification import QualificationRules
 from app.domain.slots import SlotPolicy, policy_from_settings
 from app.integrations.calendar import FakeCalendarProvider, TimeInterval
 from app.integrations.calendar.google import GoogleCalendarProvider
+from app.integrations.calendar.google_auth import OAuthRefreshTokenAuthenticator
 from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import CalendarNotConfiguredError, build_calendar_provider
 from app.integrations.whatsapp import FakeWhatsAppProvider
@@ -72,9 +73,6 @@ def calendar_env(engine: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeW
     database._session_factory = None  # noqa: SLF001
 
     whatsapp = FakeWhatsAppProvider()
-    monkeypatch.setattr(
-        "app.worker.handlers.booking.build_whatsapp_provider", lambda _settings, **_: whatsapp
-    )
 
     async def clear(session: AsyncSession) -> None:
         await session.execute(delete(Notification))
@@ -413,6 +411,8 @@ class TestProviderSelection:
             )
         )
 
+        assert isinstance(shared._auth, OAuthRefreshTokenAuthenticator)  # noqa: SLF001
+        assert isinstance(separate._auth, OAuthRefreshTokenAuthenticator)  # noqa: SLF001
         assert shared._auth._client_id == separate._auth._client_id  # noqa: SLF001
         assert shared._auth._client_id == "shared-client"  # noqa: SLF001
         assert shared._auth._refresh_token_secret_name == "shared-refresh-token"  # noqa: SLF001

@@ -35,7 +35,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -259,6 +259,23 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             logger.info("conversation_turn_skipped", reason="suppressed")
             return TurnOutcome("suppressed", str(conversation.id)).as_dict()
 
+        # A team member replied from the dashboard and asked the assistant to stay
+        # quiet. The customer's turn is still recorded, so the transcript and the
+        # model's next turn have it; nothing is sent over the person.
+        if is_ai_paused(conversation):
+            _turn, created = await conversation_repo.record_turn_once(
+                session,
+                conversation=conversation,
+                role=conversation_repo.ROLE_USER,
+                content=message.body or MEDIA_TURN_PLACEHOLDER,
+                message_id=message.id,
+            )
+            if created:
+                await _advance_to_responded(session, lead)
+            await session.commit()
+            logger.info("conversation_turn_skipped", reason="ai_paused")
+            return TurnOutcome("ai_paused", str(conversation.id)).as_dict()
+
         # First-reply welcome: a phone number messaging this product for the first
         # time gets the product's selected template instead of the AI text reply.
         # An unset selection (the placeholder state) skips this entirely, and a
@@ -295,6 +312,19 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             await session.commit()
             logger.warning("conversation_reply_blocked", reason="outside_service_window")
             return TurnOutcome("outside_service_window", str(conversation.id)).as_dict()
+
+        # A voice note, photo or file with no caption. The model cannot read it, and
+        # leaving the customer on read loses them, so they get one fixed reply asking
+        # them to type — no model call, so it is instant and free.
+        if not (message.body or "").strip():
+            return await _reply_to_media(
+                session,
+                settings=settings,
+                conversation=conversation,
+                lead=lead,
+                message=message,
+                idempotency_key=idempotency_key,
+            )
 
         _turn, created = await conversation_repo.record_turn_once(
             session,
@@ -350,14 +380,20 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
 
     # Past every exit that answers nothing, so a reply is now genuinely imminent.
     # The customer sees blue ticks + "typing…" while the model works.
-    await _show_typing_indicator(settings, product_id, trigger_wamid)
-
+    #
     # Retrieval happens before the model runs and outside the tool loop: §11 makes it
     # the evidence the reply is grounded in, not something the model chooses to
     # consult. A failure here is not fatal — the agent is told there is no evidence and
     # uses the approved fallback rather than losing the turn.
-    retrieval = await _retrieve(
-        settings, question, product_id=product_id, segment_id=segment_id, config=ai_config
+    #
+    # The two run together: the indicator is a round trip to Meta and retrieval an
+    # embedding plus a vector query, and neither needs the other, so waiting for one
+    # before starting the other only delayed the reply.
+    _shown, retrieval = await asyncio.gather(
+        _show_typing_indicator(settings, product_id, trigger_wamid),
+        _retrieve(
+            settings, question, product_id=product_id, segment_id=segment_id, config=ai_config
+        ),
     )
 
     try:
@@ -383,7 +419,7 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             system_prompt = with_conversion_guidance(
                 ai_config.system_prompt,
                 mode=None if product is None else product.conversion_mode,
-                registration_url=None if product is None else product.registration_url,
+                registration_url=_registration_url(product, segment),
                 cta_label=None if segment is None else segment.cta_label,
                 cta_instruction=None if segment is None else segment.cta_instruction,
             )
@@ -438,6 +474,7 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
                     fallback_message=ai_config.fallback_message,
                     max_rounds=ai_config.max_tool_rounds,
                     include_booking_tools=include_booking_tools,
+                    accept_reply_with_facts=settings.ai_accept_reply_with_facts,
                 )
             # Tools write through this session, so their effects are committed with
             # the turn rather than left dangling if the send fails.
@@ -580,6 +617,12 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             settings, conversation_id, lead_id, tool_context.notify_booking_failed
         )
 
+    # A lead that newly wants to register or asked for a person. Without this an
+    # external-registration product's hottest leads reach nobody, and "the team will
+    # reply here" would be a promise nobody keeps.
+    if tool_context.notify_attention is not None:
+        await _queue_lead_attention_notification(settings, lead_id, tool_context.notify_attention)
+
     # The lead has engaged, and the turn may have recorded facts or moved its status.
     # Best-effort by design: §14 forbids a CRM problem breaking the conversation, and
     # `queue_crm_sync` swallows its own failures.
@@ -663,7 +706,137 @@ async def _queue_booking_failed_notification(
         )
 
 
+async def _queue_lead_attention_notification(
+    settings: Settings, lead_id: uuid.UUID, reason: str
+) -> None:
+    """Hand a hot lead to the notification task. Same best-effort contract as above."""
+    try:
+        await build_queue_provider(settings).enqueue(
+            TaskRequest(
+                task_type=TaskType.NOTIFY_LEAD_ATTENTION,
+                # Deterministic per lead and reason, so a redelivered turn collapses.
+                task_id=f"notify-lead-attention-{lead_id}-{reason.split()[0]}",
+                payload={"lead_id": str(lead_id), "reason": reason},
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - a bell is not worth losing a turn over
+        logger.warning(
+            "lead_attention_notification_enqueue_failed", lead_id=str(lead_id), error=str(exc)
+        )
+
+
+# ---------------------------------------------------------------- media and pause
+
+# What the transcript records for a message the model cannot read, so its next turn
+# knows something was sent rather than seeing an empty line.
+MEDIA_TURN_PLACEHOLDER = "(sent a voice note, photo or file)"
+
+# One media reply per burst: someone sending five photos gets one answer, not five.
+MEDIA_REPLY_COOLDOWN_SECONDS = 600
+
+
+def is_ai_paused(conversation: Conversation, *, now: datetime | None = None) -> bool:
+    """Whether a team member has asked the assistant to stay quiet in this chat."""
+    paused_until = conversation.ai_paused_until
+    return paused_until is not None and paused_until > (now or datetime.now(UTC))
+
+
+async def _reply_to_media(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+    conversation: Conversation,
+    lead: Lead,
+    message: Message,
+    idempotency_key: str,
+) -> dict[str, str | bool]:
+    """Answer a message with no text with the fixed "please type" reply.
+
+    Sent under the turn's own reply key, so the redelivery check and the stranded
+    sweep both see the message as answered.
+    """
+    _turn, created = await conversation_repo.record_turn_once(
+        session,
+        conversation=conversation,
+        role=conversation_repo.ROLE_USER,
+        content=MEDIA_TURN_PLACEHOLDER,
+        message_id=message.id,
+    )
+    if created:
+        await _advance_to_responded(session, lead)
+
+    body = settings.media_reply_message
+    if await _media_reply_sent_recently(session, conversation.id, body):
+        await session.commit()
+        logger.info("conversation_media_reply_skipped", reason="cooldown")
+        return TurnOutcome("media_reply_cooldown", str(conversation.id)).as_dict()
+
+    product = await session.get(Product, conversation.product_id)
+    try:
+        if product is None:  # pragma: no cover - conversations.product_id is a NOT NULL FK
+            raise WhatsAppNotConfiguredError(f"Product {conversation.product_id} no longer exists")
+        whatsapp = build_whatsapp_provider(settings, product=product)
+        result = await whatsapp.send_text_message(
+            OutboundTextMessage(to_e164=lead.phone_e164, body=body, idempotency_key=idempotency_key)
+        )
+    except WhatsAppNotConfiguredError as exc:
+        await session.commit()
+        logger.warning("conversation_media_reply_not_sent", error=str(exc))
+        return TurnOutcome("whatsapp_not_configured", str(conversation.id)).as_dict()
+    except ProviderError as exc:
+        await session.commit()
+        _raise_if_retryable(settings, exc)
+        logger.warning("conversation_media_reply_send_failed", error=str(exc))
+        return TurnOutcome("send_failed", str(conversation.id)).as_dict()
+
+    sent = await conversation_repo.record_outbound_reply(
+        session,
+        lead=lead,
+        conversation=conversation,
+        body=body,
+        idempotency_key=idempotency_key,
+        provider_message_id=result.provider_message_id,
+        status=MessageStatus.SENT,
+        sent_at=datetime.now(UTC),
+    )
+    await conversation_repo.record_turn(
+        session,
+        conversation=conversation,
+        role=conversation_repo.ROLE_ASSISTANT,
+        content=body,
+        message_id=sent.id,
+    )
+    await conversation_repo.touch_outbound(session, conversation)
+    await session.commit()
+    logger.info("conversation_media_reply_sent")
+    return TurnOutcome("media_reply", str(conversation.id), replied=True).as_dict()
+
+
+async def _media_reply_sent_recently(
+    session: AsyncSession, conversation_id: uuid.UUID, body: str
+) -> bool:
+    cutoff = datetime.now(UTC) - timedelta(seconds=MEDIA_REPLY_COOLDOWN_SECONDS)
+    result = await session.execute(
+        select(Message.id)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == MessageDirection.OUTBOUND,
+            Message.created_at >= cutoff,
+        )
+        .where(Message.body == body)
+        .limit(1)
+    )
+    return result.scalars().first() is not None
+
+
 # ---------------------------------------------------------------- internals
+
+
+def _registration_url(product: Product | None, segment: Segment | None) -> str | None:
+    """The signup link this conversation is sent to: the segment's own, else the product's."""
+    if segment is not None and segment.registration_url:
+        return segment.registration_url
+    return None if product is None else product.registration_url
 
 
 def _history_messages(history: list[Any]) -> list[LLMMessage]:
@@ -1037,9 +1210,7 @@ def _build_run(
                 "used_fallback": outcome.used_fallback,
                 "reply_sanitized": outcome.reply_sanitized,
             }
-            if outcome.retrieved_chunk_ids
-            or outcome.used_fallback
-            or outcome.reply_sanitized
+            if outcome.retrieved_chunk_ids or outcome.used_fallback or outcome.reply_sanitized
             else None
         ),
     )

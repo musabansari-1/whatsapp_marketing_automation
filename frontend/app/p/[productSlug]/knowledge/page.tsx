@@ -148,8 +148,8 @@ export default function KnowledgePage() {
 
       {user && !isAdmin ? (
         <Alert tone="info" className="mb-6">
-          Only administrators can add, upload, archive or delete knowledge, because it is
-          what the assistant tells customers.
+          Only administrators can add, upload, archive or delete knowledge, because it is what the
+          assistant tells customers.
         </Alert>
       ) : null}
 
