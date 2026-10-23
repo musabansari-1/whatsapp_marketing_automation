@@ -47,6 +47,12 @@ class TaskType(StrEnum):
     # colleague will follow up. Without this the promise in the fallback reply is
     # hollow: the customer waits and nobody is told. Team-only, same reason.
     NOTIFY_BOOKING_FAILED = "notify_booking_failed"
+    # Telling the team a lead wants to register or asked for a person. Team-only:
+    # the turn's reply already answered the customer.
+    NOTIFY_LEAD_ATTENTION = "notify_lead_attention"
+    # A team member's reply typed in the dashboard. Sent by the worker, not the API,
+    # because the worker is where the window and suppression checks live.
+    SEND_TEAM_REPLY = "send_team_reply"
     INGEST_KNOWLEDGE_DOCUMENT = "ingest_knowledge_document"
     GENERATE_EMBEDDINGS = "generate_embeddings"
     SYNC_CRM_CONTACT = "sync_crm_contact"

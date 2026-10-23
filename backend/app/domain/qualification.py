@@ -41,6 +41,9 @@ FIELD_DEMO_INTENT = "demo_intent"
 # sign up. Life Herba's prompt records it as its strongest signal.
 FIELD_REGISTRATION_INTENT = "registration_intent"
 FIELD_NOT_INTERESTED = "not_interested"
+# The customer asked to speak to or hear from a person. Not a qualification signal:
+# it rings the team bell, because the assistant promises them a reply in the chat.
+FIELD_HUMAN_REQUESTED = "human_requested"
 FIELD_JUDGEMENT = "qualification_judgement"
 
 JUDGEMENT_QUALIFIED = "QUALIFIED"
@@ -292,6 +295,11 @@ def _has_value(value: Any) -> bool:
     if isinstance(value, list | dict | tuple | set):
         return bool(value)
     return True
+
+
+def is_affirmative(value: Any) -> bool:
+    """The loose boolean reading the rules use, for callers outside this module."""
+    return _is_true(value)
 
 
 def _is_true(value: Any) -> bool:

@@ -66,8 +66,8 @@ export default function LoginPage() {
           <div className="flex items-center gap-3">
             <IconMark className="size-10 drop-shadow-[0_4px_16px_rgb(16_185_129/0.4)]" />
             <div>
-              <p className="text-base font-bold tracking-tight">WhatsApp AI</p>
-              <p className="text-xs text-sidebar-muted">Marketing platform</p>
+              <p className="text-base font-bold tracking-tight">GlobalPact Holdings</p>
+              <p className="text-xs text-sidebar-muted">WhatsApp API Marketing</p>
             </div>
           </div>
         </div>
@@ -93,8 +93,8 @@ export default function LoginPage() {
           <div className="mb-8 flex items-center gap-3 lg:hidden">
             <IconMark className="size-9" />
             <div>
-              <p className="text-sm font-semibold">WhatsApp AI</p>
-              <p className="text-xs text-ink-muted">Marketing platform</p>
+              <p className="text-sm font-semibold">GlobalPact Holdings</p>
+              <p className="text-xs text-ink-muted">WhatsApp API Marketing</p>
             </div>
           </div>
 

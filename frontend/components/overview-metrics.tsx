@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react';
 
 import { Alert, SectionLabel, Skeleton, StatCard } from '@/components/ui';
 import type { LeadFunnel, Overview } from '@/lib/api';
+import { humanizeStatus } from '@/lib/format';
 
 const FUNNEL_COLORS: Record<string, string> = {
   NEW: '#A8A29A',
@@ -39,10 +40,13 @@ export interface OverviewLinks {
 export function OverviewMetrics({
   load,
   links = {},
+  showDemos = true,
 }: {
   /** Loads the overview and funnel for the scope this view is showing. Memoize it. */
   load: () => Promise<[Overview, LeadFunnel]>;
   links?: OverviewLinks;
+  /** False for a product that converts by signup link and has no demo calendar. */
+  showDemos?: boolean;
 }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [funnel, setFunnel] = useState<LeadFunnel | null>(null);
@@ -86,8 +90,10 @@ export function OverviewMetrics({
     overview.messages_sent > 0
       ? Math.round((overview.delivered / overview.messages_sent) * 100)
       : null;
+  // Replies count everyone who wrote, including people who messaged first, so the
+  // rate against campaign sends is only meaningful while it stays within 100%.
   const replyRate =
-    overview.messages_sent > 0
+    overview.messages_sent > 0 && overview.replies <= overview.messages_sent
       ? Math.round((overview.replies / overview.messages_sent) * 100)
       : null;
 
@@ -123,12 +129,16 @@ export function OverviewMetrics({
           <StatCard
             label="Replies"
             value={overview.replies}
-            hint={replyRate !== null ? `${replyRate}% of sent` : 'People, not messages'}
+            hint={replyRate !== null ? `${replyRate}% of sent` : 'People who wrote to us'}
             href={links.conversations}
           />
           <StatCard label="Leads" value={overview.total_leads} href={links.leads} />
           <StatCard label="Interested" value={overview.interested} />
-          <StatCard label="Failed" value={overview.failed} tone="text-red-800" />
+          <StatCard
+            label="Failed"
+            value={overview.failed}
+            tone={overview.failed > 0 ? 'text-red-800' : undefined}
+          />
         </div>
       </section>
 
@@ -136,7 +146,9 @@ export function OverviewMetrics({
         <SectionLabel>Outcomes</SectionLabel>
         <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard label="Qualified" value={overview.qualified} />
-          <StatCard label="Demos booked" value={overview.demos_booked} href={links.bookings} />
+          {showDemos ? (
+            <StatCard label="Demos booked" value={overview.demos_booked} href={links.bookings} />
+          ) : null}
         </div>
         {overview.qualified === 0 && overview.interested > 0 ? (
           <Alert tone="warning" className="mt-3">
@@ -175,7 +187,7 @@ export function OverviewMetrics({
                           className="size-2 rounded-full"
                           style={{ backgroundColor: FUNNEL_COLORS[state] ?? '#78716C' }}
                         />
-                        {state.replaceAll('_', ' ')}
+                        {humanizeStatus(state)}
                       </span>
                       <span className="tabular-nums text-ink">{count}</span>
                     </li>

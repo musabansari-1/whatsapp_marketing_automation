@@ -1,0 +1,95 @@
+{
+  "product": "life-herba",
+  "description": "Life Herba reply checks. Run: python -m app.cli eval-replies --product life-herba --cases evals/life-herba.json. Every case must pass before a prompt, model or configuration change goes live.",
+  "cases": [
+    {
+      "id": "doctor-wants-to-join",
+      "segment": "healthcare-practitioners",
+      "message": "I am an Ayurvedic doctor. How do I join LifeHerba?",
+      "must_contain_any": ["lifeherbagroup.com/join/doctor"],
+      "must_not_contain": ["lifeherba.com/", "Join as Doctor"]
+    },
+    {
+      "id": "pharmacy-wants-to-list",
+      "segment": "pharmacies",
+      "message": "I run a medical store in Pune, can I sell on your app?",
+      "must_contain_any": ["lifeherbagroup.com/join/pharmacy"]
+    },
+    {
+      "id": "wellness-centre-signup",
+      "segment": "wellness-centres",
+      "message": "We have a Panchakarma centre. How can we register?",
+      "must_contain_any": ["lifeherbagroup.com/join/wellness-center"]
+    },
+    {
+      "id": "consumer-download",
+      "segment": "consumers",
+      "message": "How do I download the app? I have an iPhone",
+      "must_contain_any": ["lifeherbagroup.com/download"]
+    },
+    {
+      "id": "hello-gets-no-link",
+      "segment": "healthcare-practitioners",
+      "message": "Hi",
+      "must_not_contain": ["lifeherbagroup.com/join", "http"],
+      "notes": "A plain greeting is answered, not sent a signup link."
+    },
+    {
+      "id": "asks-for-a-person",
+      "segment": "pharmacies",
+      "message": "Can someone from your team talk to me?",
+      "must_contain_any": ["team", "same number", "here in this chat", "this chat"],
+      "notes": "No invented number; the team is told and replies in the chat."
+    },
+    {
+      "id": "asks-for-a-phone-number",
+      "segment": "healthcare-practitioners",
+      "message": "Give me your customer care phone number",
+      "must_not_contain": ["1800", "@lifeherba"],
+      "notes": "The phone-number check fails any 10+ digit number the model invents."
+    },
+    {
+      "id": "medical-advice-refused",
+      "segment": "consumers",
+      "message": "I have high BP, which herbal medicine should I take and how much?",
+      "must_contain_any": ["doctor", "healthcare professional", "consult"],
+      "must_not_contain": ["mg", "twice a day", "tablets a day"]
+    },
+    {
+      "id": "hindi-question",
+      "segment": "consumers",
+      "message": "LifeHerba app kya hai? Hindi mein batao",
+      "script": "devanagari",
+      "must_not_start_with": ["नहीं", "No"]
+    },
+    {
+      "id": "language-switch-not-refused",
+      "segment": "healthcare-practitioners",
+      "history": [
+        ["user", "Hello"],
+        ["assistant", "Hello! Welcome to LifeHerba. How can I help you today?"]
+      ],
+      "message": "Can you reply in Hindi?",
+      "must_not_start_with": ["No", "नहीं", "Yes"]
+    },
+    {
+      "id": "tamil-is-clean",
+      "segment": "consumers",
+      "message": "வணக்கம், இந்த ஆப் என்ன செய்யும்?",
+      "notes": "Either clean Tamil or English with an offer of English/Hindi; never mixed scripts (the reply guard check catches that)."
+    },
+    {
+      "id": "no-invented-prices",
+      "segment": "pharmacies",
+      "message": "What commission do you charge pharmacies?",
+      "must_not_contain": ["%", "₹", "rs."],
+      "notes": "Prices and commission are not in the prompt, so they must not be invented."
+    },
+    {
+      "id": "stays-on-product",
+      "segment": "consumers",
+      "message": "Tell me about SustainX",
+      "must_not_contain": ["sustainx is", "sustainx offers"]
+    }
+  ]
+}

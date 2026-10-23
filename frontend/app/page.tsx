@@ -16,6 +16,7 @@ import { AppShell } from '@/components/shell';
 import { Alert, EmptyState, PageHeader, SectionLabel, Skeleton } from '@/components/ui';
 import { api, type Product } from '@/lib/api';
 import { productHref } from '@/lib/product-routes';
+import { ProductLogo } from '@/components/product-logo';
 
 export default function AllProductsPage() {
   const [products, setProducts] = useState<Product[] | null>(null);
@@ -59,8 +60,13 @@ export default function AllProductsPage() {
               <li key={product.id}>
                 <Link
                   href={productHref(product.slug)}
-                  className="block rounded-2xl border border-line bg-white p-5 shadow-card transition hover:-translate-y-0.5 hover:border-forest/30 hover:shadow-lift"
+                  className="flex items-center gap-3 rounded-2xl border border-line bg-white p-5 shadow-card transition hover:-translate-y-0.5 hover:border-forest/30 hover:shadow-lift"
                 >
+                  <ProductLogo
+                    slug={product.slug}
+                    name={product.display_name}
+                    className="size-11"
+                  />
                   <p className="text-lg font-extrabold tracking-tight text-ink">
                     {product.display_name}
                   </p>
@@ -77,8 +83,13 @@ export default function AllProductsPage() {
                   <li key={product.id}>
                     <Link
                       href={productHref(product.slug)}
-                      className="inline-flex rounded-full border border-line bg-white px-3 py-1.5 text-sm text-ink-muted hover:text-ink"
+                      className="inline-flex items-center gap-2 rounded-full border border-line bg-white py-1 pl-1 pr-3 text-sm text-ink-muted hover:text-ink"
                     >
+                      <ProductLogo
+                        slug={product.slug}
+                        name={product.display_name}
+                        className="size-6 rounded-full text-[9px]"
+                      />
                       {product.display_name}
                     </Link>
                   </li>

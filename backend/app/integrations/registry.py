@@ -161,6 +161,8 @@ def build_llm_provider(settings: Settings) -> LLMProvider:
                 model=settings.openrouter_model or "",
                 base_url=settings.openrouter_base_url,
                 timeout_seconds=settings.openrouter_timeout_seconds,
+                provider_sort=settings.openrouter_provider_sort,
+                reasoning_effort=settings.openrouter_reasoning_effort,
             )
 
 

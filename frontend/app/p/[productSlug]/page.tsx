@@ -49,6 +49,7 @@ export default function ProductOverviewPage() {
           leads: productHref(slug, '/leads'),
           bookings: productHref(slug, '/bookings'),
         }}
+        showDemos={product.has_calendar}
       />
     </>
   );

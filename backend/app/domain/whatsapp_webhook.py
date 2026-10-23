@@ -157,6 +157,13 @@ def parse_webhook(payload: dict[str, Any]) -> ParsedWebhook:
     return parsed
 
 
+# Media that can carry a caption; the caption is read as the message text.
+CAPTIONED_MEDIA_TYPES = frozenset({"image", "video", "document"})
+# Media a customer sends expecting an answer. Without a caption these get the fixed
+# "please type your question" reply; stickers, reactions and locations get nothing.
+REPLYABLE_MEDIA_TYPES = frozenset({"audio", "voice", "image", "video", "document"})
+
+
 def matches_opt_out(text: str | None, keywords: Sequence[str]) -> bool:
     """Whether a customer message is an opt-out ([D5]).
 
@@ -226,6 +233,11 @@ def _parse_message(
         # A quick-reply tap carries its label rather than typed text, and an opt-out
         # button press must count the same as typing STOP.
         text = _interactive_text(raw, message_type)
+    elif message_type in CAPTIONED_MEDIA_TYPES:
+        # A photo sent with "is this medicine available?" is a question: the caption
+        # is the customer's text, and answering it beats asking them to type it again.
+        caption = raw.get(message_type, {}).get("caption")
+        text = caption if isinstance(caption, str) and caption.strip() else None
 
     return InboundMessageEvent(
         provider_message_id=message_id,

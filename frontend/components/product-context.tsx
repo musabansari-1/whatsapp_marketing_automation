@@ -16,7 +16,8 @@
 import Link from 'next/link';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-import { Alert, Skeleton } from '@/components/ui';
+import { ShellSkeleton } from '@/components/shell-skeleton';
+import { Alert } from '@/components/ui';
 import {
   api,
   ApiError,
@@ -107,11 +108,7 @@ export function ProductProvider({ slug, children }: { slug: string; children: Re
   }
 
   if (!value) {
-    return (
-      <div className="mx-auto max-w-6xl px-4 py-10 sm:px-8">
-        <Skeleton className="h-64" />
-      </div>
-    );
+    return <ShellSkeleton />;
   }
 
   return <ProductContext.Provider value={value}>{children}</ProductContext.Provider>;

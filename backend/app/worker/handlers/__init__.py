@@ -13,12 +13,14 @@ from app.worker.handlers.campaign_send import send_campaign_message
 from app.worker.handlers.conversation import process_conversation_turn
 from app.worker.handlers.crm_sync import queue_crm_sync, sync_crm_contact
 from app.worker.handlers.knowledge_ingest import ingest_knowledge_document
+from app.worker.handlers.lead_attention import notify_lead_attention
 from app.worker.handlers.offline_demo import notify_offline_demo
 from app.worker.handlers.sweeps import (
     sweep_expired_sessions,
     sweep_rate_limit_counters,
     sweep_unanswered_messages,
 )
+from app.worker.handlers.team_reply import send_team_reply
 from app.worker.handlers.whatsapp import process_inbound_webhook, sync_whatsapp_templates
 from app.worker.registry import TaskRegistry, task_registry
 
@@ -41,6 +43,8 @@ def register_all(registry: TaskRegistry | None = None) -> None:
         TaskType.NOTIFY_BOOKING: notify_booking,
         TaskType.NOTIFY_BOOKING_FAILED: notify_booking_failed,
         TaskType.NOTIFY_OFFLINE_DEMO: notify_offline_demo,
+        TaskType.NOTIFY_LEAD_ATTENTION: notify_lead_attention,
+        TaskType.SEND_TEAM_REPLY: send_team_reply,
         TaskType.SWEEP_BOT_ACTIVITY: sweep_bot_activity,
         TaskType.SYNC_CRM_CONTACT: sync_crm_contact,
         TaskType.SWEEP_UNANSWERED_MESSAGES: sweep_unanswered_messages,
@@ -57,12 +61,14 @@ __all__ = [
     "ingest_knowledge_document",
     "notify_booking",
     "notify_booking_failed",
+    "notify_lead_attention",
     "notify_offline_demo",
     "queue_crm_sync",
     "process_conversation_turn",
     "process_inbound_webhook",
     "register_all",
     "send_campaign_message",
+    "send_team_reply",
     "sweep_bot_activity",
     "sweep_expired_sessions",
     "sweep_rate_limit_counters",

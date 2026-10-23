@@ -8,8 +8,9 @@
  * here: switching product or segment filter in the dashboard never changes the context a
  * conversation runs under.
  *
- * Read-only. Replies come from the worker, which is where the 24-hour window and
- * suppression checks live — a send button here would be a way around both.
+ * Each row names the person and shows the latest message, and marks the ones where the
+ * customer wrote last. Replying happens on the lead page, where the 24-hour window and
+ * opt-outs are checked before anything is queued.
  */
 
 'use client';
@@ -22,26 +23,42 @@ import { useProduct } from '@/components/product-context';
 import { SegmentBadge, SegmentFilter } from '@/components/segment-filter';
 import { StatusBadge } from '@/components/status-badge';
 import { Alert, EmptyState, PageHeader, Skeleton } from '@/components/ui';
-import type { Conversation, ConversationStatus } from '@/lib/api';
+import type { ConversationListItem, ConversationStatus } from '@/lib/api';
+import { cx } from '@/lib/cx';
+import { formatPhone, humanizeStatus, shortWhen, splitLinks } from '@/lib/format';
 import { clampOffset, DEFAULT_PAGE_SIZE } from '@/lib/pagination';
 import { productHref } from '@/lib/product-routes';
 
 const STATUSES: ConversationStatus[] = ['ACTIVE', 'WAITING_FOR_USER', 'BOOKING', 'CLOSED'];
 
-function lastActivity(conversation: Conversation): string {
-  const stamps = [conversation.last_inbound_at, conversation.last_outbound_at].filter(
-    (value): value is string => value !== null,
-  );
-  if (stamps.length === 0) {
-    return new Date(conversation.created_at).toLocaleString('en-GB', { dateStyle: 'medium' });
-  }
-  const latest = stamps.sort().at(-1) as string;
-  return new Date(latest).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+function lastActivity(conversation: ConversationListItem): string {
+  const stamps = [
+    conversation.last_message_at,
+    conversation.last_inbound_at,
+    conversation.last_outbound_at,
+  ].filter((value): value is string => value !== null);
+  return shortWhen(stamps.sort().at(-1) ?? conversation.created_at);
+}
+
+/** The latest message as one line, with links shown by their short label. */
+function preview(text: string): string {
+  return splitLinks(text)
+    .map((part) => (part.kind === 'text' ? part.text : part.label))
+    .join('');
+}
+
+function initials(name: string | null): string {
+  if (!name) return '#';
+  const words = name
+    .replace(/^Dr\.?\s+/i, '')
+    .split(/\s+/)
+    .filter(Boolean);
+  return ((words[0]?.charAt(0) ?? '') + (words[1]?.charAt(0) ?? '')).toUpperCase() || '#';
 }
 
 export default function ConversationsPage() {
   const { api, slug, product } = useProduct();
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversations, setConversations] = useState<ConversationListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<ConversationStatus | ''>('');
   const [segment, setSegment] = useState('');
@@ -76,7 +93,7 @@ export default function ConversationsPage() {
     <>
       <PageHeader
         title="Conversations"
-        description={`${total} ${total === 1 ? 'conversation' : 'conversations'} with ${product.display_name}, most recent first. Read-only — replies are sent by the worker.`}
+        description={`${total} ${total === 1 ? 'conversation' : 'conversations'} with ${product.display_name}, most recent first. Open one to read the chat or reply as the team.`}
       />
 
       <div className="mb-6 flex flex-wrap gap-3">
@@ -94,7 +111,7 @@ export default function ConversationsPage() {
           <option value="">All states</option>
           {STATUSES.map((option) => (
             <option key={option} value={option}>
-              {option.replaceAll('_', ' ')}
+              {humanizeStatus(option)}
             </option>
           ))}
         </select>
@@ -114,30 +131,80 @@ export default function ConversationsPage() {
       ) : conversations.length === 0 ? (
         <EmptyState
           title="No conversations here"
-          description="One starts when a customer replies to this product's number. There is no send button here: the worker owns the 24-hour window."
+          description="One starts when a customer messages or replies to this product's WhatsApp number."
         />
       ) : (
         <>
-          <ul className="space-y-2">
-            {conversations.map((conversation) => (
-              <li key={conversation.id}>
-                <Link
-                  href={productHref(slug, `/leads/${conversation.lead_id}`)}
-                  className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-white p-4 shadow-card transition hover:border-ink/15 hover:shadow-lift"
-                >
-                  <div className="min-w-0">
-                    <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-ink">
-                      Open lead
-                      <SegmentBadge segmentId={conversation.segment_id} />
-                    </p>
-                    <p className="mt-1 text-xs text-ink-muted">
-                      Last activity {lastActivity(conversation)}
-                    </p>
-                  </div>
-                  <StatusBadge status={conversation.status} />
-                </Link>
-              </li>
-            ))}
+          <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-white shadow-card">
+            {conversations.map((conversation) => {
+              const name = conversation.lead_name;
+              const phone = formatPhone(conversation.lead_phone);
+              return (
+                <li key={conversation.id}>
+                  <Link
+                    href={productHref(slug, `/leads/${conversation.lead_id}`)}
+                    className="flex items-start gap-3 px-4 py-3.5 transition hover:bg-canvas"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="flex size-10 shrink-0 items-center justify-center rounded-full bg-forest-soft text-xs font-bold text-forest"
+                    >
+                      {initials(name)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <p className="truncate text-sm font-semibold text-ink">
+                          {name ?? phone ?? 'Unknown customer'}
+                          {name && phone ? (
+                            <span className="ml-2 font-normal text-ink-muted">{phone}</span>
+                          ) : null}
+                        </p>
+                        <span
+                          className={cx(
+                            'shrink-0 text-xs',
+                            conversation.awaiting_reply
+                              ? 'font-semibold text-forest'
+                              : 'text-ink-muted',
+                          )}
+                        >
+                          {lastActivity(conversation)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between gap-3">
+                        <p
+                          className={cx(
+                            'truncate text-sm',
+                            conversation.awaiting_reply ? 'text-ink' : 'text-ink-muted',
+                          )}
+                        >
+                          {conversation.last_message === null ? (
+                            <span className="italic">No messages yet</span>
+                          ) : (
+                            <>
+                              {conversation.last_message_direction === 'OUTBOUND' ? (
+                                <span className="text-ink-faint">You: </span>
+                              ) : null}
+                              {preview(conversation.last_message)}
+                            </>
+                          )}
+                        </p>
+                        {conversation.awaiting_reply ? (
+                          <span className="shrink-0 rounded-full bg-forest px-2 py-0.5 text-[10px] font-bold text-white">
+                            Waiting for reply
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        <SegmentBadge segmentId={conversation.segment_id} />
+                        {conversation.status !== 'ACTIVE' ? (
+                          <StatusBadge status={conversation.status} />
+                        ) : null}
+                      </div>
+                    </div>
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
           <Pager
             state={{ total, limit: DEFAULT_PAGE_SIZE, offset }}

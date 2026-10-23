@@ -31,7 +31,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import String, cast, exists, literal, select
+from sqlalchemy import String, cast, exists, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -191,6 +191,16 @@ async def find_unanswered_messages(
             inbound.created_at < cutoff,
             Conversation.status != ConversationStatus.CLOSED,
             ~already_answered,
+            # No text: a sticker or reaction is never queued, and the turn handler
+            # cannot tell one from a voice note, so requeueing it would send the
+            # "please type" reply to a sticker. A lost voice-note turn stays lost.
+            inbound.body.is_not(None),
+            # Arrived while a team member had the assistant paused: the person is
+            # handling it, and answering after the pause would reply to stale turns.
+            or_(
+                Conversation.ai_paused_until.is_(None),
+                inbound.created_at > Conversation.ai_paused_until,
+            ),
         )
         .order_by(inbound.created_at)
         .limit(limit)

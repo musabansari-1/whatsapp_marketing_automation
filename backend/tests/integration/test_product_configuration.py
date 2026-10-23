@@ -269,7 +269,10 @@ class TestTheShippedCatalog:
             {"source": "City", "field": "city", "required": False},
         ]
         assert life_herba.conversion_mode == "external_registration"
-        assert life_herba.registration_url == "https://lifeherbagroup.com/"
+        assert life_herba.registration_url == (
+            "https://lifeherbagroup.com/download"
+            "?utm_source=whatsapp&utm_medium=chat&utm_campaign=lifeherba_inbound"
+        )
 
     async def test_keeps_the_existing_academicae_row_its_id_and_does_not_flip_activation(
         self, cli_env: None, db: async_sessionmaker[AsyncSession]

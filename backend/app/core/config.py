@@ -159,6 +159,14 @@ class Settings(BaseSettings):
     # Generous next to the WhatsApp timeout: a model generating a long reply
     # legitimately takes tens of seconds, and cutting it off wastes what was spent.
     openrouter_timeout_seconds: float = 60.0
+    # Reply speed. OpenRouter serves most models from several providers; "latency"
+    # routes each request to the one answering fastest right now, instead of the
+    # cheapest. Empty leaves OpenRouter's default (price-weighted) routing.
+    openrouter_provider_sort: str | None = "latency"
+    # For reasoning models only: "low" (or "minimal") cuts the thinking a model does
+    # before it answers, which is most of a reasoning model's reply time. Empty
+    # leaves the model's default. Ignored by models that do not reason.
+    openrouter_reasoning_effort: str | None = None
 
     # ---------------------------------------------------------------- AI agent §9 §11
     # How many rounds of tool calls one turn may take. Enough for look up the lead →
@@ -249,8 +257,27 @@ class Settings(BaseSettings):
     audience_header_scan_rows: int = 5
 
     # ---------------------------------------------------------------- opt-out [D5]
+    # Whole-message matches only (see `matches_opt_out`), so "band" opts out while
+    # "band mat karo" does not. Hindi and Hinglish because Indian customers write
+    # "बंद करो" far more often than STOP, and an ignored opt-out is a block and a
+    # quality-rating hit on the number.
     opt_out_keywords: CommaSeparated = Field(
-        default_factory=lambda: ["STOP", "UNSUBSCRIBE", "OPT OUT", "OPTOUT"]
+        default_factory=lambda: [
+            "STOP",
+            "UNSUBSCRIBE",
+            "OPT OUT",
+            "OPTOUT",
+            "BAND",
+            "BAND KARO",
+            "STOP KARO",
+            "MAT BHEJO",
+            "MESSAGE MAT BHEJO",
+            "बंद",
+            "बंद करो",
+            "रोको",
+            "मत भेजो",
+            "मैसेज मत भेजो",
+        ]
     )
 
     # ---------------------------------------------------------------- slot policy [D8]
@@ -273,6 +300,16 @@ class Settings(BaseSettings):
     # in Phase 10 alongside the model choice ([D17]). Durable facts live in the lead
     # record, so history is conversational glue rather than memory.
     conversation_history_turns: int = 14
+    # The one reply a voice note, photo or file without a caption gets. The model
+    # cannot read media, and silence loses the customer.
+    # Accept a reply the model wrote alongside an `update_lead` call instead of asking
+    # it again, which saves one model round on most turns. False restores the old
+    # always-ask-again loop.
+    ai_accept_reply_with_facts: bool = True
+    media_reply_message: str = (
+        "Thanks for sending this! I can only read typed messages, so please type your "
+        "question here and I'll reply right away. / कृपया अपना सवाल टाइप करके भेजें।"
+    )
 
     # ---------------------------------------------------------------- rate limits §19
     # §19 asks for "appropriate rate limits" without saying what they are, so every

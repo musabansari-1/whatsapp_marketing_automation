@@ -16,7 +16,11 @@ from app.core.config import Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.logging import get_logger
 from app.domain.enums import SuppressionReason
-from app.domain.whatsapp_webhook import matches_opt_out, parse_webhook
+from app.domain.whatsapp_webhook import (
+    REPLYABLE_MEDIA_TYPES,
+    matches_opt_out,
+    parse_webhook,
+)
 from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import (
     build_queue_provider,
@@ -220,9 +224,9 @@ async def _apply_inbound(
             # to the AI would reply to someone who just asked us to stop.
             continue
 
-        if not event.text:
-            # Stored above for the transcript, but never queued: a sticker, photo,
-            # reaction or other content without text carries nothing to answer, and
+        if not event.text and event.message_type not in REPLYABLE_MEDIA_TYPES:
+            # Stored above for the transcript, but never queued: a sticker, reaction,
+            # location or other content without text carries nothing to answer, and
             # a full model turn would burn context and quota to reply to it — then
             # reply, which is worse. The row stays so the transcript is complete.
             logger.info(

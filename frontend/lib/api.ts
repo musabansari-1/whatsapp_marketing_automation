@@ -158,7 +158,25 @@ export interface Conversation {
   last_inbound_at: string | null;
   last_outbound_at: string | null;
   closed_at: string | null;
+  /** Set when a team member replied: until then the assistant does not answer. */
+  ai_paused_until: string | null;
   created_at: string;
+}
+
+/** A conversation as the inbox lists it: who it is with and the latest message. */
+export interface ConversationListItem extends Conversation {
+  lead_name: string | null;
+  lead_phone: string | null;
+  last_message: string | null;
+  last_message_direction: 'INBOUND' | 'OUTBOUND' | null;
+  last_message_at: string | null;
+  /** The customer wrote last and nobody has answered yet. */
+  awaiting_reply: boolean;
+}
+
+export interface TeamReplyAccepted {
+  queued: boolean;
+  ai_paused_until: string | null;
 }
 
 export interface ConversationTurn {
@@ -183,7 +201,7 @@ export interface ConversationPage {
   total: number;
   limit: number;
   offset: number;
-  items: Conversation[];
+  items: ConversationListItem[];
 }
 
 // ---------------------------------------------------------------- knowledge
@@ -279,7 +297,7 @@ export interface Notification {
   product_id: string | null;
   /** The product this notification is about, or null when it concerns none ([D47]). */
   product: ProductRef | null;
-  type: 'DEMO_BOOKED';
+  type: 'DEMO_BOOKED' | 'BOT_SUSPECTED' | 'BOOKING_FAILED' | 'LEAD_NEEDS_ATTENTION';
   title: string;
   message: string;
   related_entity_type: string | null;
@@ -572,6 +590,18 @@ export function productApi(slug: string) {
 
     getLeadConversation: (id: string) =>
       request<ConversationDetail>(`${base}/leads/${id}/conversation`),
+
+    /** Queue a team member's reply; the worker sends it and re-checks consent and the window. */
+    replyToLead: (id: string, body: string, pauseAssistantHours: number) =>
+      request<TeamReplyAccepted>(
+        `${base}/leads/${id}/conversation/reply`,
+        postJson({ body, pause_assistant_hours: pauseAssistantHours }),
+      ),
+
+    resumeAssistant: (id: string) =>
+      request<Conversation>(`${base}/leads/${id}/conversation/resume-assistant`, {
+        method: 'POST',
+      }),
 
     listConversations: (
       options: {

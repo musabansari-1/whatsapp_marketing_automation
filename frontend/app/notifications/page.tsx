@@ -15,6 +15,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
+import { IconBookings, IconLeads, IconNotifications } from '@/components/icons';
 import { AppShell } from '@/components/shell';
 import { Alert, Button, EmptyState, PageHeader, Skeleton } from '@/components/ui';
 import { api, type Notification, type Product } from '@/lib/api';
@@ -77,7 +78,13 @@ export default function NotificationsPage() {
     <AppShell>
       <PageHeader
         title="Notifications"
-        description={unread > 0 ? `${unread} unread across every product` : 'Nothing unread'}
+        description={
+          loading
+            ? 'Loading…'
+            : unread > 0
+              ? `${unread} unread across every product`
+              : 'Nothing unread'
+        }
         actions={
           unread > 0 ? (
             <Button type="button" onClick={markAllRead}>
@@ -113,7 +120,7 @@ export default function NotificationsPage() {
       ) : items.length === 0 ? (
         <EmptyState
           title="No notifications here"
-          description="A booked demo notifies everyone on the team here and on that product's calendar — nowhere else."
+          description="Hot leads (asked for a person, ready to register), booked demos and delivery problems show up here for the whole team."
         />
       ) : (
         <ul className="space-y-3">
@@ -125,8 +132,9 @@ export default function NotificationsPage() {
                 notification.is_read ? 'border-line bg-white' : 'border-forest/25 bg-forest-faint',
               )}
             >
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
+              <div className="flex items-start gap-4">
+                <NotificationIcon type={notification.type} />
+                <div className="min-w-0 flex-1">
                   <div className="mb-1 flex flex-wrap items-center gap-2">
                     {notification.product ? (
                       <Link
@@ -162,7 +170,7 @@ export default function NotificationsPage() {
                           notification.product.slug,
                           `/leads/${notification.related_entity_id}`,
                         )}
-                        className="font-semibold text-ink-muted hover:text-ink"
+                        className="rounded-lg bg-forest px-2.5 py-1 font-semibold text-white transition hover:bg-forest/90"
                       >
                         Open lead
                       </Link>
@@ -184,5 +192,24 @@ export default function NotificationsPage() {
         </ul>
       )}
     </AppShell>
+  );
+}
+
+const NOTIFICATION_ICONS = {
+  LEAD_NEEDS_ATTENTION: { Icon: IconLeads, tone: 'bg-forest-soft text-forest' },
+  DEMO_BOOKED: { Icon: IconBookings, tone: 'bg-sky-50 text-sky-700' },
+  BOOKING_FAILED: { Icon: IconBookings, tone: 'bg-red-50 text-red-700' },
+  BOT_SUSPECTED: { Icon: IconNotifications, tone: 'bg-amber-50 text-amber-800' },
+} as const;
+
+function NotificationIcon({ type }: { type: Notification['type'] }) {
+  const { Icon, tone } = NOTIFICATION_ICONS[type] ?? NOTIFICATION_ICONS.BOT_SUSPECTED;
+  return (
+    <span
+      className={cx('flex size-9 shrink-0 items-center justify-center rounded-xl', tone)}
+      aria-hidden="true"
+    >
+      <Icon className="size-4" />
+    </span>
   );
 }
