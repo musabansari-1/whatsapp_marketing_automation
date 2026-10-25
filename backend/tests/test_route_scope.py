@@ -49,6 +49,14 @@ GLOBAL_ROUTES: dict[tuple[str, str], str] = {
         "GET",
         "/api/v1/whatsapp-templates/unassigned",
     ): "an unassigned template has no product ([D57])",
+    (
+        "POST",
+        "/api/v1/integrations/{product_slug}/template-messages",
+    ): "machine to machine: a product's token, not a session, decides the product",
+    (
+        "POST",
+        "/api/v1/whatsapp-templates/sync",
+    ): "one template pool for the shared WABA; a sync takes no product ([D57])",
     ("GET", "/api/v1/analytics/overview"): "the combined view, requested explicitly ([D53])",
     ("GET", "/api/v1/analytics/leads-by-status"): "the combined view, requested explicitly ([D53])",
 }

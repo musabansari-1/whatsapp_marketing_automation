@@ -28,6 +28,96 @@ import {
 } from '@/components/ui';
 import { api as globalApi, type ProductTemplate, type WhatsAppTemplate } from '@/lib/api';
 
+const MEDIA_HEADERS = ['IMAGE', 'VIDEO', 'DOCUMENT'];
+
+/** Why campaigns cannot use a template, in the order an operator would fix it. */
+function unusableReason(template: ProductTemplate): string {
+  if (template.provider_status !== 'APPROVED') return 'Waiting for Meta approval';
+  if (template.category !== 'MARKETING') return 'Campaigns send MARKETING templates only';
+  if (MEDIA_HEADERS.includes(template.header_type) && !template.header_media_url) {
+    return `Add the header ${template.header_type.toLowerCase()} link below`;
+  }
+  return 'Not usable';
+}
+
+/**
+ * The link a media header sends. Meta keeps the file uploaded in WhatsApp Manager only
+ * as a review sample, so every send has to carry its own public link to the file.
+ */
+function HeaderMedia({
+  template,
+  canEdit,
+  onSaved,
+}: {
+  template: ProductTemplate;
+  canEdit: boolean;
+  onSaved: (message: string) => void;
+}) {
+  const { api } = useProduct();
+  const [value, setValue] = useState(template.header_media_url ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const kind = template.header_type.toLowerCase();
+
+  if (!MEDIA_HEADERS.includes(template.header_type)) {
+    return <span className="text-xs text-ink-muted">No media</span>;
+  }
+  if (!canEdit) {
+    return template.header_media_url ? (
+      <span className="text-xs [overflow-wrap:anywhere]">{template.header_media_url}</span>
+    ) : (
+      <span className="text-xs text-ink-muted">No {kind} link yet</span>
+    );
+  }
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    const link = value.trim();
+    if (link && !link.startsWith('https://')) {
+      setError('Use a public https:// link to the file itself.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await api.setTemplateHeaderMedia(template.id, link || null);
+      onSaved(
+        link
+          ? `${template.name} now sends this ${kind}.`
+          : `${template.name} has no ${kind} link now.`,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the link.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="min-w-[16rem]">
+      <p className="mb-1 text-xs text-ink-muted">{template.header_type} header</p>
+      <div className="flex gap-2">
+        <input
+          type="url"
+          className="ui-input"
+          placeholder={`https://… public ${kind} link`}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          aria-label={`Header ${kind} link for ${template.name}`}
+        />
+        <Button
+          type="submit"
+          variant="secondary"
+          disabled={saving || value.trim() === (template.header_media_url ?? '')}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
+      {error ? <p className="mt-1 text-xs text-red-700">{error}</p> : null}
+    </form>
+  );
+}
+
 export default function TemplatesPage() {
   const { api, product, user } = useProduct();
   const [owned, setOwned] = useState<ProductTemplate[] | null>(null);
@@ -49,6 +139,27 @@ export default function TemplatesPage() {
   }, [api]);
 
   useEffect(load, [load]);
+
+  async function syncFromMeta() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await globalApi.syncTemplates();
+      setNotice('Syncing with Meta. The list refreshes in a few seconds.');
+      window.setTimeout(load, 5000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start the sync.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function saved(message: string) {
+    setError(null);
+    setNotice(message);
+    load();
+  }
 
   async function assign(template: WhatsAppTemplate) {
     setBusy(true);
@@ -72,6 +183,18 @@ export default function TemplatesPage() {
         title="Templates"
         description={`Meta-approved message templates ${product.display_name}'s campaigns can use. Approval comes from Meta; ownership is assigned here.`}
       />
+
+      {isAdmin ? (
+        <div className="mb-6 flex flex-wrap items-center gap-3">
+          <Button type="button" variant="secondary" onClick={syncFromMeta} disabled={busy}>
+            Sync from Meta
+          </Button>
+          <p className="text-xs text-ink-muted">
+            After creating or editing a template in WhatsApp Manager, sync so sends use the latest
+            version.
+          </p>
+        </div>
+      ) : null}
 
       {error ? <Alert className="mb-6">{error}</Alert> : null}
       {notice ? (
@@ -99,6 +222,7 @@ export default function TemplatesPage() {
                     <th>Language</th>
                     <th>Category</th>
                     <th>Meta status</th>
+                    <th>Header media</th>
                     <th>Campaigns</th>
                   </tr>
                 </thead>
@@ -110,12 +234,18 @@ export default function TemplatesPage() {
                       <td>{template.category}</td>
                       <td>{template.provider_status}</td>
                       <td>
+                        <HeaderMedia
+                          key={`${template.id}-${template.header_type}-${template.header_media_url ?? ''}`}
+                          template={template}
+                          canEdit={isAdmin}
+                          onSaved={saved}
+                        />
+                      </td>
+                      <td>
                         {template.usable_for_campaigns ? (
                           <StatusBadge status="READY" />
                         ) : (
-                          <span className="text-xs text-ink-muted">
-                            Not usable — needs Meta approval as MARKETING
-                          </span>
+                          <span className="text-xs text-ink-muted">{unusableReason(template)}</span>
                         )}
                       </td>
                     </tr>

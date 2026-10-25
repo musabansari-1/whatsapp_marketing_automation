@@ -328,6 +328,10 @@ export interface WhatsAppTemplate {
   provider_status: string;
   variable_count: number;
   body_preview: string | null;
+  /** NONE, TEXT, IMAGE, VIDEO or DOCUMENT, as Meta reports it. */
+  header_type: string;
+  /** The video/image/file every send carries; Meta's own sample is never sent. */
+  header_media_url: string | null;
 }
 
 export interface ProductTemplate extends WhatsAppTemplate {
@@ -466,6 +470,9 @@ export const api = {
   /** Shared-WABA templates no product owns yet ([D57]). */
   listUnassignedTemplates: () => request<WhatsAppTemplate[]>('/whatsapp-templates/unassigned'),
 
+  /** ADMIN-only. Re-reads every template from Meta, in the background. */
+  syncTemplates: () => request<{ queued: boolean }>('/whatsapp-templates/sync', { method: 'POST' }),
+
   /** Every product combined, asked for explicitly ([D53]). */
   getCombinedOverview: () => request<Overview>('/analytics/overview'),
 
@@ -519,6 +526,13 @@ export function productApi(slug: string) {
     assignTemplate: (templateId: string) =>
       request<ProductTemplate>(`${base}/whatsapp-templates/${templateId}/assign`, {
         method: 'POST',
+      }),
+
+    /** ADMIN-only. The public link a media header sends; null clears it. */
+    setTemplateHeaderMedia: (templateId: string, mediaUrl: string | null) =>
+      request<ProductTemplate>(`${base}/whatsapp-templates/${templateId}/header-media`, {
+        ...postJson({ media_url: mediaUrl }),
+        method: 'PUT',
       }),
 
     listCampaigns: (segment?: string) =>

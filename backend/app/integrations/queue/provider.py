@@ -53,6 +53,9 @@ class TaskType(StrEnum):
     # A team member's reply typed in the dashboard. Sent by the worker, not the API,
     # because the worker is where the window and suppression checks live.
     SEND_TEAM_REPLY = "send_team_reply"
+    # An approved template another system asked for (a status update such as "your
+    # profile is approved"). Sent by the worker for the same reason as a team reply.
+    SEND_TEMPLATE_NOTIFICATION = "send_template_notification"
     INGEST_KNOWLEDGE_DOCUMENT = "ingest_knowledge_document"
     GENERATE_EMBEDDINGS = "generate_embeddings"
     SYNC_CRM_CONTACT = "sync_crm_contact"

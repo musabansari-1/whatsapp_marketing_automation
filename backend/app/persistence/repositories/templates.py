@@ -167,6 +167,24 @@ async def list_owned(session: AsyncSession, *, product_id: uuid.UUID) -> Sequenc
     return result.scalars().all()
 
 
+async def get_owned_by_name(
+    session: AsyncSession, *, product_id: uuid.UUID, name: str, language: str
+) -> WhatsAppTemplate | None:
+    """One product's template by name and language, whatever Meta's status.
+
+    Unique per product (`uq_whatsapp_templates_product_name_language`), so this is
+    the template an integration means when it names one.
+    """
+    result = await session.execute(
+        select(WhatsAppTemplate).where(
+            WhatsAppTemplate.product_id == product_id,
+            WhatsAppTemplate.name == name,
+            WhatsAppTemplate.language == language,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_unassigned(session: AsyncSession) -> Sequence[WhatsAppTemplate]:
     """Shared-WABA templates no product owns yet ([D57])."""
     result = await session.execute(

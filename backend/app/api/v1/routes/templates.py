@@ -22,10 +22,11 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.api.deps import AdminUser, CurrentUser, DbSession
+from app.api.deps import AdminUser, CurrentUser, DbSession, Queue
 from app.api.schemas import (
     ProductTemplateResponse,
     SetTemplateHeaderMediaRequest,
+    TemplateSyncAccepted,
     WhatsAppTemplateResponse,
 )
 from app.api.scope import PRODUCT_PREFIX, ProductScope
@@ -41,6 +42,7 @@ from app.domain.campaign import (
     assert_template_usable,
 )
 from app.domain.enums import TemplateCategory
+from app.integrations.queue import TaskRequest, TaskType
 from app.persistence.models import Product, WhatsAppTemplate
 from app.persistence.repositories import templates as template_repo
 
@@ -257,6 +259,27 @@ async def list_unassigned_templates(
     """
     templates = await template_repo.list_unassigned(session)
     return [WhatsAppTemplateResponse.model_validate(template) for template in templates]
+
+
+@global_router.post(
+    "/sync", response_model=TemplateSyncAccepted, status_code=status.HTTP_202_ACCEPTED
+)
+async def sync_templates(user: AdminUser, queue: Queue) -> TemplateSyncAccepted:
+    """Re-read every template from Meta now. ADMIN-only.
+
+    For after a template is created or edited in WhatsApp Manager: until the sync runs,
+    the platform still has the old version (an edited header type, a new approval) and
+    a send can fail on the difference. Queued, because reading Meta is network work
+    (§4); the page reloads the list a few seconds later.
+    """
+    await queue.enqueue(
+        TaskRequest(
+            task_type=TaskType.SYNC_WHATSAPP_TEMPLATES,
+            task_id=f"template-sync-{uuid.uuid4().hex}",
+        )
+    )
+    logger.info("whatsapp_templates_sync_requested", by_user_id=str(user.id))
+    return TemplateSyncAccepted(queued=True)
 
 
 __all__ = ["first_reply_router", "global_router", "router", "usable_for_campaigns"]
