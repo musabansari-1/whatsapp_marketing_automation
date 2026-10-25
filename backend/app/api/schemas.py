@@ -270,6 +270,10 @@ class SetTemplateHeaderMediaRequest(BaseModel):
     media_url: str | None = Field(default=None, max_length=2048)
 
 
+class TemplateSyncAccepted(BaseModel):
+    queued: bool
+
+
 class CreateCampaignRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     audience_id: uuid.UUID
@@ -499,6 +503,37 @@ class TeamReplyRequest(BaseModel):
 class TeamReplyAccepted(BaseModel):
     queued: bool
     ai_paused_until: datetime | None
+
+
+class TemplateMessageRequest(BaseModel):
+    """An approved template another system asks the platform to send.
+
+    `idempotency_key` is the caller's id for this message: the same key sends once,
+    however often the caller retries.
+    """
+
+    phone: str = Field(min_length=6, max_length=32)
+    full_name: str | None = Field(default=None, max_length=255)
+    template_name: str = Field(min_length=1, max_length=512)
+    language: str = Field(default="en", min_length=2, max_length=20)
+    variables: list[str] = Field(default_factory=list, max_length=10)
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+    @field_validator("variables")
+    @classmethod
+    def _variables_are_sendable(cls, value: list[str]) -> list[str]:
+        # Meta refuses an empty parameter, a newline or tab in one, and more than four
+        # spaces in a row; failing here tells the caller which, instead of a send error.
+        for item in value:
+            if not item.strip() or len(item) > 1024:
+                raise ValueError("each variable must be 1-1024 characters")
+            if any(ch in item for ch in "\n\t") or "     " in item:
+                raise ValueError("variables cannot contain newlines, tabs or 5+ spaces")
+        return value
+
+
+class TemplateMessageAccepted(BaseModel):
+    queued: bool
 
 
 class ConversationDetailResponse(BaseModel):

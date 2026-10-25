@@ -151,6 +151,12 @@ class Settings(BaseSettings):
     whatsapp_api_base_url: str = "https://graph.facebook.com"
     whatsapp_timeout_seconds: float = 15.0
 
+    # ---------------------------------------------------------------- integrations
+    # Bearer tokens for systems that ask the platform to send an approved template,
+    # keyed by product slug: INTEGRATION_TOKENS='{"life-herba": "<token>"}'. A token
+    # only ever reaches its own product. Empty means the endpoint refuses everyone.
+    integration_tokens: dict[str, SecretStr] = Field(default_factory=dict)
+
     # ---------------------------------------------------------------- LLM [D10][D17]
     openrouter_api_key: SecretStr | None = None
     # No default. [D17]: the model is chosen after Phase 10 benchmarking.

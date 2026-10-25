@@ -21,6 +21,7 @@ from app.worker.handlers.sweeps import (
     sweep_unanswered_messages,
 )
 from app.worker.handlers.team_reply import send_team_reply
+from app.worker.handlers.template_notification import send_template_notification
 from app.worker.handlers.whatsapp import process_inbound_webhook, sync_whatsapp_templates
 from app.worker.registry import TaskRegistry, task_registry
 
@@ -45,6 +46,7 @@ def register_all(registry: TaskRegistry | None = None) -> None:
         TaskType.NOTIFY_OFFLINE_DEMO: notify_offline_demo,
         TaskType.NOTIFY_LEAD_ATTENTION: notify_lead_attention,
         TaskType.SEND_TEAM_REPLY: send_team_reply,
+        TaskType.SEND_TEMPLATE_NOTIFICATION: send_template_notification,
         TaskType.SWEEP_BOT_ACTIVITY: sweep_bot_activity,
         TaskType.SYNC_CRM_CONTACT: sync_crm_contact,
         TaskType.SWEEP_UNANSWERED_MESSAGES: sweep_unanswered_messages,
@@ -69,6 +71,7 @@ __all__ = [
     "register_all",
     "send_campaign_message",
     "send_team_reply",
+    "send_template_notification",
     "sweep_bot_activity",
     "sweep_expired_sessions",
     "sweep_rate_limit_counters",

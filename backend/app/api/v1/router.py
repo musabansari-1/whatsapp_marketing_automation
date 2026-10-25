@@ -3,8 +3,8 @@
 Two kinds of route, and the difference is structural rather than a naming convention:
 
 - **Global** routes serve the organisation as a whole: health, authentication, users,
-  webhooks, the product list, notifications, unassigned templates and combined
-  analytics.
+  webhooks, the product list, notifications, unassigned templates, combined
+  analytics and the token-authenticated integrations endpoint.
 - **Product-scoped** routes live under `/p/{product_slug}` and cannot be reached without
   naming a product (§28, Phase 26).
 
@@ -24,6 +24,7 @@ from app.api.v1.routes import (
     campaigns,
     conversations,
     health,
+    integrations,
     knowledge,
     notifications,
     products,
@@ -43,6 +44,7 @@ api_v1_router.include_router(products.router)
 api_v1_router.include_router(notifications.router)
 api_v1_router.include_router(templates.global_router)
 api_v1_router.include_router(analytics.global_router)
+api_v1_router.include_router(integrations.router)
 
 # ---------------------------------------------------------------- product-scoped
 api_v1_router.include_router(products.scoped_router)

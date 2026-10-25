@@ -48,6 +48,13 @@ function sentByTeam(turn: ConversationTurn): boolean {
   return turn.tool_calls?.sent_by === 'team';
 }
 
+function senderLabel(turn: ConversationTurn): string {
+  if (sentByTeam(turn)) return 'Team';
+  // A status template another system asked for, e.g. "your profile is approved".
+  if (turn.tool_calls?.sent_by === 'system') return 'Automatic update';
+  return 'Assistant';
+}
+
 function isPaused(until: string | null | undefined): boolean {
   return Boolean(until && new Date(until).getTime() > Date.now());
 }
@@ -322,9 +329,7 @@ function Transcript({ turns }: { turns: ConversationTurn[] }) {
               )}
             >
               {outgoing ? (
-                <p className="mb-0.5 text-[11px] font-semibold text-forest">
-                  {sentByTeam(turn) ? 'Team' : 'Assistant'}
-                </p>
+                <p className="mb-0.5 text-[11px] font-semibold text-forest">{senderLabel(turn)}</p>
               ) : null}
               <MessageText text={turn.content} outgoing={outgoing} />
               <p className="mt-0.5 text-right text-[10px] text-ink-muted">
