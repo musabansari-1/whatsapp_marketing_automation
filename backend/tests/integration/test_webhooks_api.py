@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -615,9 +616,10 @@ class TestStatusUpdates:
 
             audience = Audience(name="A", product_id=await ensure_product_id(session))
             template = WhatsAppTemplate(
-                name="t",
+                # Unique per run: this module's cleanup leaves templates in place.
+                name=f"t-counts-{uuid.uuid4().hex[:8]}",
                 language="en",
-                provider_template_id="tpl-counts",
+                provider_template_id=f"tpl-counts-{uuid.uuid4().hex}",
                 product_id=audience.product_id,
                 provider_status="APPROVED",
                 category="MARKETING",
