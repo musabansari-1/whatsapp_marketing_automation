@@ -474,6 +474,41 @@ class TestCancellation:
         assert send_env.total_sent == 0
         assert recipient_row(recipient_id).status is RecipientStatus.QUEUED
 
+    @pytest.mark.parametrize("status", [CampaignStatus.READY, CampaignStatus.SCHEDULED])
+    def test_a_task_that_arrives_before_the_broadcast_commits_is_retried(
+        self, send_env: FakeWhatsAppProvider, status: CampaignStatus
+    ) -> None:
+        """The send route enqueues before it commits PROCESSING, so a paced queue can
+        deliver a task while the campaign still reads READY. Completing that task
+        orphaned the recipient (29 of 191 on 26 October 2026); it must be retried."""
+        recipient_id = seed_campaign(status=status)
+
+        with pytest.raises(RetryableSendError) as exc_info:
+            run_handler(recipient_id)
+
+        assert exc_info.value.retry_after_seconds > 0
+        assert send_env.total_sent == 0
+        row = recipient_row(recipient_id)
+        assert row.status is RecipientStatus.QUEUED
+        assert row.attempts == 0
+
+    def test_the_retried_task_sends_once_the_broadcast_has_committed(
+        self, send_env: FakeWhatsAppProvider
+    ) -> None:
+        recipient_id = seed_campaign(status=CampaignStatus.READY)
+        with pytest.raises(RetryableSendError):
+            run_handler(recipient_id)
+
+        async def commit_broadcast(session: AsyncSession) -> None:
+            campaign = (await session.execute(select(Campaign))).scalar_one()
+            campaign.status = CampaignStatus.PROCESSING
+
+        run_db(commit_broadcast)
+
+        result = run_handler(recipient_id)
+        assert result["result"] == "sent"
+        assert send_env.total_sent == 1
+
     def test_a_completed_campaign_sends_nothing(self, send_env: FakeWhatsAppProvider) -> None:
         recipient_id = seed_campaign(status=CampaignStatus.COMPLETED)
         run_handler(recipient_id)

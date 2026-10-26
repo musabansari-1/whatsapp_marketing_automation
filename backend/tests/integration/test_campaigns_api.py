@@ -553,6 +553,35 @@ class TestRetrieval:
         ).json()
         assert pending["total"] == 3
 
+    def test_detail_counts_recipients_live_and_recipients_carry_names(
+        self, client: TestClient
+    ) -> None:
+        login(client)
+        audience_id = seed_audience(client, PHONES)
+        campaign_id = create_campaign(client, audience_id, seed_template()).json()["campaign"]["id"]
+
+        async def fail_one(session: AsyncSession) -> None:
+            recipient = (await session.execute(select(CampaignRecipient).limit(1))).scalar_one()
+            recipient.status = RecipientStatus.FAILED
+            recipient.error_code = "131026"
+            recipient.error_message = "Message undeliverable"
+
+        run_db(fail_one)
+
+        detail = client.get(f"{scoped_prefix()}/campaigns/{campaign_id}").json()
+        assert detail["status_counts"] == {"PENDING": 2, "FAILED": 1}
+        assert detail["pending_recipients"] == 2
+        assert detail["failure_reasons"] == [
+            {"error_code": "131026", "error_message": "Message undeliverable", "count": 1}
+        ]
+
+        page = client.get(f"{scoped_prefix()}/campaigns/{campaign_id}/recipients").json()
+        assert sorted(item["full_name"] for item in page["items"]) == [
+            "Person 0",
+            "Person 1",
+            "Person 2",
+        ]
+
     def test_unknown_campaign_detail_is_404(self, client: TestClient) -> None:
         login(client)
         assert client.get(f"{scoped_prefix()}/campaigns/{uuid.uuid4()}").status_code == 404

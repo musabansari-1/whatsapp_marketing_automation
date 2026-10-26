@@ -353,6 +353,9 @@ export interface Campaign {
   read_count: number;
   failed_count: number;
   skipped_count: number;
+  scheduled_for: string | null;
+  started_at: string | null;
+  completed_at: string | null;
   created_at: string;
 }
 
@@ -360,6 +363,15 @@ export interface CampaignDetail {
   campaign: Campaign;
   template: WhatsAppTemplate;
   pending_recipients: number;
+  /** Live per-status counts; the campaign's own counters can lag behind. */
+  status_counts: Partial<Record<RecipientStatus, number>>;
+  failure_reasons: CampaignFailureReason[];
+}
+
+export interface CampaignFailureReason {
+  error_code: string | null;
+  error_message: string | null;
+  count: number;
 }
 
 export interface CampaignRecipient {
@@ -369,7 +381,14 @@ export interface CampaignRecipient {
   status: RecipientStatus;
   attempts: number;
   provider_message_id: string | null;
+  error_code: string | null;
   error_message: string | null;
+  full_name: string | null;
+  queued_at: string | null;
+  sent_at: string | null;
+  delivered_at: string | null;
+  read_at: string | null;
+  failed_at: string | null;
 }
 
 export interface CampaignRecipientPage {
