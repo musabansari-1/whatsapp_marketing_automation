@@ -11,11 +11,13 @@
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
+import { Pager } from '@/app/pager';
 import { useProduct } from '@/components/product-context';
 import { SegmentBadge } from '@/components/segment-filter';
 import { StatusBadge } from '@/components/status-badge';
 import { Alert, Button, FilterChip, PageHeader, Skeleton } from '@/components/ui';
 import type { AudienceContact, AudienceSummary, ValidationStatus } from '@/lib/api';
+import { DEFAULT_PAGE_SIZE } from '@/lib/pagination';
 import { productHref } from '@/lib/product-routes';
 
 const FILTERS: { label: string; value: ValidationStatus | 'ALL' }[] = [
@@ -32,6 +34,7 @@ export default function AudienceDetailPage() {
   const [audience, setAudience] = useState<AudienceSummary | null>(null);
   const [contacts, setContacts] = useState<AudienceContact[]>([]);
   const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [filter, setFilter] = useState<ValidationStatus | 'ALL'>('ALL');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -40,7 +43,7 @@ export default function AudienceDetailPage() {
     try {
       const [summary, page] = await Promise.all([
         api.getAudience(id),
-        api.listContacts(id, filter === 'ALL' ? undefined : filter),
+        api.listContacts(id, filter === 'ALL' ? undefined : filter, DEFAULT_PAGE_SIZE, offset),
       ]);
       setAudience(summary);
       setContacts(page.items);
@@ -48,7 +51,7 @@ export default function AudienceDetailPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load this audience.');
     }
-  }, [api, id, filter]);
+  }, [api, id, filter, offset]);
 
   useEffect(() => {
     void load();
@@ -111,16 +114,15 @@ export default function AudienceDetailPage() {
               <FilterChip
                 key={option.value}
                 active={filter === option.value}
-                onClick={() => setFilter(option.value)}
+                onClick={() => {
+                  setFilter(option.value);
+                  setOffset(0);
+                }}
               >
                 {option.label}
               </FilterChip>
             ))}
           </div>
-
-          <p className="mb-2 text-xs text-ink-muted">
-            Showing {contacts.length} of {total}
-          </p>
 
           <div className="ui-table-wrap">
             <table className="ui-table">
@@ -162,6 +164,11 @@ export default function AudienceDetailPage() {
               </tbody>
             </table>
           </div>
+          <Pager
+            state={{ total, limit: DEFAULT_PAGE_SIZE, offset }}
+            shown={contacts.length}
+            onChange={setOffset}
+          />
         </>
       )}
     </>

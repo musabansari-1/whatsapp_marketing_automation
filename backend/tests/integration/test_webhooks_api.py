@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -605,6 +606,67 @@ class TestStatusUpdates:
         status, error = run_db(message)
         assert status is MessageStatus.FAILED
         assert error == "Message undeliverable"
+
+    def test_campaign_counters_follow_status_reports(self, webhook_client: TestClient) -> None:
+        """The list and overview read the campaign's counters. They used to freeze at
+        completion, so a broadcast that reached most people still read "Sent 7"."""
+
+        async def seed(session: AsyncSession) -> None:
+            from app.persistence.models import Audience, WhatsAppTemplate
+
+            audience = Audience(name="A", product_id=await ensure_product_id(session))
+            template = WhatsAppTemplate(
+                # Unique per run: this module's cleanup leaves templates in place.
+                name=f"t-counts-{uuid.uuid4().hex[:8]}",
+                language="en",
+                provider_template_id=f"tpl-counts-{uuid.uuid4().hex}",
+                product_id=audience.product_id,
+                provider_status="APPROVED",
+                category="MARKETING",
+            )
+            lead = Lead(phone_e164=CUSTOMER, product_id=audience.product_id)
+            session.add_all([audience, template, lead])
+            await session.flush()
+            campaign = Campaign(
+                name="C",
+                audience_id=audience.id,
+                product_id=audience.product_id,
+                template_id=template.id,
+                sent_count=1,
+            )
+            session.add(campaign)
+            await session.flush()
+            session.add(
+                CampaignRecipient(
+                    campaign_id=campaign.id,
+                    lead_id=lead.id,
+                    phone_e164=CUSTOMER,
+                    status=RecipientStatus.SENT,
+                    provider_message_id="wamid.campaign",
+                )
+            )
+
+        run_db(seed)
+
+        async def counters(session: AsyncSession) -> tuple[int, int, int]:
+            row = (
+                await session.execute(
+                    select(Campaign.sent_count, Campaign.delivered_count, Campaign.failed_count)
+                )
+            ).one()
+            return row[0], row[1], row[2]
+
+        post_webhook(webhook_client, status_update("wamid.campaign", "delivered"))
+        process_all()
+        assert run_db(counters) == (0, 1, 0)
+
+        payload = status_update("wamid.campaign", "failed")
+        payload["entry"][0]["changes"][0]["value"]["statuses"][0]["errors"] = [
+            {"code": 131049, "title": "Healthy ecosystem"}
+        ]
+        post_webhook(webhook_client, payload)
+        process_all()
+        assert run_db(counters) == (0, 0, 1)
 
     def test_a_status_for_an_unknown_message_is_harmless(self, webhook_client: TestClient) -> None:
         """Meta also reports statuses for messages sent outside this platform."""
