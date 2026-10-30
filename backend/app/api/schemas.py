@@ -319,6 +319,18 @@ class CampaignDetailResponse(BaseModel):
     template: WhatsAppTemplateResponse
     pending_recipients: int
     activity: list[CampaignActivityResponse]
+    # Read live from the recipient rows on every request, so the dashboard never shows
+    # the campaign's denormalized counters from before Meta's later reports arrived.
+    status_counts: dict[RecipientStatus, int] = Field(default_factory=dict)
+    failure_reasons: list[CampaignFailureReason] = Field(default_factory=list)
+
+
+class CampaignFailureReason(BaseModel):
+    """Failed recipients sharing one Meta error."""
+
+    error_code: str | None
+    error_message: str | None
+    count: int
 
 
 class CampaignRecipientResponse(BaseModel):
@@ -332,7 +344,15 @@ class CampaignRecipientResponse(BaseModel):
     status: RecipientStatus
     attempts: int
     provider_message_id: str | None
+    error_code: str | None = None
     error_message: str | None
+    # Who the number belongs to, from the lead. Absent when the lead has no name.
+    full_name: str | None = None
+    queued_at: datetime | None = None
+    sent_at: datetime | None = None
+    delivered_at: datetime | None = None
+    read_at: datetime | None = None
+    failed_at: datetime | None = None
 
 
 class CampaignRecipientPage(BaseModel):

@@ -11,6 +11,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.domain.campaign import recipient_status_for
 from app.domain.enums import (
@@ -212,11 +213,44 @@ async def list_recipients(
     limit: int = 100,
     offset: int = 0,
 ) -> Sequence[CampaignRecipient]:
-    query = select(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
+    # The lead comes along because the dashboard shows who each number belongs to.
+    query = (
+        select(CampaignRecipient)
+        .options(selectinload(CampaignRecipient.lead))
+        .where(CampaignRecipient.campaign_id == campaign_id)
+    )
     if status is not None:
         query = query.where(CampaignRecipient.status == status)
     query = query.order_by(CampaignRecipient.phone_e164).limit(limit).offset(offset)
     return (await session.execute(query)).scalars().all()
+
+
+async def recipient_status_counts(
+    session: AsyncSession, campaign_id: uuid.UUID
+) -> dict[RecipientStatus, int]:
+    """How many recipients are in each status, read live from the rows."""
+    result = await session.execute(
+        select(CampaignRecipient.status, func.count())
+        .where(CampaignRecipient.campaign_id == campaign_id)
+        .group_by(CampaignRecipient.status)
+    )
+    return {row[0]: int(row[1]) for row in result.all()}
+
+
+async def failure_reasons(
+    session: AsyncSession, campaign_id: uuid.UUID
+) -> list[tuple[str | None, str | None, int]]:
+    """Failed recipients grouped by Meta's error, most common first."""
+    result = await session.execute(
+        select(CampaignRecipient.error_code, CampaignRecipient.error_message, func.count())
+        .where(
+            CampaignRecipient.campaign_id == campaign_id,
+            CampaignRecipient.status == RecipientStatus.FAILED,
+        )
+        .group_by(CampaignRecipient.error_code, CampaignRecipient.error_message)
+        .order_by(func.count().desc())
+    )
+    return [(row[0], row[1], int(row[2])) for row in result.all()]
 
 
 async def list_pending_recipients(

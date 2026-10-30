@@ -22,6 +22,7 @@ from app.api.deps import AdminUser, DbSession, Queue
 from app.api.schemas import (
     CampaignActivityResponse,
     CampaignDetailResponse,
+    CampaignFailureReason,
     CampaignRecipientPage,
     CampaignRecipientResponse,
     CampaignResponse,
@@ -221,7 +222,12 @@ async def list_recipients(
         total=total,
         limit=limit,
         offset=offset,
-        items=[CampaignRecipientResponse.model_validate(r) for r in recipients],
+        items=[
+            CampaignRecipientResponse.model_validate(r).model_copy(
+                update={"full_name": r.lead.full_name if r.lead else None}
+            )
+            for r in recipients
+        ],
     )
 
 
@@ -382,16 +388,20 @@ async def _detail(session: DbSession, campaign: Campaign) -> CampaignDetailRespo
     if template is None:  # pragma: no cover - the foreign key prevents this
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
 
-    pending = await campaign_repo.count_recipients(
-        session, campaign.id, status=RecipientStatus.PENDING
-    )
+    counts = await campaign_repo.recipient_status_counts(session, campaign.id)
+    reasons = await campaign_repo.failure_reasons(session, campaign.id)
     return CampaignDetailResponse(
         campaign=CampaignResponse.model_validate(campaign),
         template=WhatsAppTemplateResponse.model_validate(template),
-        pending_recipients=pending,
+        pending_recipients=counts.get(RecipientStatus.PENDING, 0),
         activity=[
             CampaignActivityResponse.model_validate(event)
             for event in await campaign_repo.list_activity(session, campaign.id)
+        ],
+        status_counts=counts,
+        failure_reasons=[
+            CampaignFailureReason(error_code=code, error_message=message, count=count)
+            for code, message, count in reasons
         ],
     )
 
