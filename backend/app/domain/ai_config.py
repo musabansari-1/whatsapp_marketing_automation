@@ -280,6 +280,27 @@ def with_audience_segment_context(
     return f"{prompt}\n\n{block}" if prompt else block
 
 
+def with_lead_capture_guidance(system_prompt: str) -> str:
+    """Point a campaign reply at a callback rather than app registration.
+
+    Used in place of the registration guidance when the campaign the customer answers
+    collects details for the team to call back.
+    """
+    block = "\n".join(
+        [
+            "## Goal of this conversation",
+            "",
+            "This customer answers a campaign that collects their details for a call",
+            "from the team. Follow the campaign's knowledge base scripts: collect what",
+            "they ask for, one question at a time, and confirm the callback with the",
+            "script's confirmation message. Do not ask the customer to download the app,",
+            "register, or sign up, and do not share registration links.",
+        ]
+    )
+    prompt = system_prompt.rstrip()
+    return f"{prompt}\n\n{block}" if prompt else block
+
+
 def with_campaign_context(
     system_prompt: str,
     *,

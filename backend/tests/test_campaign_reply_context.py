@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from datetime import UTC, datetime
 
-from app.domain.ai_config import with_campaign_context
-from app.worker.handlers.conversation import LastCampaign, _retrieval_query
+from app.domain.ai_config import with_campaign_context, with_lead_capture_guidance
+from app.worker.handlers.conversation import (
+    LastCampaign,
+    _campaign_asks_to_register,
+    _retrieval_query,
+)
 
 POD = LastCampaign(
     template_name="lifeherba_wellness_pod_studio",
@@ -41,3 +46,17 @@ def test_real_questions_and_non_campaign_leads_search_as_asked() -> None:
     question = "What is the investment for the Studio and which cities are open?"
     assert _retrieval_query(question, POD) == question
     assert _retrieval_query("I'm Interested", None) == "I'm Interested"
+
+
+def test_only_a_campaign_that_invites_registration_keeps_the_registration_goal() -> None:
+    onboarding = dataclasses.replace(
+        POD, template_body="Hello {{1}}, tap *Register Now* to join LifeHerba."
+    )
+    assert _campaign_asks_to_register(onboarding)
+    assert not _campaign_asks_to_register(POD)
+
+
+def test_lead_capture_guidance_rules_out_the_app() -> None:
+    text = with_lead_capture_guidance("Base prompt.")
+    assert text.startswith("Base prompt.\n\n## Goal of this conversation")
+    assert "Do not ask the customer to download the app" in text

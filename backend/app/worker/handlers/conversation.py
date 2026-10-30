@@ -31,6 +31,7 @@ specific failure:
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -54,6 +55,7 @@ from app.domain.ai_config import (
     ResolvedAIConfig,
     with_audience_segment_context,
     with_campaign_context,
+    with_lead_capture_guidance,
     with_lead_context,
 )
 from app.domain.campaign import assert_header_media_available
@@ -432,13 +434,21 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             include_booking_tools = uses_calendar_booking(
                 None if product is None else product.conversion_mode
             )
-            system_prompt = with_conversion_guidance(
-                ai_config.system_prompt,
-                mode=None if product is None else product.conversion_mode,
-                registration_url=_registration_url(product, segment),
-                cta_label=None if segment is None else segment.cta_label,
-                cta_instruction=None if segment is None else segment.cta_instruction,
-            )
+            if campaign is not None and not _campaign_asks_to_register(campaign):
+                # A lead-capture campaign (Pod & Studio: "I'm Interested", "Request a
+                # Call") converts by collecting details for a callback, as its knowledge
+                # base scripts say. The segment's registration call to action and the
+                # calendar would pull the reply to signing up in the app instead.
+                include_booking_tools = False
+                system_prompt = with_lead_capture_guidance(ai_config.system_prompt)
+            else:
+                system_prompt = with_conversion_guidance(
+                    ai_config.system_prompt,
+                    mode=None if product is None else product.conversion_mode,
+                    registration_url=_registration_url(product, segment),
+                    cta_label=None if segment is None else segment.cta_label,
+                    cta_instruction=None if segment is None else segment.cta_instruction,
+                )
             system_prompt = with_audience_segment_context(
                 system_prompt,
                 segment_display_name=None if segment is None else segment.display_name,
@@ -894,6 +904,18 @@ async def _last_campaign(
         )
     ).first()
     return None if row is None else LastCampaign(row[0], row[1], row[2], row[3])
+
+
+_REGISTER = re.compile(r"\bregist", re.IGNORECASE)
+
+
+def _campaign_asks_to_register(campaign: LastCampaign) -> bool:
+    """Whether the campaign message invites the customer to register in the app.
+
+    The doctor-onboarding message says "Tap *Register Now* to join"; the Pod & Studio
+    one only offers quick replies. Meta's buttons are not stored, so the body decides.
+    """
+    return bool(_REGISTER.search(campaign.template_body or ""))
 
 
 # Replies at most this long are taken as answers to the campaign (a button tap, "yes",
