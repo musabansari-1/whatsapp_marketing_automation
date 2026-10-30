@@ -2,22 +2,33 @@
 
 from __future__ import annotations
 
-from app.domain.ai_config import with_campaign_context
-from app.worker.handlers.conversation import _retrieval_query
+import uuid
+from datetime import UTC, datetime
 
-POD = ("lifeherba_wellness_pod_studio", "Hello {{1}},\n\nIntroducing LifeHerba Wellness Pod")
+from app.domain.ai_config import with_campaign_context
+from app.worker.handlers.conversation import LastCampaign, _retrieval_query
+
+POD = LastCampaign(
+    template_name="lifeherba_wellness_pod_studio",
+    template_body="Hello {{1}},\n\nIntroducing LifeHerba Wellness Pod",
+    segment_id=uuid.uuid4(),
+    sent_at=datetime(2026, 10, 30, 9, 54, tzinfo=UTC),
+)
 
 
 def test_campaign_block_carries_template_and_body() -> None:
-    text = with_campaign_context("Base prompt.", template_name=POD[0], body=POD[1])
+    text = with_campaign_context(
+        "Base prompt.", template_name=POD.template_name, body=POD.template_body
+    )
     assert text.startswith("Base prompt.\n\n## Last campaign message this customer received")
     assert "Template: lifeherba_wellness_pod_studio" in text
     assert "Introducing LifeHerba Wellness Pod" in text
 
 
 def test_no_body_leaves_prompt_unchanged() -> None:
-    assert with_campaign_context("Base prompt.", template_name=POD[0], body=None) == "Base prompt."
-    assert with_campaign_context("Base prompt.", template_name=POD[0], body="  ") == "Base prompt."
+    name = POD.template_name
+    assert with_campaign_context("Base prompt.", template_name=name, body=None) == "Base prompt."
+    assert with_campaign_context("Base prompt.", template_name=name, body="  ") == "Base prompt."
 
 
 def test_button_tap_is_searched_with_the_campaign_topic() -> None:

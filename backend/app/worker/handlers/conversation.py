@@ -342,11 +342,24 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             # allow walking a state backwards.
             await _advance_to_responded(session, lead)
 
+        campaign = await _last_campaign(session, lead.id, conversation.product_id)
+        if campaign is not None and campaign.segment_id != conversation.segment_id:
+            # A newer campaign reached this lead under another segment: the reply answers
+            # that campaign, so the exchange now runs under its segment (and its call to
+            # action), not the one the conversation was first opened with.
+            conversation.segment_id = campaign.segment_id
         history = await conversation_repo.get_history(
             session,
             conversation.id,
             limit=settings.conversation_history_turns or DEFAULT_HISTORY_TURNS,
         )
+        if campaign is not None:
+            # Earlier turns answered an earlier offer. Left in, they pull the reply back
+            # to it: on 30 October 2026 a Pod & Studio "I'm Interested" got the doctor
+            # registration steps from a 22 October exchange.
+            history = [turn for turn in history if turn.created_at >= campaign.sent_at] or (
+                history[-1:]
+            )
         prompt = _history_messages(history)
         conversation_id = conversation.id
         lead_id = lead.id
@@ -358,7 +371,6 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         segment_id = conversation.segment_id
         question = message.body or ""
         trigger_wamid = message.provider_message_id
-        campaign_template = await _last_campaign_template(session, lead_id, product_id)
         await session.commit()
 
     started = datetime.now(UTC)
@@ -397,7 +409,7 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         _show_typing_indicator(settings, product_id, trigger_wamid),
         _retrieve(
             settings,
-            _retrieval_query(question, campaign_template),
+            _retrieval_query(question, campaign),
             product_id=product_id,
             segment_id=segment_id,
             config=ai_config,
@@ -415,11 +427,7 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             # Resolved from the snapshotted product, never from anything the model says,
             # so a turn cannot read or book another product's diary.
             product = await session.get(Product, conversation.product_id)
-            segment = (
-                await session.get(Segment, conversation.segment_id)
-                if conversation.segment_id is not None
-                else None
-            )
+            segment = await session.get(Segment, segment_id) if segment_id is not None else None
             slot_policy, calendar = resolve_booking_capability(settings, product)
             include_booking_tools = uses_calendar_booking(
                 None if product is None else product.conversion_mode
@@ -435,11 +443,11 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
                 system_prompt,
                 segment_display_name=None if segment is None else segment.display_name,
             )
-            if campaign_template is not None:
+            if campaign is not None:
                 system_prompt = with_campaign_context(
                     system_prompt,
-                    template_name=campaign_template[0],
-                    body=campaign_template[1],
+                    template_name=campaign.template_name,
+                    body=campaign.template_body,
                 )
             # The lead was loaded before the turn, so its summary rides along and
             # most turns never spend a `get_lead` round learning a name and an
@@ -853,13 +861,27 @@ def _registration_url(product: Product | None, segment: Segment | None) -> str |
     return None if product is None else product.registration_url
 
 
-async def _last_campaign_template(
+@dataclass(frozen=True)
+class LastCampaign:
+    """The last campaign message that reached a lead."""
+
+    template_name: str
+    template_body: str | None
+    segment_id: uuid.UUID
+    sent_at: datetime
+
+
+async def _last_campaign(
     session: AsyncSession, lead_id: uuid.UUID, product_id: uuid.UUID
-) -> tuple[str, str | None] | None:
-    """Name and body of the template in the last campaign that reached this lead."""
+) -> LastCampaign | None:
     row = (
         await session.execute(
-            select(WhatsAppTemplate.name, WhatsAppTemplate.body_preview)
+            select(
+                WhatsAppTemplate.name,
+                WhatsAppTemplate.body_preview,
+                Campaign.segment_id,
+                CampaignRecipient.sent_at,
+            )
             .join(Campaign, Campaign.template_id == WhatsAppTemplate.id)
             .join(CampaignRecipient, CampaignRecipient.campaign_id == Campaign.id)
             .where(
@@ -871,7 +893,7 @@ async def _last_campaign_template(
             .limit(1)
         )
     ).first()
-    return None if row is None else (row[0], row[1])
+    return None if row is None else LastCampaign(row[0], row[1], row[2], row[3])
 
 
 # Replies at most this long are taken as answers to the campaign (a button tap, "yes",
@@ -879,15 +901,15 @@ async def _last_campaign_template(
 _SHORT_REPLY_CHARS = 40
 
 
-def _retrieval_query(question: str, campaign_template: tuple[str, str | None] | None) -> str:
+def _retrieval_query(question: str, campaign: LastCampaign | None) -> str:
     """Search the knowledge base for a short reply in the light of the campaign it answers.
 
     "I'm Interested" alone matches every campaign's guidance equally; with the template
     name added, retrieval finds the scripts written for the offer the customer saw.
     """
-    if campaign_template is None or len(question.strip()) > _SHORT_REPLY_CHARS:
+    if campaign is None or len(question.strip()) > _SHORT_REPLY_CHARS:
         return question
-    topic = campaign_template[0].replace("_", " ")
+    topic = campaign.template_name.replace("_", " ")
     return f"{question}\n{topic}"
 
 
