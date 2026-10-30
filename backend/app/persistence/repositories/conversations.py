@@ -25,12 +25,30 @@ from app.domain.conversation import (
     assert_lead_transition,
 )
 from app.domain.enums import ConversationStatus, LeadStatus, MessageDirection
-from app.persistence.models import Conversation, ConversationMessage, Lead, Message
+from app.persistence.models import (
+    Campaign,
+    CampaignRecipient,
+    Conversation,
+    ConversationMessage,
+    Lead,
+    Message,
+)
 
 # Transcript roles, matching the LLM transport vocabulary.
 ROLE_USER = "user"
 ROLE_ASSISTANT = "assistant"
 ROLE_SYSTEM = "system"
+
+
+async def list_lead_campaigns(session: AsyncSession, lead_id: uuid.UUID):
+    """Campaign snapshots that included this lead, newest campaign first."""
+    result = await session.execute(
+        select(Campaign, CampaignRecipient)
+        .join(CampaignRecipient, CampaignRecipient.campaign_id == Campaign.id)
+        .where(CampaignRecipient.lead_id == lead_id)
+        .order_by(Campaign.created_at.desc())
+    )
+    return result.all()
 
 
 # ---------------------------------------------------------------- conversations
@@ -85,6 +103,7 @@ async def list_conversations(
     product_id: uuid.UUID,
     segment_id: uuid.UUID | None = None,
     status: ConversationStatus | None = None,
+    campaign_id: uuid.UUID | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[int, Sequence[Conversation]]:
@@ -94,6 +113,17 @@ async def list_conversations(
     conditions = conversation_scope(product_id=product_id, segment_id=segment_id)
     if status is not None:
         conditions.append(Conversation.status == status)
+    if campaign_id is not None:
+        conditions.append(
+            Conversation.lead_id.in_(
+                select(CampaignRecipient.lead_id)
+                .join(Campaign, Campaign.id == CampaignRecipient.campaign_id)
+                .where(
+                    CampaignRecipient.campaign_id == campaign_id,
+                    Campaign.product_id == product_id,
+                )
+            )
+        )
 
     total = await session.scalar(select(func.count()).select_from(Conversation).where(*conditions))
 
@@ -355,6 +385,8 @@ async def list_leads(
     product_id: uuid.UUID,
     segment_id: uuid.UUID | None = None,
     status: LeadStatus | None = None,
+    campaign_id: uuid.UUID | None = None,
+    include_archived: bool = False,
     search: str | None = None,
     limit: int = 50,
     offset: int = 0,
@@ -369,8 +401,21 @@ async def list_leads(
     from app.persistence.repositories.scoping import lead_scope
 
     conditions = lead_scope(product_id=product_id, segment_id=segment_id)
+    if not include_archived:
+        conditions.append(Lead.archived_at.is_(None))
     if status is not None:
         conditions.append(Lead.status == status)
+    if campaign_id is not None:
+        conditions.append(
+            Lead.id.in_(
+                select(CampaignRecipient.lead_id)
+                .join(Campaign, Campaign.id == CampaignRecipient.campaign_id)
+                .where(
+                    CampaignRecipient.campaign_id == campaign_id,
+                    Campaign.product_id == product_id,
+                )
+            )
+        )
     if search:
         pattern = f"%{search.strip()}%"
         conditions.append(

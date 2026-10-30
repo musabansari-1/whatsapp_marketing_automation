@@ -67,11 +67,6 @@ from app.persistence.models import (
 logger = get_logger(__name__)
 
 
-# Long enough for the send route to finish enqueueing a large audience and commit, short
-# enough that the queue's attempt limit is not spent waiting.
-_NOT_STARTED_RETRY_SECONDS = 30.0
-
-
 class RetryableSendError(Exception):
     """The send failed but is worth another attempt.
 
@@ -182,18 +177,6 @@ async def _process(
         # and this recipient should be sent then.
         logger.info("campaign_send_deferred", reason="campaign_paused")
         return SendOutcome("deferred_campaign_paused", str(recipient.id))
-
-    if campaign.status in (CampaignStatus.READY, CampaignStatus.SCHEDULED):
-        # The broadcast has not committed yet. The send route enqueues every task before
-        # it commits PROCESSING, and a paced queue delivers the first tasks inside that
-        # window. Completing the task here would orphan the recipient: the route then
-        # marks it QUEUED and nothing is left in the queue to send it. On 26 October
-        # 2026 that left 29 of a 191-recipient broadcast unsent. Ask the queue to come
-        # back once the commit has landed.
-        logger.info("campaign_send_deferred", reason="campaign_not_started")
-        raise RetryableSendError(
-            "Campaign has not started yet", retry_after_seconds=_NOT_STARTED_RETRY_SECONDS
-        )
 
     if campaign.status is not CampaignStatus.PROCESSING:
         logger.info("campaign_send_skipped", reason=f"campaign_{campaign.status.value.lower()}")
@@ -433,6 +416,7 @@ async def _complete_campaign_if_finished(session: AsyncSession, campaign: Campai
     if campaign.status is CampaignStatus.PROCESSING:
         campaign.status = CampaignStatus.COMPLETED
         campaign.completed_at = datetime.now(UTC)
+        await campaign_repo.record_activity(session, campaign.id, "COMPLETED")
 
     await campaign_repo.refresh_counts(session, campaign)
     logger.info("campaign_completed", campaign_id=str(campaign.id))

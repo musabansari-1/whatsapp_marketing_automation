@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
+    DateTime,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
@@ -53,6 +55,7 @@ class Audience(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
         default=AudienceStatus.PENDING_CONFIRMATION,
     )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     total_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     valid_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

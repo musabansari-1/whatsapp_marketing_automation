@@ -157,6 +157,7 @@ class AudienceSummaryResponse(BaseModel):
     invalid_rows: int
     duplicate_rows: int
     created_at: datetime
+    archived_at: datetime | None = None
 
 
 class AudienceContactResponse(BaseModel):
@@ -300,30 +301,24 @@ class CampaignResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+    archived_at: datetime | None = None
+
+
+class CampaignActivityResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    event_type: str
+    created_at: datetime
 
 
 class CampaignDetailResponse(BaseModel):
-    """A campaign with the template it will send and its outstanding work.
-
-    `pending_recipients` is what the Send Broadcast confirmation is about, so the
-    admin sees the number before triggering it.
-    """
+    """A campaign with the template, pending work and recorded activity."""
 
     campaign: CampaignResponse
     template: WhatsAppTemplateResponse
     pending_recipients: int
-    # Read live from the recipient rows on every request, so the dashboard never shows
-    # the campaign's denormalized counters from before Meta's later reports arrived.
-    status_counts: dict[RecipientStatus, int] = Field(default_factory=dict)
-    failure_reasons: list[CampaignFailureReason] = Field(default_factory=list)
-
-
-class CampaignFailureReason(BaseModel):
-    """Failed recipients sharing one Meta error."""
-
-    error_code: str | None
-    error_message: str | None
-    count: int
+    activity: list[CampaignActivityResponse]
 
 
 class CampaignRecipientResponse(BaseModel):
@@ -337,15 +332,7 @@ class CampaignRecipientResponse(BaseModel):
     status: RecipientStatus
     attempts: int
     provider_message_id: str | None
-    error_code: str | None = None
     error_message: str | None
-    # Who the number belongs to, from the lead. Absent when the lead has no name.
-    full_name: str | None = None
-    queued_at: datetime | None = None
-    sent_at: datetime | None = None
-    delivered_at: datetime | None = None
-    read_at: datetime | None = None
-    failed_at: datetime | None = None
 
 
 class CampaignRecipientPage(BaseModel):
@@ -353,6 +340,16 @@ class CampaignRecipientPage(BaseModel):
     limit: int
     offset: int
     items: list[CampaignRecipientResponse]
+
+
+class LeadCampaignResponse(BaseModel):
+    """A campaign recipient record attached to a lead."""
+
+    campaign_id: uuid.UUID
+    campaign_name: str
+    campaign_created_at: datetime
+    recipient_status: RecipientStatus
+    sent_at: datetime | None
 
 
 class SendCampaignResponse(BaseModel):
@@ -446,6 +443,7 @@ class LeadResponse(BaseModel):
     source_audience_id: uuid.UUID | None
     last_contacted_at: datetime | None
     created_at: datetime
+    archived_at: datetime | None = None
 
 
 class LeadPage(BaseModel):

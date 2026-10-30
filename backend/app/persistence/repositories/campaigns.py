@@ -11,7 +11,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.domain.campaign import recipient_status_for
 from app.domain.enums import (
@@ -23,6 +22,7 @@ from app.persistence.models import (
     Audience,
     AudienceContact,
     Campaign,
+    CampaignActivity,
     CampaignRecipient,
     Lead,
     WhatsAppSuppression,
@@ -73,16 +73,45 @@ async def get_by_id(session: AsyncSession, campaign_id: uuid.UUID) -> Campaign |
     return await session.get(Campaign, campaign_id)
 
 
-async def list_campaigns(
-    session: AsyncSession, *, product_id: uuid.UUID, segment_id: uuid.UUID | None = None
-) -> Sequence[Campaign]:
-    """One product's campaigns, newest first. There is no all-products campaign list."""
+async def record_activity(session: AsyncSession, campaign_id: uuid.UUID, event_type: str) -> None:
+    session.add(
+        CampaignActivity(
+            campaign_id=campaign_id,
+            event_type=event_type,
+            created_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+
+
+async def list_activity(session: AsyncSession, campaign_id: uuid.UUID) -> Sequence[CampaignActivity]:
     result = await session.execute(
-        select(Campaign)
-        .where(*campaign_scope(product_id=product_id, segment_id=segment_id))
-        .order_by(Campaign.created_at.desc())
+        select(CampaignActivity)
+        .where(CampaignActivity.campaign_id == campaign_id)
+        .order_by(CampaignActivity.created_at, CampaignActivity.id)
     )
     return result.scalars().all()
+
+
+async def list_campaigns(
+    session: AsyncSession, *, product_id: uuid.UUID, segment_id: uuid.UUID | None = None,
+    include_archived: bool = False,
+) -> Sequence[Campaign]:
+    """One product's campaigns, newest first. There is no all-products campaign list."""
+    conditions = campaign_scope(product_id=product_id, segment_id=segment_id)
+    if not include_archived:
+        conditions.append(Campaign.archived_at.is_(None))
+    result = await session.execute(
+        select(Campaign)
+        .where(*conditions)
+        .order_by(Campaign.created_at.desc())
+    )
+    campaigns = result.scalars().all()
+    # Recipient statuses can change asynchronously as send jobs finish and provider
+    # webhooks arrive. Keep the denormalized counters current for the list response.
+    for campaign in campaigns:
+        await refresh_counts(session, campaign)
+    return campaigns
 
 
 # ---------------------------------------------------------------- recipient snapshot
@@ -183,44 +212,11 @@ async def list_recipients(
     limit: int = 100,
     offset: int = 0,
 ) -> Sequence[CampaignRecipient]:
-    # The lead comes along because the dashboard shows who each number belongs to.
-    query = (
-        select(CampaignRecipient)
-        .options(selectinload(CampaignRecipient.lead))
-        .where(CampaignRecipient.campaign_id == campaign_id)
-    )
+    query = select(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
     if status is not None:
         query = query.where(CampaignRecipient.status == status)
     query = query.order_by(CampaignRecipient.phone_e164).limit(limit).offset(offset)
     return (await session.execute(query)).scalars().all()
-
-
-async def recipient_status_counts(
-    session: AsyncSession, campaign_id: uuid.UUID
-) -> dict[RecipientStatus, int]:
-    """How many recipients are in each status, read live from the rows."""
-    result = await session.execute(
-        select(CampaignRecipient.status, func.count())
-        .where(CampaignRecipient.campaign_id == campaign_id)
-        .group_by(CampaignRecipient.status)
-    )
-    return {row[0]: int(row[1]) for row in result.all()}
-
-
-async def failure_reasons(
-    session: AsyncSession, campaign_id: uuid.UUID
-) -> list[tuple[str | None, str | None, int]]:
-    """Failed recipients grouped by Meta's error, most common first."""
-    result = await session.execute(
-        select(CampaignRecipient.error_code, CampaignRecipient.error_message, func.count())
-        .where(
-            CampaignRecipient.campaign_id == campaign_id,
-            CampaignRecipient.status == RecipientStatus.FAILED,
-        )
-        .group_by(CampaignRecipient.error_code, CampaignRecipient.error_message)
-        .order_by(func.count().desc())
-    )
-    return [(row[0], row[1], int(row[2])) for row in result.all()]
 
 
 async def list_pending_recipients(
@@ -325,8 +321,16 @@ async def refresh_counts(session: AsyncSession, campaign: Campaign) -> None:
     counts: dict[RecipientStatus, int] = {row[0]: int(row[1]) for row in result.all()}
 
     campaign.total_recipients = sum(counts.values())
-    campaign.sent_count = counts.get(RecipientStatus.SENT, 0)
-    campaign.delivered_count = counts.get(RecipientStatus.DELIVERED, 0)
+    # These are cumulative delivery milestones, not mutually exclusive current
+    # statuses: every delivered/read recipient was also sent, and every read
+    # recipient was also delivered.
+    campaign.sent_count = sum(
+        counts.get(status, 0)
+        for status in (RecipientStatus.SENT, RecipientStatus.DELIVERED, RecipientStatus.READ)
+    )
+    campaign.delivered_count = counts.get(RecipientStatus.DELIVERED, 0) + counts.get(
+        RecipientStatus.READ, 0
+    )
     campaign.read_count = counts.get(RecipientStatus.READ, 0)
     campaign.failed_count = counts.get(RecipientStatus.FAILED, 0)
     campaign.skipped_count = counts.get(RecipientStatus.SKIPPED, 0)

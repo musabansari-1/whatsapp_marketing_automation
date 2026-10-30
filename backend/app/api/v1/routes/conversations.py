@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.api.deps import CurrentUser, DbSession, Queue, SettingsDep
+from app.api.deps import AdminUser, CurrentUser, DbSession, Queue, SettingsDep
 from app.api.schemas import (
     ConversationDetailResponse,
     ConversationListItem,
@@ -29,6 +29,7 @@ from app.api.schemas import (
     ConversationResponse,
     ConversationTurnResponse,
     LeadPage,
+    LeadCampaignResponse,
     LeadResponse,
     TeamReplyAccepted,
     TeamReplyRequest,
@@ -62,6 +63,8 @@ async def list_leads(
     segment: SegmentFilter,
     session: DbSession,
     lead_status: LeadStatus | None = Query(default=None, alias="status"),
+    campaign_id: uuid.UUID | None = Query(default=None),
+    include_archived: bool = Query(default=False),
     search: str | None = Query(default=None, max_length=255),
     limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
@@ -76,6 +79,8 @@ async def list_leads(
         product_id=product.id,
         segment_id=segment.id if segment is not None else None,
         status=lead_status,
+        campaign_id=campaign_id,
+        include_archived=include_archived,
         search=search,
         limit=limit,
         offset=offset,
@@ -88,9 +93,44 @@ async def list_leads(
     )
 
 
+@router.post("/leads/{lead_id}/archive", response_model=LeadResponse)
+async def archive_lead(lead_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> LeadResponse:
+    lead = await _require_lead(session, product, lead_id)
+    lead.archived_at = lead.archived_at or datetime.now(UTC)
+    await session.flush()
+    return LeadResponse.model_validate(lead)
+
+
+@router.post("/leads/{lead_id}/restore", response_model=LeadResponse)
+async def restore_lead(lead_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> LeadResponse:
+    lead = await _require_lead(session, product, lead_id)
+    lead.archived_at = None
+    await session.flush()
+    return LeadResponse.model_validate(lead)
+
+
 @router.get("/leads/{lead_id}", response_model=LeadResponse)
 async def get_lead(lead_id: uuid.UUID, product: ProductScope, session: DbSession) -> LeadResponse:
     return LeadResponse.model_validate(await _require_lead(session, product, lead_id))
+
+
+@router.get("/leads/{lead_id}/campaigns", response_model=list[LeadCampaignResponse])
+async def list_lead_campaigns(
+    lead_id: uuid.UUID, product: ProductScope, session: DbSession
+) -> list[LeadCampaignResponse]:
+    """Campaign snapshots that included this lead, with the recorded delivery status."""
+    await _require_lead(session, product, lead_id)
+    records = await conversation_repo.list_lead_campaigns(session, lead_id)
+    return [
+        LeadCampaignResponse(
+            campaign_id=campaign.id,
+            campaign_name=campaign.name,
+            campaign_created_at=campaign.created_at,
+            recipient_status=recipient.status,
+            sent_at=recipient.sent_at,
+        )
+        for campaign, recipient in records
+    ]
 
 
 @router.patch("/leads/{lead_id}", response_model=LeadResponse)
@@ -261,6 +301,7 @@ async def list_conversations(
     segment: SegmentFilter,
     session: DbSession,
     conversation_status: ConversationStatus | None = Query(default=None, alias="status"),
+    campaign_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
 ) -> ConversationPage:
@@ -274,6 +315,7 @@ async def list_conversations(
         product_id=product.id,
         segment_id=segment.id if segment is not None else None,
         status=conversation_status,
+        campaign_id=campaign_id,
         limit=limit,
         offset=offset,
     )

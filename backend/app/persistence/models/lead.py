@@ -48,6 +48,7 @@ class Lead(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     full_name: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
     # Carried through from the audience so promotion discards nothing ([D25]).

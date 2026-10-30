@@ -32,7 +32,6 @@ from app.persistence.models import (
     WebhookEvent,
     WhatsAppSuppression,
 )
-from app.persistence.repositories import campaigns as campaign_repo
 from app.persistence.repositories import suppressions as suppression_repo
 
 # Meta status -> the recipient status it implies. Only forward progress is applied;
@@ -434,14 +433,6 @@ async def apply_status(
     if recipient is not None:
         _apply_to_recipient(recipient, new_status, occurred_at, error_code, error_message)
         matched = True
-        # The campaign's counters are what the list and overview show. Refreshed only at
-        # send, cancel and completion, they froze while Meta's delivered, read and failed
-        # reports kept arriving: a finished broadcast that reached 140 people read
-        # "Sent 7".
-        campaign = await session.get(Campaign, recipient.campaign_id)
-        if campaign is not None:
-            await session.flush()
-            await campaign_repo.refresh_counts(session, campaign)
 
     if matched:
         await session.flush()

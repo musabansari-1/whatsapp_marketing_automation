@@ -20,8 +20,8 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import AdminUser, DbSession, Queue
 from app.api.schemas import (
+    CampaignActivityResponse,
     CampaignDetailResponse,
-    CampaignFailureReason,
     CampaignRecipientPage,
     CampaignRecipientResponse,
     CampaignResponse,
@@ -88,6 +88,8 @@ async def create_campaign(
         product,
         not_found="Audience not found",
     )
+    if audience.archived_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Restore this audience before creating a campaign")
     if audience.status is not AudienceStatus.CONFIRMED:
         # §6 puts admin confirmation before use; an unconfirmed audience has not been
         # reviewed and its leads do not exist yet.
@@ -142,6 +144,10 @@ async def create_campaign(
         campaign.status = CampaignStatus.READY
         await session.flush()
 
+    await campaign_repo.record_activity(session, campaign.id, "CREATED")
+    if campaign.status is CampaignStatus.READY:
+        await campaign_repo.record_activity(session, campaign.id, "READY")
+
     logger.info(
         "campaign_created",
         campaign_id=str(campaign.id),
@@ -155,10 +161,12 @@ async def create_campaign(
 
 @router.get("", response_model=list[CampaignResponse])
 async def list_campaigns(
-    product: ProductScope, segment: SegmentFilter, session: DbSession
+    product: ProductScope, segment: SegmentFilter, session: DbSession,
+    include_archived: bool = Query(default=False),
 ) -> list[CampaignResponse]:
     campaigns = await campaign_repo.list_campaigns(
-        session, product_id=product.id, segment_id=segment.id if segment is not None else None
+        session, product_id=product.id, segment_id=segment.id if segment is not None else None,
+        include_archived=include_archived,
     )
     return [CampaignResponse.model_validate(campaign) for campaign in campaigns]
 
@@ -168,6 +176,24 @@ async def get_campaign(
     campaign_id: uuid.UUID, product: ProductScope, session: DbSession
 ) -> CampaignDetailResponse:
     return await _detail(session, await _require_campaign(session, product, campaign_id))
+
+
+@router.post("/{campaign_id}/archive", response_model=CampaignResponse)
+async def archive_campaign(campaign_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> CampaignResponse:
+    campaign = await _require_campaign(session, product, campaign_id)
+    if campaign.status in {CampaignStatus.SCHEDULED, CampaignStatus.PROCESSING, CampaignStatus.PAUSED}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cancel or finish this campaign before archiving it")
+    campaign.archived_at = campaign.archived_at or datetime.now(UTC)
+    await session.flush()
+    return CampaignResponse.model_validate(campaign)
+
+
+@router.post("/{campaign_id}/restore", response_model=CampaignResponse)
+async def restore_campaign(campaign_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> CampaignResponse:
+    campaign = await _require_campaign(session, product, campaign_id)
+    campaign.archived_at = None
+    await session.flush()
+    return CampaignResponse.model_validate(campaign)
 
 
 @router.get("/{campaign_id}/recipients", response_model=CampaignRecipientPage)
@@ -195,12 +221,7 @@ async def list_recipients(
         total=total,
         limit=limit,
         offset=offset,
-        items=[
-            CampaignRecipientResponse.model_validate(r).model_copy(
-                update={"full_name": r.lead.full_name if r.lead else None}
-            )
-            for r in recipients
-        ],
+        items=[CampaignRecipientResponse.model_validate(r) for r in recipients],
     )
 
 
@@ -226,6 +247,8 @@ async def send_campaign(
     recipient, so a redelivered task is recognizable as a repeat (§20).
     """
     campaign = await _require_campaign(session, product, campaign_id)
+    if campaign.archived_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Restore this campaign before sending it")
 
     # Checked again at the human moment, not only at creation ([D57]). A campaign created
     # before ownership was enforced may point at a template with no product, and this is
@@ -284,6 +307,7 @@ async def send_campaign(
 
     campaign.status = CampaignStatus.PROCESSING
     campaign.started_at = datetime.now(UTC)
+    await campaign_repo.record_activity(session, campaign.id, "PROCESSING")
     await campaign_repo.refresh_counts(session, campaign)
 
     logger.info(
@@ -330,6 +354,7 @@ async def cancel_campaign(
 
     stopped = await campaign_repo.stop_unsent_recipients(session, campaign.id)
     campaign.status = CampaignStatus.CANCELLED
+    await campaign_repo.record_activity(session, campaign.id, "CANCELLED")
     await campaign_repo.refresh_counts(session, campaign)
 
     logger.info(
@@ -350,20 +375,23 @@ async def _require_campaign(
 
 
 async def _detail(session: DbSession, campaign: Campaign) -> CampaignDetailResponse:
+    # Delivery/read webhooks update recipient rows asynchronously. Recompute before
+    # serializing so the detail view uses the same source of truth as the list.
+    await campaign_repo.refresh_counts(session, campaign)
     template = await campaign_repo.get_template(session, campaign.template_id)
     if template is None:  # pragma: no cover - the foreign key prevents this
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
 
-    counts = await campaign_repo.recipient_status_counts(session, campaign.id)
-    reasons = await campaign_repo.failure_reasons(session, campaign.id)
+    pending = await campaign_repo.count_recipients(
+        session, campaign.id, status=RecipientStatus.PENDING
+    )
     return CampaignDetailResponse(
         campaign=CampaignResponse.model_validate(campaign),
         template=WhatsAppTemplateResponse.model_validate(template),
-        pending_recipients=counts.get(RecipientStatus.PENDING, 0),
-        status_counts=counts,
-        failure_reasons=[
-            CampaignFailureReason(error_code=code, error_message=message, count=count)
-            for code, message, count in reasons
+        pending_recipients=pending,
+        activity=[
+            CampaignActivityResponse.model_validate(event)
+            for event in await campaign_repo.list_activity(session, campaign.id)
         ],
     )
 

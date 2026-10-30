@@ -158,6 +158,7 @@ class Campaign(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Denormalized counters for the §17 overview. Derived, never authoritative.
     total_recipients: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

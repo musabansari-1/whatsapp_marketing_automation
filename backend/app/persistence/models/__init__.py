@@ -8,6 +8,7 @@ reason.
 
 from app.persistence.models.audience import Audience, AudienceContact
 from app.persistence.models.booking import Booking
+from app.persistence.models.campaign_activity import CampaignActivity
 from app.persistence.models.campaign import (
     META_STATUS_APPROVED,
     Campaign,
@@ -44,6 +45,7 @@ __all__ = [
     "AudienceContact",
     "Booking",
     "Campaign",
+    "CampaignActivity",
     "CampaignRecipient",
     "Conversation",
     "ConversationMessage",
