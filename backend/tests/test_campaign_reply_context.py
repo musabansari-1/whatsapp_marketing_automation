@@ -33,7 +33,7 @@ def test_no_body_leaves_prompt_unchanged() -> None:
 
 def test_button_tap_is_searched_with_the_campaign_topic() -> None:
     assert _retrieval_query("I'm Interested", POD) == (
-        "I'm Interested\nlifeherba wellness pod studio"
+        "Reply to the \"I'm Interested\" button\nI'm Interested\nlifeherba wellness pod studio"
     )
 
 

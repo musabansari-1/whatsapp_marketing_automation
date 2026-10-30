@@ -304,9 +304,11 @@ def with_campaign_context(
             text,
             "",
             "The customer's latest replies answer this message. A short reply such as a",
-            "button tap means this offer: follow the knowledge base scripts for this",
-            "campaign, and let them take priority over any registration call to action",
-            "or over topics from earlier conversations.",
+            "button tap means this offer. When the knowledge base has a script for the",
+            "button or reply, send that script's message word for word, then ask its",
+            "follow-up questions one at a time; do not summarise the offer instead. The",
+            "scripts take priority over any registration call to action and over topics",
+            "from earlier conversations.",
         ]
     )
     prompt = system_prompt.rstrip()

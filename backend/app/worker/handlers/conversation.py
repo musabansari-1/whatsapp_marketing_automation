@@ -910,7 +910,7 @@ def _retrieval_query(question: str, campaign: LastCampaign | None) -> str:
     if campaign is None or len(question.strip()) > _SHORT_REPLY_CHARS:
         return question
     topic = campaign.template_name.replace("_", " ")
-    return f"{question}\n{topic}"
+    return f'Reply to the "{question.strip()}" button\n{question}\n{topic}'
 
 
 def _history_messages(history: list[Any]) -> list[LLMMessage]:
