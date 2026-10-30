@@ -53,6 +53,7 @@ from app.domain.ai_config import (
     AIConfigurationError,
     ResolvedAIConfig,
     with_audience_segment_context,
+    with_campaign_context,
     with_lead_context,
 )
 from app.domain.campaign import assert_header_media_available
@@ -91,6 +92,8 @@ from app.integrations.whatsapp import OutboundTemplateMessage, OutboundTextMessa
 from app.persistence.database import get_session_factory
 from app.persistence.models import (
     AIRun,
+    Campaign,
+    CampaignRecipient,
     Conversation,
     Lead,
     Message,
@@ -355,6 +358,7 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         segment_id = conversation.segment_id
         question = message.body or ""
         trigger_wamid = message.provider_message_id
+        campaign_template = await _last_campaign_template(session, lead_id, product_id)
         await session.commit()
 
     started = datetime.now(UTC)
@@ -392,7 +396,11 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
     _shown, retrieval = await asyncio.gather(
         _show_typing_indicator(settings, product_id, trigger_wamid),
         _retrieve(
-            settings, question, product_id=product_id, segment_id=segment_id, config=ai_config
+            settings,
+            _retrieval_query(question, campaign_template),
+            product_id=product_id,
+            segment_id=segment_id,
+            config=ai_config,
         ),
     )
 
@@ -427,6 +435,12 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
                 system_prompt,
                 segment_display_name=None if segment is None else segment.display_name,
             )
+            if campaign_template is not None:
+                system_prompt = with_campaign_context(
+                    system_prompt,
+                    template_name=campaign_template[0],
+                    body=campaign_template[1],
+                )
             # The lead was loaded before the turn, so its summary rides along and
             # most turns never spend a `get_lead` round learning a name and an
             # email. The tool stays for anything beyond what is listed here.
@@ -837,6 +851,44 @@ def _registration_url(product: Product | None, segment: Segment | None) -> str |
     if segment is not None and segment.registration_url:
         return segment.registration_url
     return None if product is None else product.registration_url
+
+
+async def _last_campaign_template(
+    session: AsyncSession, lead_id: uuid.UUID, product_id: uuid.UUID
+) -> tuple[str, str | None] | None:
+    """Name and body of the template in the last campaign that reached this lead."""
+    row = (
+        await session.execute(
+            select(WhatsAppTemplate.name, WhatsAppTemplate.body_preview)
+            .join(Campaign, Campaign.template_id == WhatsAppTemplate.id)
+            .join(CampaignRecipient, CampaignRecipient.campaign_id == Campaign.id)
+            .where(
+                CampaignRecipient.lead_id == lead_id,
+                CampaignRecipient.sent_at.is_not(None),
+                Campaign.product_id == product_id,
+            )
+            .order_by(CampaignRecipient.sent_at.desc())
+            .limit(1)
+        )
+    ).first()
+    return None if row is None else (row[0], row[1])
+
+
+# Replies at most this long are taken as answers to the campaign (a button tap, "yes",
+# "details") rather than questions that stand on their own.
+_SHORT_REPLY_CHARS = 40
+
+
+def _retrieval_query(question: str, campaign_template: tuple[str, str | None] | None) -> str:
+    """Search the knowledge base for a short reply in the light of the campaign it answers.
+
+    "I'm Interested" alone matches every campaign's guidance equally; with the template
+    name added, retrieval finds the scripts written for the offer the customer saw.
+    """
+    if campaign_template is None or len(question.strip()) > _SHORT_REPLY_CHARS:
+        return question
+    topic = campaign_template[0].replace("_", " ")
+    return f"{question}\n{topic}"
 
 
 def _history_messages(history: list[Any]) -> list[LLMMessage]:

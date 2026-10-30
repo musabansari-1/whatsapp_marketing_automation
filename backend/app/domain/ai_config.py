@@ -280,6 +280,38 @@ def with_audience_segment_context(
     return f"{prompt}\n\n{block}" if prompt else block
 
 
+def with_campaign_context(
+    system_prompt: str,
+    *,
+    template_name: str | None,
+    body: str | None,
+) -> str:
+    """Append the last campaign message this customer was sent.
+
+    A button tap arrives as bare text ("I'm Interested"), and several templates share
+    the same button labels, so without the message it answers the model cannot tell
+    which offer the customer means. Nothing is appended when no campaign reached them.
+    """
+    text = (body or "").strip()
+    if not text:
+        return system_prompt
+    lines = ["## Last campaign message this customer received", ""]
+    if template_name:
+        lines.append(f"Template: {template_name}")
+        lines.append("")
+    lines.extend(
+        [
+            text,
+            "",
+            "A short reply such as a button tap answers this message: respond in its",
+            "context, following the knowledge base guidance for this campaign.",
+        ]
+    )
+    prompt = system_prompt.rstrip()
+    block = "\n".join(lines)
+    return f"{prompt}\n\n{block}" if prompt else block
+
+
 def with_lead_context(
     system_prompt: str,
     *,
