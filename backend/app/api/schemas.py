@@ -141,6 +141,12 @@ class ProductRef(BaseModel):
 # ---------------------------------------------------------------- audiences (§6)
 
 
+class RenameRequest(BaseModel):
+    """A new display name. Surrounding whitespace is trimmed; it cannot be blank."""
+
+    name: str = Field(min_length=1, max_length=255)
+
+
 class AudienceSummaryResponse(BaseModel):
     """An audience in list and detail views, with the §6 preview counts."""
 

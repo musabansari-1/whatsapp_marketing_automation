@@ -38,6 +38,8 @@ export default function AudienceDetailPage() {
   const [filter, setFilter] = useState<ValidationStatus | 'ALL'>('ALL');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The rename form's draft; null while the form is closed.
+  const [draftName, setDraftName] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -70,6 +72,25 @@ export default function AudienceDetailPage() {
     }
   }
 
+  async function handleRename() {
+    const name = (draftName ?? '').trim();
+    if (!name) {
+      setError('The name cannot be blank.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.renameAudience(id, name);
+      setDraftName(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not rename the audience.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
       {error ? <Alert className="mb-4">{error}</Alert> : null}
@@ -93,21 +114,58 @@ export default function AudienceDetailPage() {
               </span>
             }
             actions={
-              audience.status === 'PENDING_CONFIRMATION' ? (
-                product.is_active ? (
-                  <Button
-                    type="button"
-                    onClick={handleConfirm}
-                    disabled={busy || audience.valid_rows === 0}
-                  >
-                    {busy ? 'Confirming…' : `Confirm into ${product.display_name}`}
-                  </Button>
-                ) : null
-              ) : (
-                <StatusBadge status="CONFIRMED" />
-              )
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setDraftName(audience.name)}
+                  disabled={busy}
+                >
+                  Rename
+                </Button>
+                {audience.status === 'PENDING_CONFIRMATION' ? (
+                  product.is_active ? (
+                    <Button
+                      type="button"
+                      onClick={handleConfirm}
+                      disabled={busy || audience.valid_rows === 0}
+                    >
+                      {busy ? 'Confirming…' : `Confirm into ${product.display_name}`}
+                    </Button>
+                  ) : null
+                ) : (
+                  <StatusBadge status="CONFIRMED" />
+                )}
+              </div>
             }
           />
+
+          {draftName !== null ? (
+            <form
+              className="mb-4 flex flex-wrap items-end gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleRename();
+              }}
+            >
+              <label className="min-w-64 flex-1 text-sm font-medium">
+                New name
+                <input
+                  className="ui-input mt-1.5"
+                  value={draftName}
+                  maxLength={255}
+                  autoFocus
+                  onChange={(event) => setDraftName(event.target.value)}
+                />
+              </label>
+              <Button type="submit" disabled={busy || draftName.trim() === ''}>
+                {busy ? 'Saving…' : 'Save name'}
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => setDraftName(null)}>
+                Cancel
+              </Button>
+            </form>
+          ) : null}
 
           <div className="mb-4 flex flex-wrap gap-2">
             {FILTERS.map((option) => (

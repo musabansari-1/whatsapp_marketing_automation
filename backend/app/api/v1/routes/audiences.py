@@ -24,6 +24,7 @@ from app.api.schemas import (
     AudienceSchemaResponse,
     AudienceSummaryResponse,
     AudienceUploadResponse,
+    RenameRequest,
 )
 from app.api.scope import (
     PRODUCT_PREFIX,
@@ -334,6 +335,28 @@ async def archive_audience(audience_id: uuid.UUID, user: AdminUser, product: Pro
     audience = await _require_audience(session, product, audience_id)
     audience.archived_at = audience.archived_at or datetime.now(UTC)
     await session.flush()
+    return AudienceSummaryResponse.model_validate(audience)
+
+
+@router.patch("/{audience_id}", response_model=AudienceSummaryResponse)
+async def rename_audience(
+    audience_id: uuid.UUID,
+    payload: RenameRequest,
+    user: AdminUser,
+    product: ProductScope,
+    session: DbSession,
+) -> AudienceSummaryResponse:
+    """Rename an audience. ADMIN-only. The name is a label: contacts, campaigns and
+    their history are untouched, so renaming is safe at any status, archived or not."""
+    audience = await _require_audience(session, product, audience_id)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="The name cannot be blank"
+        )
+    audience.name = name
+    await session.flush()
+    logger.info("audience_renamed", audience_id=str(audience.id), by_user_id=str(user.id))
     return AudienceSummaryResponse.model_validate(audience)
 
 

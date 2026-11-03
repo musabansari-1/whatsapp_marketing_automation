@@ -526,6 +526,12 @@ export function productApi(slug: string) {
 
     getAudience: (id: string) => request<AudienceSummary>(`${base}/audiences/${id}`),
 
+    renameAudience: (id: string, name: string) =>
+      request<AudienceSummary>(`${base}/audiences/${id}`, {
+        ...postJson({ name }),
+        method: 'PATCH',
+      }),
+
     listContacts: (id: string, status?: ValidationStatus, limit = 50, offset = 0) =>
       request<AudienceContactPage>(
         `${base}/audiences/${id}/contacts${queryString({ validation_status: status, limit, offset })}`,
