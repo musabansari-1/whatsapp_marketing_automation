@@ -1,0 +1,121 @@
+# Production deploy: every push to main goes live, so main is always what runs.
+#
+# Order matters and each step runs only if the one before it succeeded:
+#   images -> database migration -> worker -> API -> dashboard
+# The worker goes before the API so it already knows any new task type the API
+# starts enqueueing. The migration goes first so new code never meets an old schema.
+#
+# No stored keys. Google Cloud is reached through Workload Identity Federation: the
+# provider only trusts GitHub's token for this repository (by its numeric id) on
+# refs/heads/main, and the wa-deployer account it maps to can deploy the two Cloud Run
+# services, run the migration job and push images — nothing else. The Cloudflare token
+# lives in Secret Manager (`cloudflare-api-token`), read through that same identity,
+# because only the repository owner can add GitHub secrets.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time, in order. A second push waits rather than racing the first.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # the Workload Identity Federation token
+
+env:
+  PROJECT_ID: verdant-victory-508614-v8
+  REGION: asia-south1
+  REGISTRY: asia-south1-docker.pkg.dev/verdant-victory-508614-v8/whatsapp-marketing
+  WIF_PROVIDER: projects/353815955654/locations/global/workloadIdentityPools/github/providers/whatsapp-marketing
+  DEPLOYER_SA: wa-deployer@verdant-victory-508614-v8.iam.gserviceaccount.com
+
+jobs:
+  backend:
+    name: Backend (Cloud Run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push images
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet
+          docker build -f backend/Dockerfile.api -t "$REGISTRY/api:$TAG" backend
+          docker build -f backend/Dockerfile.worker -t "$REGISTRY/worker:$TAG" backend
+          docker push "$REGISTRY/api:$TAG"
+          docker push "$REGISTRY/worker:$TAG"
+
+      - name: Migrate the database
+        # `alembic upgrade head` is a no-op when nothing is new, so it runs every time.
+        run: |
+          gcloud run jobs update wa-migrate --region "$REGION" --image "$REGISTRY/api:$TAG" --quiet
+          gcloud run jobs execute wa-migrate --region "$REGION" --wait
+
+      - name: Deploy worker
+        run: gcloud run services update wa-worker --region "$REGION" --image "$REGISTRY/worker:$TAG" --quiet
+
+      - name: Deploy API
+        run: gcloud run services update wa-api --region "$REGION" --image "$REGISTRY/api:$TAG" --quiet
+
+  frontend:
+    name: Dashboard (Cloudflare Worker wa-web)
+    needs: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      CLOUDFLARE_ACCOUNT_ID: 82770890ecddbbceed3c3024d836da89
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Read the Cloudflare token
+        # Masked before it reaches the environment: this repository is public, and
+        # its logs with it.
+        run: |
+          if ! TOKEN="$(gcloud secrets versions access latest --secret cloudflare-api-token 2>/dev/null)" || [ -z "$TOKEN" ]; then
+            echo "::error::Secret Manager has no cloudflare-api-token value yet. Add one, then re-run this job."
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "CLOUDFLARE_API_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Build
+        # Next 15.5 is newer than OpenNext's tested range; the build works with it.
+        run: npx opennextjs-cloudflare build --dangerouslyUseUnsupportedNextVersion
+
+      - name: Deploy
+        # --keep-vars: INTERNAL_API_BASE_URL and the other runtime settings are set on
+        # the Worker in Cloudflare, not in wrangler.jsonc, and must survive a deploy.
+        run: npx wrangler deploy --keep-vars
