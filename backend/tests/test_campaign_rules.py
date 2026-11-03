@@ -196,6 +196,10 @@ class TestSendability:
     def test_a_ready_campaign_with_recipients_is_sendable(self) -> None:
         assert_sendable(CampaignStatus.READY, 5)
 
+    def test_a_scheduled_campaign_is_sendable(self) -> None:
+        """Its moment arriving, or "send now", starts it exactly as READY would."""
+        assert_sendable(CampaignStatus.SCHEDULED, 5)
+
     @pytest.mark.parametrize(
         "status",
         [
@@ -206,7 +210,7 @@ class TestSendability:
             CampaignStatus.PAUSED,
         ],
     )
-    def test_only_a_ready_campaign_may_be_sent(self, status: CampaignStatus) -> None:
+    def test_only_a_ready_or_scheduled_campaign_may_be_sent(self, status: CampaignStatus) -> None:
         with pytest.raises(CampaignNotSendableError):
             assert_sendable(status, 5)
 

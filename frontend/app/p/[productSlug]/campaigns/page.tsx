@@ -16,6 +16,7 @@ import { StatusBadge } from '@/components/status-badge';
 import { Alert, ButtonLink, EmptyState, PageHeader, Skeleton } from '@/components/ui';
 import type { Campaign } from '@/lib/api';
 import { productHref } from '@/lib/product-routes';
+import { scheduleLabel } from '@/lib/schedule';
 
 export default function CampaignsPage() {
   const { api, slug, product } = useProduct();
@@ -92,6 +93,11 @@ export default function CampaignsPage() {
                   </td>
                   <td>
                     <StatusBadge status={campaign.status} />
+                    {campaign.status === 'SCHEDULED' && campaign.scheduled_for ? (
+                      <span className="mt-1 block whitespace-nowrap text-xs text-ink-muted">
+                        {scheduleLabel(campaign.scheduled_for)}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="text-right tabular-nums">{campaign.total_recipients}</td>
                   <td className="text-right tabular-nums">{campaign.sent_count}</td>

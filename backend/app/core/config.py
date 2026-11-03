@@ -345,6 +345,12 @@ class Settings(BaseSettings):
     # enqueueing thousands of tasks at once.
     sweep_batch_size: int = 200
 
+    # ---------------------------------------------------------------- scheduled campaigns
+    # How late a scheduled broadcast may still start. Past this, every trigger was down
+    # through the chosen moment, and sending hours late would be a different message
+    # (a morning promotion arriving at night). The campaign goes back to READY instead.
+    campaign_schedule_max_lateness_minutes: int = 120
+
     # ---------------------------------------------------------------- bot audit [D67]
     # What counts as "looks automated" for the hourly bot-activity audit. Every one
     # is configuration: a number in code here would be a deployment problem the

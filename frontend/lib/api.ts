@@ -297,7 +297,12 @@ export interface Notification {
   product_id: string | null;
   /** The product this notification is about, or null when it concerns none ([D47]). */
   product: ProductRef | null;
-  type: 'DEMO_BOOKED' | 'BOT_SUSPECTED' | 'BOOKING_FAILED' | 'LEAD_NEEDS_ATTENTION';
+  type:
+    | 'DEMO_BOOKED'
+    | 'BOT_SUSPECTED'
+    | 'BOOKING_FAILED'
+    | 'LEAD_NEEDS_ATTENTION'
+    | 'CAMPAIGN_SCHEDULE_FAILED';
   title: string;
   message: string;
   related_entity_type: string | null;
@@ -366,6 +371,14 @@ export interface CampaignDetail {
   /** Live per-status counts; the campaign's own counters can lag behind. */
   status_counts: Partial<Record<RecipientStatus, number>>;
   failure_reasons: CampaignFailureReason[];
+  /** What happened to the campaign, oldest first (CREATED, SCHEDULED, PROCESSING…). */
+  activity?: CampaignActivity[];
+}
+
+export interface CampaignActivity {
+  id: string;
+  event_type: string;
+  created_at: string;
 }
 
 export interface CampaignFailureReason {
@@ -572,6 +585,16 @@ export function productApi(slug: string) {
 
     cancelCampaign: (id: string) =>
       request<Campaign>(`${base}/campaigns/${id}/cancel`, { method: 'POST' }),
+
+    /** `scheduledFor` is an instant; it is sent as UTC so it carries a timezone. */
+    scheduleCampaign: (id: string, scheduledFor: Date) =>
+      request<Campaign>(
+        `${base}/campaigns/${id}/schedule`,
+        postJson({ scheduled_for: scheduledFor.toISOString() }),
+      ),
+
+    unscheduleCampaign: (id: string) =>
+      request<Campaign>(`${base}/campaigns/${id}/unschedule`, { method: 'POST' }),
 
     sendCampaign: (id: string) =>
       request<{ campaign: Campaign; queued: number; skipped_as_suppressed: number }>(

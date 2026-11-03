@@ -4,10 +4,15 @@
  * Sending is the one destructive action in the platform, so it is behind an explicit
  * confirmation that states how many people will be messaged — and for which product, from
  * whose number, since that is the mistake a multi-product dashboard makes possible.
+ *
+ * Scheduling is the same confirmation given for a later moment, so it states the same
+ * things plus when. A scheduled campaign starts on its own; if it cannot, it comes back
+ * here as READY with a warning, and the bell says why.
  */
 
 'use client';
 
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -28,6 +33,16 @@ import {
 import { formatPhone, shortWhen } from '@/lib/format';
 import { DEFAULT_PAGE_SIZE } from '@/lib/pagination';
 import { productHref } from '@/lib/product-routes';
+import {
+  defaultScheduleTime,
+  fromLocalInputValue,
+  HANDED_BACK_EVENTS,
+  MIN_LEAD_MS,
+  scheduleLabel,
+  scheduleProblem,
+  timeUntil,
+  toLocalInputValue,
+} from '@/lib/schedule';
 
 const FILTERS: { label: string; value: RecipientStatus | 'ALL' }[] = [
   { label: 'All', value: 'ALL' },
@@ -42,6 +57,8 @@ const FILTERS: { label: string; value: RecipientStatus | 'ALL' }[] = [
 
 // While a broadcast is going out, Meta's reports keep arriving; refresh to show them.
 const LIVE_REFRESH_MS = 15_000;
+// While a broadcast is scheduled, refresh so the page shows it starting.
+const SCHEDULED_REFRESH_MS = 30_000;
 
 export default function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -56,6 +73,10 @@ export default function CampaignDetailPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  // The picker's value, a `datetime-local` string in the viewer's clock.
+  const [picked, setPicked] = useState('');
+  const [pickerMin, setPickerMin] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -81,11 +102,66 @@ export default function CampaignDetailPage() {
   }, [load]);
 
   const sending = detail?.campaign.status === 'PROCESSING';
+  const isScheduled = detail?.campaign.status === 'SCHEDULED';
   useEffect(() => {
-    if (!sending) return;
-    const timer = window.setInterval(() => void load(), LIVE_REFRESH_MS);
+    if (!sending && !isScheduled) return;
+    const timer = window.setInterval(
+      () => void load(),
+      sending ? LIVE_REFRESH_MS : SCHEDULED_REFRESH_MS,
+    );
     return () => window.clearInterval(timer);
-  }, [sending, load]);
+  }, [sending, isScheduled, load]);
+
+  function openScheduler() {
+    const current = detail?.campaign.scheduled_for;
+    const now = new Date();
+    setPicked(toLocalInputValue(current ? new Date(current) : defaultScheduleTime(now)));
+    setPickerMin(toLocalInputValue(new Date(now.getTime() + MIN_LEAD_MS)));
+    setConfirming(false);
+    setScheduling(true);
+    setError(null);
+    setNotice(null);
+  }
+
+  async function handleSchedule() {
+    const when = fromLocalInputValue(picked);
+    const problem = scheduleProblem(when);
+    if (problem || !when) {
+      setError(problem ?? 'Pick a date and time.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await api.scheduleCampaign(id, when);
+      setNotice(
+        `Scheduled for ${scheduleLabel(updated.scheduled_for ?? when.toISOString())}. ` +
+          'It will start on its own at that time. Nothing has been sent yet.',
+      );
+      setScheduling(false);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not schedule the campaign.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUnschedule() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.unscheduleCampaign(id);
+      setNotice('Schedule removed. The campaign is READY again; nothing was sent.');
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not remove the schedule.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function handleCancel() {
     setBusy(true);
@@ -140,6 +216,80 @@ export default function CampaignDetailPage() {
   );
   const stuck = stuckCount(summary, campaign?.started_at ?? null);
 
+  // A scheduled start that could not go ahead returns the campaign to READY. Say so
+  // here too, not only in the bell, since this is where someone will look.
+  const activity = detail?.activity ?? [];
+  const latestActivity = activity.at(-1)?.event_type ?? null;
+  const handedBack =
+    campaign?.status === 'READY' &&
+    latestActivity !== null &&
+    (HANDED_BACK_EVENTS as readonly string[]).includes(latestActivity);
+
+  const pickedWhen = scheduling ? fromLocalInputValue(picked) : null;
+  const pickedProblem = scheduling ? scheduleProblem(pickedWhen) : null;
+  const pending = detail?.pending_recipients ?? 0;
+
+  const sendConfirm = (
+    <div>
+      <p className="text-sm">
+        This will message <strong>{pending}</strong> people for{' '}
+        <strong>{product.display_name}</strong>, from {product.display_name}&apos;s WhatsApp number.
+        It cannot be undone.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <Button type="button" variant="danger" onClick={handleSend} disabled={busy}>
+          {busy ? 'Starting…' : `Yes, send for ${product.display_name}`}
+        </Button>
+        <Button type="button" variant="secondary" onClick={() => setConfirming(false)}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+
+  const scheduler = (
+    <div>
+      <label htmlFor="schedule-at" className="text-sm font-medium">
+        Send at
+      </label>
+      <input
+        id="schedule-at"
+        type="datetime-local"
+        className="ui-input mt-1.5 max-w-xs"
+        value={picked}
+        min={pickerMin}
+        onChange={(event) => setPicked(event.target.value)}
+      />
+      <p className={`mt-1.5 text-xs ${pickedProblem ? 'text-red-700' : 'text-ink-muted'}`}>
+        {pickedProblem ??
+          (pickedWhen
+            ? `${scheduleLabel(pickedWhen.toISOString())} your time · starts ${timeUntil(
+                pickedWhen.toISOString(),
+              )}`
+            : null)}
+      </p>
+      <p className="mt-3 text-sm">
+        At that time this will message <strong>{pending}</strong> people for{' '}
+        <strong>{product.display_name}</strong>, from {product.display_name}&apos;s WhatsApp number.
+        Opt-outs and the template are checked again then; if it cannot start, it comes back here as
+        READY and you are notified.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <Button
+          type="button"
+          variant="danger"
+          onClick={handleSchedule}
+          disabled={busy || pickedProblem !== null}
+        >
+          {busy ? 'Scheduling…' : `Yes, schedule for ${product.display_name}`}
+        </Button>
+        <Button type="button" variant="secondary" onClick={() => setScheduling(false)}>
+          Back
+        </Button>
+      </div>
+    </div>
+  );
+
   return (
     <>
       {error ? <Alert className="mb-4">{error}</Alert> : null}
@@ -163,6 +313,9 @@ export default function CampaignDetailPage() {
                 <StatusBadge status={campaign.status} />
                 <SegmentBadge segmentId={campaign.segment_id} />
                 <span>template {detail.template.name}</span>
+                {campaign.status === 'SCHEDULED' && campaign.scheduled_for ? (
+                  <span>· sends {scheduleLabel(campaign.scheduled_for)}</span>
+                ) : null}
                 {campaign.started_at ? (
                   <span>· started {shortWhen(campaign.started_at)}</span>
                 ) : null}
@@ -172,6 +325,19 @@ export default function CampaignDetailPage() {
               </span>
             }
           />
+
+          {handedBack ? (
+            <Alert tone="warning" className="mb-4">
+              {latestActivity === 'SCHEDULE_MISSED'
+                ? 'The scheduled send was missed and was not sent late. '
+                : 'The scheduled send could not start. '}
+              Nothing was sent; the campaign is READY again. The reason is in{' '}
+              <Link href="/notifications" className="font-semibold underline">
+                Notifications
+              </Link>
+              . Fix it, then schedule it again or send it now.
+            </Alert>
+          ) : null}
 
           {stuck > 0 ? (
             <Alert tone="warning" className="mb-4">
@@ -274,36 +440,76 @@ export default function CampaignDetailPage() {
 
           {campaign.status === 'READY' && product.is_active ? (
             <Card className="mt-4 border-ink/10">
-              {!confirming ? (
+              {scheduling ? (
+                scheduler
+              ) : confirming ? (
+                sendConfirm
+              ) : (
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-medium">Send broadcast</p>
                     <p className="mt-0.5 text-xs text-ink-muted">
-                      READY means prepared, not sending. This is the explicit click.
+                      READY means prepared, not sending. Send it now, or schedule a time and it
+                      starts on its own.
                     </p>
                   </div>
-                  <Button
-                    type="button"
-                    onClick={() => setConfirming(true)}
-                    disabled={detail.pending_recipients === 0}
-                  >
-                    Send broadcast
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={openScheduler}
+                      disabled={pending === 0}
+                    >
+                      Schedule
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => setConfirming(true)}
+                      disabled={pending === 0}
+                    >
+                      Send broadcast
+                    </Button>
+                  </div>
                 </div>
+              )}
+            </Card>
+          ) : null}
+
+          {campaign.status === 'SCHEDULED' && campaign.scheduled_for ? (
+            <Card className="mt-4 border-ink/10">
+              {scheduling ? (
+                scheduler
+              ) : confirming ? (
+                sendConfirm
               ) : (
-                <div>
-                  <p className="text-sm">
-                    This will message <strong>{detail.pending_recipients}</strong> people for{' '}
-                    <strong>{product.display_name}</strong>, from {product.display_name}&apos;s
-                    WhatsApp number. It cannot be undone.
-                  </p>
-                  <div className="mt-3 flex gap-2">
-                    <Button type="button" variant="danger" onClick={handleSend} disabled={busy}>
-                      {busy ? 'Starting…' : `Yes, send for ${product.display_name}`}
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">
+                      Scheduled for {scheduleLabel(campaign.scheduled_for)} (
+                      {timeUntil(campaign.scheduled_for)})
+                    </p>
+                    <p className="mt-0.5 text-xs text-ink-muted">
+                      It starts on its own at that time; nothing has been sent yet. If it cannot
+                      start, it comes back here as READY and you are notified.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" variant="secondary" onClick={openScheduler}>
+                      Change time
                     </Button>
-                    <Button type="button" variant="secondary" onClick={() => setConfirming(false)}>
-                      Cancel
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handleUnschedule}
+                      disabled={busy}
+                    >
+                      Unschedule
                     </Button>
+                    {product.is_active ? (
+                      <Button type="button" onClick={() => setConfirming(true)}>
+                        Send now
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
               )}
@@ -312,6 +518,7 @@ export default function CampaignDetailPage() {
 
           {campaign.status === 'PROCESSING' ||
           campaign.status === 'READY' ||
+          campaign.status === 'SCHEDULED' ||
           campaign.status === 'PAUSED' ? (
             <div className="mt-4">
               <Button type="button" variant="danger-outline" onClick={handleCancel} disabled={busy}>

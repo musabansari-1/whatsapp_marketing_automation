@@ -104,6 +104,12 @@ schedule "wa-sweep-bot-activity" "$SWEEP_BOT_ACTIVITY_SCHEDULE" \
   "sweep_bot_activity" \
   "Flag conversations with bot-like inbound patterns ([D67])"
 
+# Every minute. Starts scheduled campaigns whose moment has passed ([D71]); the safety
+# net for the delayed start task, so a lost task delays a broadcast by one interval.
+schedule "wa-sweep-scheduled-campaigns" "$SWEEP_SCHEDULED_CAMPAIGNS_SCHEDULE" \
+  "sweep_scheduled_campaigns" \
+  "Start scheduled campaigns whose moment has passed ([D71])"
+
 log "Scheduled"
 cat <<EOF
 Run one now to check it works, rather than waiting for the cron:

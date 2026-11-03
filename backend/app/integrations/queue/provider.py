@@ -74,6 +74,13 @@ class TaskType(StrEnum):
     # never gates a reply, so this task sends nothing and changes no state except
     # the notification itself.
     SWEEP_BOT_ACTIVITY = "sweep_bot_activity"
+    # Starts one scheduled campaign at its chosen moment. Enqueued with a delay when
+    # the campaign is scheduled; a no-op if it was withdrawn, moved or already started.
+    START_SCHEDULED_CAMPAIGN = "start_scheduled_campaign"
+    # The safety net for START_SCHEDULED_CAMPAIGN: every minute, start any SCHEDULED
+    # campaign whose moment has passed. A delayed task can be lost or refused; the
+    # sweep cannot miss a due campaign for longer than one interval.
+    SWEEP_SCHEDULED_CAMPAIGNS = "sweep_scheduled_campaigns"
 
 
 @dataclass(frozen=True, slots=True)

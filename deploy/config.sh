@@ -151,6 +151,9 @@ SWEEP_SESSIONS_SCHEDULE="${SWEEP_SESSIONS_SCHEDULE:-30 3 * * *}"
 # Hourly, staggered off the :00 rate-limit sweep. Detection latency, not correctness:
 # a marathon sustains across runs while a burst confined to one hour still trips once.
 SWEEP_BOT_ACTIVITY_SCHEDULE="${SWEEP_BOT_ACTIVITY_SCHEDULE:-30 * * * *}"
+# Every minute. The safety net for scheduled campaigns ([D71]): a campaign whose start
+# task was lost starts at most one interval late.
+SWEEP_SCHEDULED_CAMPAIGNS_SCHEDULE="${SWEEP_SCHEDULED_CAMPAIGNS_SCHEDULE:-* * * * *}"
 # Etc/UTC deliberately: these are housekeeping intervals, not customer-facing times, and
 # a UTC schedule does not shift twice a year. DEMO_TIMEZONE is the separate setting that
 # governs when demos may be offered.

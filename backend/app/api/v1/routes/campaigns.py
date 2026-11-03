@@ -4,6 +4,11 @@ A broadcast is human-initiated (§7): creating a campaign prepares it, and a sep
 explicit confirmation triggers the send. Sending itself is asynchronous — this module
 enqueues work and returns, because §4 forbids long-running work inside a request.
 
+A broadcast can also be confirmed for a later moment (schedule). It then starts exactly
+as "Send broadcast" would — same checks, same code (`app.services.broadcast`) — from a
+delayed task at that moment, backed by a sweep that runs every minute, so a lost task
+delays the start by at most a minute rather than losing it.
+
 Every route is inside one product (Phase 26). A campaign takes its product from its
 audience, which must belong to the product in the path; its template must be one that
 product owns. So the address, the audience and the template cannot disagree about which
@@ -27,6 +32,7 @@ from app.api.schemas import (
     CampaignRecipientResponse,
     CampaignResponse,
     CreateCampaignRequest,
+    ScheduleCampaignRequest,
     SendCampaignResponse,
     WhatsAppTemplateResponse,
 )
@@ -37,20 +43,20 @@ from app.api.scope import (
     SegmentFilter,
     owned_by,
 )
+from app.core.errors import ProviderError
 from app.core.logging import get_logger
 from app.domain.campaign import (
-    CampaignNotSendableError,
     CampaignStateError,
     TemplateFacts,
     TemplateMediaMissingError,
     TemplateNotApprovedError,
     TemplateOwnershipError,
     assert_header_media_available,
-    assert_sendable,
     assert_template_owned_by,
     assert_template_usable,
     assert_transition,
 )
+from app.domain.campaign_schedule import ScheduleTimeError, assert_schedulable_time
 from app.domain.enums import (
     AudienceStatus,
     CampaignStatus,
@@ -61,6 +67,7 @@ from app.integrations.queue import TaskRequest, TaskType
 from app.persistence.models import Campaign, Product
 from app.persistence.repositories import audiences as audience_repo
 from app.persistence.repositories import campaigns as campaign_repo
+from app.services.broadcast import BroadcastRefusedError, check_can_broadcast, start_broadcast
 
 router = APIRouter(prefix=f"{PRODUCT_PREFIX}/campaigns", tags=["campaigns"])
 logger = get_logger(__name__)
@@ -251,84 +258,153 @@ async def send_campaign(
     Idempotent: only PENDING recipients are enqueued, so re-triggering a broadcast
     cannot message anyone twice. Each task carries a deterministic ID derived from the
     recipient, so a redelivered task is recognizable as a repeat (§20).
+
+    A SCHEDULED campaign may be sent now too: it is the same confirmed broadcast with
+    its moment brought forward. The row lock means its scheduled trigger, arriving
+    later, finds it already started and does nothing.
     """
-    campaign = await _require_campaign(session, product, campaign_id)
-    if campaign.archived_at is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Restore this campaign before sending it")
-
-    # Checked again at the human moment, not only at creation ([D57]). A campaign created
-    # before ownership was enforced may point at a template with no product, and this is
-    # the last point where refusing costs nothing: nothing has been queued yet.
-    template = await campaign_repo.get_template(session, campaign.template_id)
+    campaign = await _require_campaign_locked(session, product, campaign_id)
     try:
-        assert_template_owned_by(
-            template_product_id=template.product_id if template is not None else None,
-            campaign_product_id=campaign.product_id,
-        )
-    except TemplateOwnershipError as exc:
+        started = await start_broadcast(session, queue, campaign, product)
+    except BroadcastRefusedError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-    # The broadcast leaves from this product's own number ([D40]). Without one nothing is
-    # queued: no other number may stand in, and every recipient would only fail (Phase 27).
-    if not product.whatsapp_phone_number_id or not product.whatsapp_business_account_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"{product.display_name} has no WhatsApp number configured, so nothing can "
-                "be sent for it."
-            ),
-        )
-
-    # [D16]: re-check immediately before sending, because a customer can opt out
-    # between the snapshot and this moment.
-    newly_suppressed = await campaign_repo.suppress_recipients_now_opted_out(session, campaign.id)
-
-    pending = await campaign_repo.list_pending_recipients(session, campaign.id)
-
-    try:
-        assert_sendable(campaign.status, len(pending))
-    except CampaignNotSendableError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-    assert_transition(campaign.status, CampaignStatus.PROCESSING)
-
-    for recipient in pending:
-        await queue.enqueue(
-            TaskRequest(
-                task_type=TaskType.SEND_CAMPAIGN_MESSAGE,
-                # Deterministic, so a duplicate enqueue collapses rather than sending
-                # twice (§20).
-                task_id=f"send-{recipient.id}",
-                payload={
-                    "campaign_id": str(campaign.id),
-                    "recipient_id": str(recipient.id),
-                    "lead_id": str(recipient.lead_id),
-                },
-            )
-        )
-
-    # Only after the queue accepted the work: a failure above leaves recipients
-    # PENDING so a retry picks them up rather than losing them.
-    await campaign_repo.mark_queued(session, pending)
-
-    campaign.status = CampaignStatus.PROCESSING
-    campaign.started_at = datetime.now(UTC)
-    await campaign_repo.record_activity(session, campaign.id, "PROCESSING")
-    await campaign_repo.refresh_counts(session, campaign)
 
     logger.info(
         "campaign_send_confirmed",
         campaign_id=str(campaign.id),
         product_id=str(product.id),
-        queued=len(pending),
-        skipped_as_suppressed=newly_suppressed,
+        queued=started.queued,
+        skipped_as_suppressed=started.skipped_as_suppressed,
         by_user_id=str(user.id),
     )
     return SendCampaignResponse(
         campaign=CampaignResponse.model_validate(campaign),
-        queued=len(pending),
-        skipped_as_suppressed=newly_suppressed,
+        queued=started.queued,
+        skipped_as_suppressed=started.skipped_as_suppressed,
     )
+
+
+@router.post("/{campaign_id}/schedule", response_model=CampaignResponse)
+async def schedule_campaign(
+    campaign_id: uuid.UUID,
+    payload: ScheduleCampaignRequest,
+    user: AdminUser,
+    product: ActiveProductScope,
+    session: DbSession,
+    queue: Queue,
+) -> CampaignResponse:
+    """Confirm a broadcast for a later moment. ADMIN-only ([D33]), like sending.
+
+    This is the human confirmation §7 requires, given in advance. Every check the send
+    makes that changes nothing runs now, so a problem is named while someone is looking.
+    They all run again at the moment, because the world can change in between.
+
+    Scheduling an already-scheduled campaign moves it. Nothing is sent here.
+    """
+    campaign = await _require_campaign_locked(session, product, campaign_id)
+
+    try:
+        assert_schedulable_time(payload.scheduled_for, datetime.now(UTC))
+    except ScheduleTimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+
+    if campaign.status not in (CampaignStatus.READY, CampaignStatus.SCHEDULED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Only a READY campaign can be scheduled; this one is {campaign.status.value}",
+        )
+
+    try:
+        await check_can_broadcast(session, campaign, product)
+    except BroadcastRefusedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    pending = await campaign_repo.count_recipients(
+        session, campaign.id, status=RecipientStatus.PENDING
+    )
+    if pending == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This campaign has no recipients left to send to",
+        )
+
+    when = payload.scheduled_for.astimezone(UTC)
+    moved = campaign.status is CampaignStatus.SCHEDULED
+    if not moved:
+        assert_transition(campaign.status, CampaignStatus.SCHEDULED)
+        campaign.status = CampaignStatus.SCHEDULED
+    campaign.scheduled_for = when
+    await campaign_repo.record_activity(
+        session, campaign.id, "RESCHEDULED" if moved else "SCHEDULED"
+    )
+    await session.flush()
+
+    # The exact-time trigger. Its name carries the moment, so moving a schedule creates a
+    # new task instead of colliding with the old one, which fires, finds a different
+    # moment (or a withdrawn schedule) and does nothing. A failure here is logged, not
+    # raised: the schedule is saved, and the minute sweep starts it on time regardless.
+    try:
+        await queue.enqueue(
+            TaskRequest(
+                task_type=TaskType.START_SCHEDULED_CAMPAIGN,
+                task_id=f"start-{campaign.id}-{int(when.timestamp())}",
+                payload={"campaign_id": str(campaign.id)},
+                scheduled_for=when,
+            )
+        )
+    except ProviderError as exc:
+        logger.warning(
+            "campaign_schedule_task_not_enqueued",
+            campaign_id=str(campaign.id),
+            error=str(exc),
+        )
+
+    logger.info(
+        "campaign_scheduled",
+        campaign_id=str(campaign.id),
+        product_id=str(product.id),
+        scheduled_for=when.isoformat(),
+        pending=pending,
+        moved=moved,
+        by_user_id=str(user.id),
+    )
+    return CampaignResponse.model_validate(campaign)
+
+
+@router.post("/{campaign_id}/unschedule", response_model=CampaignResponse)
+async def unschedule_campaign(
+    campaign_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession
+) -> CampaignResponse:
+    """Withdraw a schedule; the campaign goes back to READY. ADMIN-only.
+
+    Allowed for an inactive product, like cancelling: it stops activity. The delayed
+    task still fires at the old moment and does nothing, because the campaign is no
+    longer SCHEDULED.
+
+    Idempotent: a READY campaign is returned unchanged.
+    """
+    campaign = await _require_campaign_locked(session, product, campaign_id)
+
+    if campaign.status is CampaignStatus.READY:
+        return CampaignResponse.model_validate(campaign)
+    if campaign.status is not CampaignStatus.SCHEDULED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Only a scheduled campaign can be unscheduled; this one is {campaign.status.value}"
+            ),
+        )
+
+    assert_transition(campaign.status, CampaignStatus.READY)
+    campaign.status = CampaignStatus.READY
+    campaign.scheduled_for = None
+    await campaign_repo.record_activity(session, campaign.id, "UNSCHEDULED")
+    await session.flush()
+
+    logger.info("campaign_unscheduled", campaign_id=str(campaign.id), by_user_id=str(user.id))
+    return CampaignResponse.model_validate(campaign)
 
 
 @router.post("/{campaign_id}/cancel", response_model=CampaignResponse)
@@ -347,7 +423,7 @@ async def cancel_campaign(
     Idempotent: cancelling an already-cancelled campaign succeeds and changes nothing.
     Messages already delivered cannot be recalled; only unsent recipients are stopped.
     """
-    campaign = await _require_campaign(session, product, campaign_id)
+    campaign = await _require_campaign_locked(session, product, campaign_id)
 
     if campaign.status is CampaignStatus.CANCELLED:
         return CampaignResponse.model_validate(campaign)
@@ -377,6 +453,17 @@ async def _require_campaign(
 ) -> Campaign:
     return owned_by(
         await campaign_repo.get_by_id(session, campaign_id), product, not_found="Campaign not found"
+    )
+
+
+async def _require_campaign_locked(
+    session: DbSession, product: Product, campaign_id: uuid.UUID
+) -> Campaign:
+    """The campaign with its row locked, for any route that changes its status."""
+    return owned_by(
+        await campaign_repo.get_for_update(session, campaign_id),
+        product,
+        not_found="Campaign not found",
     )
 
 

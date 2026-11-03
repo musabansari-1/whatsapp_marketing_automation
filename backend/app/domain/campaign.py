@@ -26,11 +26,13 @@ _TRANSITIONS: dict[CampaignStatus, frozenset[CampaignStatus]] = {
     CampaignStatus.DRAFT: frozenset(
         {CampaignStatus.READY, CampaignStatus.CANCELLED, CampaignStatus.FAILED}
     ),
-    # Ready is the state a human confirms from (§7). Scheduling is a state the
-    # specification lists; nothing in V1 enters it yet.
+    # Ready is the state a human confirms from (§7): either now (PROCESSING) or for a
+    # chosen moment (SCHEDULED).
     CampaignStatus.READY: frozenset(
         {CampaignStatus.PROCESSING, CampaignStatus.SCHEDULED, CampaignStatus.CANCELLED}
     ),
+    # A schedule starts on time, is withdrawn (back to READY, also how a start that
+    # cannot go ahead is handed back to a person), or is cancelled.
     CampaignStatus.SCHEDULED: frozenset(
         {CampaignStatus.PROCESSING, CampaignStatus.READY, CampaignStatus.CANCELLED}
     ),
@@ -181,9 +183,11 @@ def assert_sendable(status: CampaignStatus, sendable_recipients: int) -> None:
     PROCESSING and then silently completes having done nothing — which looks like a
     delivery failure rather than an empty audience.
     """
-    if status is not CampaignStatus.READY:
+    # SCHEDULED is a READY campaign with a chosen moment: the moment arriving, or a
+    # person choosing "send now" instead, starts it exactly as READY would.
+    if status not in (CampaignStatus.READY, CampaignStatus.SCHEDULED):
         raise CampaignNotSendableError(
-            f"Only a READY campaign can be sent; this one is {status.value}"
+            f"Only a READY or SCHEDULED campaign can be sent; this one is {status.value}"
         )
     if sendable_recipients <= 0:
         raise CampaignNotSendableError("This campaign has no recipients left to send to")

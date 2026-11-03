@@ -15,7 +15,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
-import { IconBookings, IconLeads, IconNotifications } from '@/components/icons';
+import { IconBookings, IconCampaigns, IconLeads, IconNotifications } from '@/components/icons';
 import { AppShell } from '@/components/shell';
 import { Alert, Button, EmptyState, PageHeader, Skeleton } from '@/components/ui';
 import { api, type Notification, type Product } from '@/lib/api';
@@ -163,6 +163,19 @@ export default function NotificationsPage() {
                       </Link>
                     ) : null}
                     {notification.product &&
+                    notification.related_entity_type === 'campaign' &&
+                    notification.related_entity_id ? (
+                      <Link
+                        href={productHref(
+                          notification.product.slug,
+                          `/campaigns/${notification.related_entity_id}`,
+                        )}
+                        className="rounded-lg bg-forest px-2.5 py-1 font-semibold text-white transition hover:bg-forest/90"
+                      >
+                        Open campaign
+                      </Link>
+                    ) : null}
+                    {notification.product &&
                     notification.related_entity_type === 'lead' &&
                     notification.related_entity_id ? (
                       <Link
@@ -200,6 +213,7 @@ const NOTIFICATION_ICONS = {
   DEMO_BOOKED: { Icon: IconBookings, tone: 'bg-sky-50 text-sky-700' },
   BOOKING_FAILED: { Icon: IconBookings, tone: 'bg-red-50 text-red-700' },
   BOT_SUSPECTED: { Icon: IconNotifications, tone: 'bg-amber-50 text-amber-800' },
+  CAMPAIGN_SCHEDULE_FAILED: { Icon: IconCampaigns, tone: 'bg-red-50 text-red-700' },
 } as const;
 
 function NotificationIcon({ type }: { type: Notification['type'] }) {

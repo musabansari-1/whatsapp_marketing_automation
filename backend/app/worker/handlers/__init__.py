@@ -9,6 +9,10 @@ from app.integrations.queue import TaskType
 from app.worker.handlers.booking import notify_booking
 from app.worker.handlers.booking_failed import notify_booking_failed
 from app.worker.handlers.bot_audit import sweep_bot_activity
+from app.worker.handlers.campaign_schedule import (
+    start_scheduled_campaign,
+    sweep_scheduled_campaigns,
+)
 from app.worker.handlers.campaign_send import send_campaign_message
 from app.worker.handlers.conversation import process_conversation_turn
 from app.worker.handlers.crm_sync import queue_crm_sync, sync_crm_contact
@@ -48,6 +52,8 @@ def register_all(registry: TaskRegistry | None = None) -> None:
         TaskType.SEND_TEAM_REPLY: send_team_reply,
         TaskType.SEND_TEMPLATE_NOTIFICATION: send_template_notification,
         TaskType.SWEEP_BOT_ACTIVITY: sweep_bot_activity,
+        TaskType.START_SCHEDULED_CAMPAIGN: start_scheduled_campaign,
+        TaskType.SWEEP_SCHEDULED_CAMPAIGNS: sweep_scheduled_campaigns,
         TaskType.SYNC_CRM_CONTACT: sync_crm_contact,
         TaskType.SWEEP_UNANSWERED_MESSAGES: sweep_unanswered_messages,
         TaskType.SWEEP_RATE_LIMIT_COUNTERS: sweep_rate_limit_counters,
@@ -72,9 +78,11 @@ __all__ = [
     "send_campaign_message",
     "send_team_reply",
     "send_template_notification",
+    "start_scheduled_campaign",
     "sweep_bot_activity",
     "sweep_expired_sessions",
     "sweep_rate_limit_counters",
+    "sweep_scheduled_campaigns",
     "sweep_unanswered_messages",
     "sync_crm_contact",
     "sync_whatsapp_templates",

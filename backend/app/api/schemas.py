@@ -372,6 +372,12 @@ class LeadCampaignResponse(BaseModel):
     sent_at: datetime | None
 
 
+class ScheduleCampaignRequest(BaseModel):
+    """When to start the broadcast. Must carry a timezone; the browser sends its own."""
+
+    scheduled_for: datetime
+
+
 class SendCampaignResponse(BaseModel):
     """The result of confirming Send Broadcast.
 

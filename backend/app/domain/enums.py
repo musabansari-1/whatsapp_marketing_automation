@@ -224,6 +224,11 @@ class NotificationType(StrEnum):
     #: hears about its hottest leads; and a lead asking for a human is promised
     #: a reply in the chat, which only the bell makes real.
     LEAD_NEEDS_ATTENTION = "LEAD_NEEDS_ATTENTION"
+    #: A scheduled campaign reached its moment and did not start: a check failed
+    #: (template no longer approved, no number, nobody left to message) or every
+    #: trigger was down past the lateness limit. It is back to READY, so without
+    #: this the team believes a broadcast went out that never did.
+    CAMPAIGN_SCHEDULE_FAILED = "CAMPAIGN_SCHEDULE_FAILED"
 
 
 class SuppressionReason(StrEnum):

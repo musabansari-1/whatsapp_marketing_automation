@@ -74,6 +74,49 @@ async def get_by_id(session: AsyncSession, campaign_id: uuid.UUID) -> Campaign |
     return await session.get(Campaign, campaign_id)
 
 
+async def get_for_update(
+    session: AsyncSession, campaign_id: uuid.UUID, *, skip_locked: bool = False
+) -> Campaign | None:
+    """Load a campaign with its row locked until the transaction ends.
+
+    Starting a broadcast is decided from the campaign's status, and two triggers can
+    arrive together (a scheduled task and the sweep, or a double-clicked Send). The lock
+    makes the second wait and then see the status the first wrote, so it does nothing.
+    `skip_locked` lets a sweep pass over a campaign another trigger is already starting
+    rather than queue behind it. `populate_existing` replaces any copy already in the
+    session, so the status read is the locked row's, never a stale one.
+    """
+    result = await session.execute(
+        select(Campaign)
+        .where(Campaign.id == campaign_id)
+        .with_for_update(skip_locked=skip_locked)
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_due_scheduled_ids(
+    session: AsyncSession, *, now: datetime, limit: int
+) -> list[uuid.UUID]:
+    """SCHEDULED campaigns whose moment has passed, oldest first.
+
+    Ids only: each is then locked and started in its own transaction, so one that
+    cannot start does not hold up or roll back the others.
+    """
+    result = await session.execute(
+        select(Campaign.id)
+        .where(
+            Campaign.status == CampaignStatus.SCHEDULED,
+            Campaign.scheduled_for.is_not(None),
+            Campaign.scheduled_for <= now,
+            Campaign.archived_at.is_(None),
+        )
+        .order_by(Campaign.scheduled_for)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
 async def record_activity(session: AsyncSession, campaign_id: uuid.UUID, event_type: str) -> None:
     session.add(
         CampaignActivity(
