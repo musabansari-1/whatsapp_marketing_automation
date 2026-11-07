@@ -316,6 +316,7 @@ def clean_customer_reply(text: str) -> str:
     cleaned = _normalize_whatsapp_formatting(cleaned)
     cleaned = _without_emailed_invite_claims(cleaned)
     cleaned = _without_device_claims(cleaned)
+    cleaned = _without_record_dumps(cleaned)
 
     if _THINKING_LEAK.search(cleaned):
         # The model was thinking, not answering: staging sent a whole
@@ -599,6 +600,38 @@ def _without_device_claims(text: str) -> str:
             continue
         kept.append(prefix + sentence)
     return "".join(kept) if changed else stripped
+
+
+#: A sentence reading out the stored lead record. Life Herba, 7 Nov 2026: "Your customer
+#: record shows: interested=True, qualification_judgement=QUALIFIED,
+#: registration_intent=True". A field name with an underscore, a `field=value` pair, or
+#: the words "customer record" never belong in a reply, so the whole sentence goes.
+_UNDERSCORED_PLUMBING = sorted(
+    (t for t in _STRONG_PLUMBING - _TOOL_NAMES if "_" in t), key=len, reverse=True
+)
+
+_RECORD_DUMP = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in _UNDERSCORED_PLUMBING) + r")\b"
+    rf"|\b(?:{_STRONG_PLUMBING_PATTERN})\s*="
+    r"|\b\w+\s*=\s*(?:true|false|none|null)\b"
+    r"|\b(?:customer|lead)\s+record\b",
+    re.IGNORECASE,
+)
+
+
+def _without_record_dumps(text: str) -> str:
+    """Remove sentences that read out the stored lead record."""
+    if not _RECORD_DUMP.search(text):
+        return text
+    sentences = _SENTENCE_SPLIT.split(text)
+    separators = _SENTENCE_SPLIT.findall(text)
+    kept: list[str] = []
+    for index, sentence in enumerate(sentences):
+        prefix = separators[index - 1] if index else ""
+        if sentence.strip() and _RECORD_DUMP.search(sentence):
+            continue
+        kept.append(prefix + sentence)
+    return "".join(kept)
 
 
 def _claims_device_capability(sentence: str) -> bool:

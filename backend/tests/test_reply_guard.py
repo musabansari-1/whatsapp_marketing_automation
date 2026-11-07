@@ -529,3 +529,22 @@ class TestMixedScriptRepliesAreBlanked:
     )
     def test_one_script_with_english_and_urls_survives(self, reply: str) -> None:
         assert clean_customer_reply(reply) == reply
+
+
+def test_a_sentence_reading_out_the_lead_record_is_removed() -> None:
+    reply = (
+        "I've provided the registration link lifeherbagroup.com/join/doctor multiple times.\n\n"
+        "Your customer record shows: interested=True, qualification_judgement=QUALIFIED, "
+        "registration_intent=True, specialisation=Physiotherapy.\n\n"
+        "Do you want to register? Reply yes or no."
+    )
+    cleaned = clean_customer_reply(reply)
+    assert "interested=True" not in cleaned
+    assert "customer record" not in cleaned
+    assert "registration link" in cleaned
+    assert "Do you want to register?" in cleaned
+
+
+def test_prose_about_interest_is_kept() -> None:
+    reply = "Thank you! If you are interested, reply Register Now."
+    assert clean_customer_reply(reply) == reply

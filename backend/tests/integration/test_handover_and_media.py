@@ -282,3 +282,74 @@ class TestTeamReply:
 
         assert run_team_reply(conversation_id) == "outside_service_window"
         assert whatsapp.sent_texts == []
+
+
+def add_inbound(like_message_id: str, body: str) -> str:
+    """Another inbound message in the same conversation, received now."""
+
+    async def write(session: AsyncSession) -> str:
+        original = await session.get(Message, uuid.UUID(like_message_id))
+        assert original is not None
+        row = Message(
+            lead_id=original.lead_id,
+            conversation_id=original.conversation_id,
+            product_id=original.product_id,
+            direction=original.direction,
+            status=original.status,
+            provider_message_id=f"wamid-{uuid.uuid4()}",
+            phone_e164=original.phone_e164,
+            body=body,
+        )
+        session.add(row)
+        await session.flush()
+        return str(row.id)
+
+    return run_db(write)
+
+
+def paused_until(conversation_id: str) -> datetime | None:
+    async def read(session: AsyncSession) -> datetime | None:
+        conversation = await session.get(Conversation, uuid.UUID(conversation_id))
+        assert conversation is not None
+        return conversation.ai_paused_until
+
+    return run_db(read)
+
+
+GREETING = "Welcome to TRY FOR WALK Rehabilitation Center. How can we help you today?"
+
+
+class TestAutoReplyLoop:
+    def test_a_repeated_greeting_is_answered_until_the_third_time(
+        self, turn_env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm, whatsapp = turn_env
+        enqueued = recording_queue(monkeypatch)
+        _lead, conversation_id, first = seed_turn(body=GREETING)
+
+        assert run_turn(first)["result"] == "replied"
+        assert run_turn(add_inbound(first, GREETING))["result"] == "replied"
+        calls_before = llm.call_count
+
+        result = run_turn(add_inbound(first, GREETING))
+
+        assert result["result"] == "auto_reply_loop"
+        assert len(whatsapp.sent_texts) == 2
+        assert llm.call_count == calls_before
+        until = paused_until(conversation_id)
+        assert until is not None and until > datetime.now(UTC) + timedelta(hours=23)
+        assert [t.task_type for t in enqueued if t.task_type == TaskType.NOTIFY_LEAD_ATTENTION] == [
+            TaskType.NOTIFY_LEAD_ATTENTION
+        ]
+
+    def test_a_person_writing_different_things_is_answered(
+        self, turn_env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _llm, whatsapp = turn_env
+        recording_queue(monkeypatch)
+        _lead, _conversation_id, first = seed_turn(body="Hi")
+        run_turn(first)
+        run_turn(add_inbound(first, "Physiotherapy"))
+
+        assert run_turn(add_inbound(first, "Lucknow"))["result"] == "replied"
+        assert len(whatsapp.sent_texts) == 3

@@ -58,6 +58,9 @@ from app.domain.ai_config import (
     with_lead_capture_guidance,
     with_lead_context,
 )
+from app.domain.auto_reply import PAUSE as AUTO_REPLY_PAUSE
+from app.domain.auto_reply import REPEAT_WINDOW as AUTO_REPLY_LOOKBACK
+from app.domain.auto_reply import looks_like_auto_reply
 from app.domain.campaign import assert_header_media_available
 from app.domain.conversation import LeadStateError, can_transition_conversation
 from app.domain.conversion import (
@@ -280,6 +283,30 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
             await session.commit()
             logger.info("conversation_turn_skipped", reason="ai_paused")
             return TurnOutcome("ai_paused", str(conversation.id)).as_dict()
+
+        # The other side is a WhatsApp Business auto-reply answering every message the
+        # assistant sends. Answering it again keeps the loop going, so the assistant
+        # stops, stays paused, and the team is told to take over.
+        if await _is_auto_reply_loop(session, conversation.id, message):
+            conversation.ai_paused_until = datetime.now(UTC) + AUTO_REPLY_PAUSE
+            _turn, created = await conversation_repo.record_turn_once(
+                session,
+                conversation=conversation,
+                role=conversation_repo.ROLE_USER,
+                content=message.body or MEDIA_TURN_PLACEHOLDER,
+                message_id=message.id,
+            )
+            if created:
+                await _advance_to_responded(session, lead)
+            await session.commit()
+            await _queue_lead_attention_notification(
+                settings,
+                lead.id,
+                "Automatic replies: this number keeps sending the same automatic message, "
+                "so the assistant stopped answering. A person should reply.",
+            )
+            logger.warning("conversation_turn_skipped", reason="auto_reply_loop")
+            return TurnOutcome("auto_reply_loop", str(conversation.id)).as_dict()
 
         # First-reply welcome: a phone number messaging this product for the first
         # time gets the product's selected template instead of the AI text reply.
@@ -842,6 +869,23 @@ async def _reply_to_media(
     await session.commit()
     logger.info("conversation_media_reply_sent")
     return TurnOutcome("media_reply", str(conversation.id), replied=True).as_dict()
+
+
+async def _is_auto_reply_loop(
+    session: AsyncSession, conversation_id: uuid.UUID, message: Message
+) -> bool:
+    """Whether this inbound message is an automated reply repeating itself."""
+    now = datetime.now(UTC)
+    result = await session.execute(
+        select(Message.created_at, Message.body).where(
+            Message.conversation_id == conversation_id,
+            Message.direction == MessageDirection.INBOUND,
+            Message.id != message.id,
+            Message.created_at >= now - AUTO_REPLY_LOOKBACK,
+        )
+    )
+    earlier = [(row.created_at, row.body) for row in result]
+    return looks_like_auto_reply(message.body or "", earlier, now=now)
 
 
 async def _media_reply_sent_recently(
