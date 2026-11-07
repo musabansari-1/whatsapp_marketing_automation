@@ -6,9 +6,10 @@ Revises: c81a2b3d4e5f
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "d19b6a4f2c81"
 down_revision: str | None = "c81a2b3d4e5f"
@@ -27,10 +28,17 @@ def upgrade() -> None:
         ),
         sa.Column("campaign_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("event_type", sa.String(length=32), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(
-            ["campaign_id"], ["campaigns.id"], name="fk_campaign_activities_campaign_id_campaigns", ondelete="CASCADE"
+            ["campaign_id"],
+            ["campaigns.id"],
+            name="fk_campaign_activities_campaign_id_campaigns",
+            ondelete="CASCADE",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_campaign_activities"),
     )

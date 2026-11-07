@@ -29,6 +29,8 @@ EXPECTED_TABLES = {
     "leads",
     "campaigns",
     "campaign_recipients",
+    # A campaign's lifecycle timeline (created, scheduled, started, ...).
+    "campaign_activities",
     "whatsapp_templates",
     "whatsapp_suppressions",
     "messages",
@@ -75,15 +77,15 @@ class TestTables:
         assert set(Base.metadata.tables) == EXPECTED_TABLES
 
     def test_table_count(self) -> None:
-        """Twenty-four: §15's eighteen, plus `whatsapp_suppressions` ([D16]), `sessions`
-        ([D2]), `rate_limit_counters` (§19), and §28's `products`, `segments` and
-        `ai_configurations`.
+        """Twenty-five: §15's eighteen, plus `whatsapp_suppressions` ([D16]), `sessions`
+        ([D2]), `rate_limit_counters` (§19), §28's `products`, `segments` and
+        `ai_configurations`, and `campaign_activities` (a campaign's timeline).
 
         Asserted as a number as well as a set so that adding a table is a deliberate
         act — this test is the thing that made the Phase 14 and Phase 17 additions
         visible.
         """
-        assert len(Base.metadata.tables) == 24
+        assert len(Base.metadata.tables) == 25
 
 
 class TestIdentityAndDeduplication:

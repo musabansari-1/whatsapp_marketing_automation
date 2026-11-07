@@ -20,4 +20,6 @@ class CampaignActivity(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
 
-    __table_args__ = (Index("ix_campaign_activities_campaign_created", "campaign_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_campaign_activities_campaign_created", "campaign_id", "created_at"),
+    )

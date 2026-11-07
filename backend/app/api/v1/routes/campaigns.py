@@ -97,7 +97,10 @@ async def create_campaign(
         not_found="Audience not found",
     )
     if audience.archived_at is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Restore this audience before creating a campaign")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Restore this audience before creating a campaign",
+        )
     if audience.status is not AudienceStatus.CONFIRMED:
         # §6 puts admin confirmation before use; an unconfirmed audience has not been
         # reviewed and its leads do not exist yet.
@@ -169,11 +172,15 @@ async def create_campaign(
 
 @router.get("", response_model=list[CampaignResponse])
 async def list_campaigns(
-    product: ProductScope, segment: SegmentFilter, session: DbSession,
+    product: ProductScope,
+    segment: SegmentFilter,
+    session: DbSession,
     include_archived: bool = Query(default=False),
 ) -> list[CampaignResponse]:
     campaigns = await campaign_repo.list_campaigns(
-        session, product_id=product.id, segment_id=segment.id if segment is not None else None,
+        session,
+        product_id=product.id,
+        segment_id=segment.id if segment is not None else None,
         include_archived=include_archived,
     )
     return [CampaignResponse.model_validate(campaign) for campaign in campaigns]
@@ -187,17 +194,28 @@ async def get_campaign(
 
 
 @router.post("/{campaign_id}/archive", response_model=CampaignResponse)
-async def archive_campaign(campaign_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> CampaignResponse:
+async def archive_campaign(
+    campaign_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession
+) -> CampaignResponse:
     campaign = await _require_campaign(session, product, campaign_id)
-    if campaign.status in {CampaignStatus.SCHEDULED, CampaignStatus.PROCESSING, CampaignStatus.PAUSED}:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cancel or finish this campaign before archiving it")
+    if campaign.status in {
+        CampaignStatus.SCHEDULED,
+        CampaignStatus.PROCESSING,
+        CampaignStatus.PAUSED,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cancel or finish this campaign before archiving it",
+        )
     campaign.archived_at = campaign.archived_at or datetime.now(UTC)
     await session.flush()
     return CampaignResponse.model_validate(campaign)
 
 
 @router.post("/{campaign_id}/restore", response_model=CampaignResponse)
-async def restore_campaign(campaign_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> CampaignResponse:
+async def restore_campaign(
+    campaign_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession
+) -> CampaignResponse:
     campaign = await _require_campaign(session, product, campaign_id)
     campaign.archived_at = None
     await session.flush()

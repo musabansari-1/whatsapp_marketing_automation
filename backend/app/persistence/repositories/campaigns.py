@@ -128,7 +128,9 @@ async def record_activity(session: AsyncSession, campaign_id: uuid.UUID, event_t
     await session.flush()
 
 
-async def list_activity(session: AsyncSession, campaign_id: uuid.UUID) -> Sequence[CampaignActivity]:
+async def list_activity(
+    session: AsyncSession, campaign_id: uuid.UUID
+) -> Sequence[CampaignActivity]:
     result = await session.execute(
         select(CampaignActivity)
         .where(CampaignActivity.campaign_id == campaign_id)
@@ -138,7 +140,10 @@ async def list_activity(session: AsyncSession, campaign_id: uuid.UUID) -> Sequen
 
 
 async def list_campaigns(
-    session: AsyncSession, *, product_id: uuid.UUID, segment_id: uuid.UUID | None = None,
+    session: AsyncSession,
+    *,
+    product_id: uuid.UUID,
+    segment_id: uuid.UUID | None = None,
     include_archived: bool = False,
 ) -> Sequence[Campaign]:
     """One product's campaigns, newest first. There is no all-products campaign list."""
@@ -146,9 +151,7 @@ async def list_campaigns(
     if not include_archived:
         conditions.append(Campaign.archived_at.is_(None))
     result = await session.execute(
-        select(Campaign)
-        .where(*conditions)
-        .order_by(Campaign.created_at.desc())
+        select(Campaign).where(*conditions).order_by(Campaign.created_at.desc())
     )
     campaigns = result.scalars().all()
     # Recipient statuses can change asynchronously as send jobs finish and provider

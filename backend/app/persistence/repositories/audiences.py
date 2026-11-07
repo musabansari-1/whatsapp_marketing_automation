@@ -92,7 +92,10 @@ async def get_by_id(session: AsyncSession, audience_id: uuid.UUID) -> Audience |
 
 
 async def list_audiences(
-    session: AsyncSession, *, product_id: uuid.UUID, segment_id: uuid.UUID | None = None,
+    session: AsyncSession,
+    *,
+    product_id: uuid.UUID,
+    segment_id: uuid.UUID | None = None,
     include_archived: bool = False,
 ) -> Sequence[Audience]:
     """One product's audiences, newest first. There is no all-products audience list."""
@@ -102,9 +105,7 @@ async def list_audiences(
     if not include_archived:
         conditions.append(Audience.archived_at.is_(None))
     result = await session.execute(
-        select(Audience)
-        .where(*conditions)
-        .order_by(Audience.created_at.desc())
+        select(Audience).where(*conditions).order_by(Audience.created_at.desc())
     )
     return result.scalars().all()
 

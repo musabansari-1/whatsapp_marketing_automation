@@ -88,6 +88,7 @@ INTENTIONALLY_GLOBAL: dict[str, str] = {
 DERIVED: dict[str, str] = {
     "audience_contacts": "-> audiences",
     "campaign_recipients": "-> campaigns",
+    "campaign_activities": "-> campaigns",
     "conversation_messages": "-> conversations",
     "knowledge_documents": "-> knowledge_bases",
     "knowledge_chunks": "-> knowledge_documents -> knowledge_bases",

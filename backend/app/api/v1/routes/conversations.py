@@ -28,8 +28,8 @@ from app.api.schemas import (
     ConversationPage,
     ConversationResponse,
     ConversationTurnResponse,
-    LeadPage,
     LeadCampaignResponse,
+    LeadPage,
     LeadResponse,
     TeamReplyAccepted,
     TeamReplyRequest,
@@ -94,7 +94,9 @@ async def list_leads(
 
 
 @router.post("/leads/{lead_id}/archive", response_model=LeadResponse)
-async def archive_lead(lead_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> LeadResponse:
+async def archive_lead(
+    lead_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession
+) -> LeadResponse:
     lead = await _require_lead(session, product, lead_id)
     lead.archived_at = lead.archived_at or datetime.now(UTC)
     await session.flush()
@@ -102,7 +104,9 @@ async def archive_lead(lead_id: uuid.UUID, user: AdminUser, product: ProductScop
 
 
 @router.post("/leads/{lead_id}/restore", response_model=LeadResponse)
-async def restore_lead(lead_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> LeadResponse:
+async def restore_lead(
+    lead_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession
+) -> LeadResponse:
     lead = await _require_lead(session, product, lead_id)
     lead.archived_at = None
     await session.flush()

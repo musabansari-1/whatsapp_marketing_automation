@@ -239,11 +239,15 @@ async def upload_audience(
 
 @router.get("", response_model=list[AudienceSummaryResponse])
 async def list_audiences(
-    product: ProductScope, segment: SegmentFilter, session: DbSession,
+    product: ProductScope,
+    segment: SegmentFilter,
+    session: DbSession,
     include_archived: bool = Query(default=False),
 ) -> list[AudienceSummaryResponse]:
     audiences = await audience_repo.list_audiences(
-        session, product_id=product.id, segment_id=segment.id if segment is not None else None,
+        session,
+        product_id=product.id,
+        segment_id=segment.id if segment is not None else None,
         include_archived=include_archived,
     )
     return [AudienceSummaryResponse.model_validate(audience) for audience in audiences]
@@ -298,7 +302,10 @@ async def confirm_audience(
     """
     audience = await _require_audience(session, product, audience_id)
     if audience.archived_at is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Restore this audience before confirming it")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Restore this audience before confirming it",
+        )
 
     if audience.status is AudienceStatus.CONFIRMED:
         # Idempotent: re-confirming is a no-op rather than an error, so a double
@@ -331,7 +338,9 @@ async def confirm_audience(
 
 
 @router.post("/{audience_id}/archive", response_model=AudienceSummaryResponse)
-async def archive_audience(audience_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> AudienceSummaryResponse:
+async def archive_audience(
+    audience_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession
+) -> AudienceSummaryResponse:
     audience = await _require_audience(session, product, audience_id)
     audience.archived_at = audience.archived_at or datetime.now(UTC)
     await session.flush()
@@ -361,7 +370,9 @@ async def rename_audience(
 
 
 @router.post("/{audience_id}/restore", response_model=AudienceSummaryResponse)
-async def restore_audience(audience_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession) -> AudienceSummaryResponse:
+async def restore_audience(
+    audience_id: uuid.UUID, user: AdminUser, product: ProductScope, session: DbSession
+) -> AudienceSummaryResponse:
     audience = await _require_audience(session, product, audience_id)
     audience.archived_at = None
     await session.flush()

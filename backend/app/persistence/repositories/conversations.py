@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import Row, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.conversation import (
@@ -40,7 +40,9 @@ ROLE_ASSISTANT = "assistant"
 ROLE_SYSTEM = "system"
 
 
-async def list_lead_campaigns(session: AsyncSession, lead_id: uuid.UUID):
+async def list_lead_campaigns(
+    session: AsyncSession, lead_id: uuid.UUID
+) -> Sequence[Row[tuple[Campaign, CampaignRecipient]]]:
     """Campaign snapshots that included this lead, newest campaign first."""
     result = await session.execute(
         select(Campaign, CampaignRecipient)

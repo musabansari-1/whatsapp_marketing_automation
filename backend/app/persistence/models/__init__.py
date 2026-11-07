@@ -8,13 +8,13 @@ reason.
 
 from app.persistence.models.audience import Audience, AudienceContact
 from app.persistence.models.booking import Booking
-from app.persistence.models.campaign_activity import CampaignActivity
 from app.persistence.models.campaign import (
     META_STATUS_APPROVED,
     Campaign,
     CampaignRecipient,
     WhatsAppTemplate,
 )
+from app.persistence.models.campaign_activity import CampaignActivity
 from app.persistence.models.conversation import (
     AIRun,
     Conversation,

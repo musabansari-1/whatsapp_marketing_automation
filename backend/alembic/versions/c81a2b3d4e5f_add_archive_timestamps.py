@@ -6,8 +6,9 @@ Revises: f2a3b4c5d6e7
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision: str = "c81a2b3d4e5f"
 down_revision: str | None = "f2a3b4c5d6e7"
