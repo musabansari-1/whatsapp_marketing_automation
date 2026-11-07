@@ -658,7 +658,8 @@ class TestStatusUpdates:
 
         post_webhook(webhook_client, status_update("wamid.campaign", "delivered"))
         process_all()
-        assert run_db(counters) == (0, 1, 0)
+        # Cumulative: a delivered message was also sent.
+        assert run_db(counters) == (1, 1, 0)
 
         payload = status_update("wamid.campaign", "failed")
         payload["entry"][0]["changes"][0]["value"]["statuses"][0]["errors"] = [
