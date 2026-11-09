@@ -11,6 +11,7 @@ Run with `python -m app.cli <command>`:
     block-sender            stop all platform activity for one phone number
     unblock-sender          lift an operator block (never an opt-out)
     eval-replies            check reply quality against a fixed case set (calls the model)
+    sync-mis                queue every engaged lead of one product for MIS Tracker sync
 
 None of them calls Meta, Google or HubSpot, and none sends a message. Only eval-replies
 calls the model, and it writes nothing. Configuration and
@@ -37,13 +38,17 @@ from app.configuration.legacy import (
     read_legacy_configuration,
 )
 from app.configuration.report import platform_notes, render_json, render_product, render_text
-from app.core.config import Settings, get_settings
+from app.core.config import CRMProviderName, Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.security import hash_password
 from app.domain.enums import SuppressionReason, UserRole
+from app.domain.mis import ENGAGED_STATUSES
 from app.domain.phone import normalize_phone
 from app.domain.readiness import Verdict
+from app.integrations.queue import TaskRequest, TaskType
+from app.integrations.registry import build_queue_provider
 from app.persistence.database import dispose_engine, get_session_factory
+from app.persistence.models import Lead
 from app.persistence.repositories import products as product_repo
 from app.persistence.repositories import readiness as readiness_repo
 from app.persistence.repositories import suppressions as suppression_repo
@@ -407,6 +412,44 @@ async def re_embed_knowledge(settings: Settings, *, out: TextIO | None = None) -
     return EXIT_OK
 
 
+async def sync_mis(
+    settings: Settings, slug: str, *, dry_run: bool = False, out: TextIO | None = None
+) -> int:
+    """Queue a sync task for every engaged lead of one product (a backfill).
+
+    Goes through the normal sync task, so retries, skips and error recording are the
+    same as for a live conversation. Re-running is safe: the MIS upserts by lead id.
+    """
+    if settings.crm_provider is not CRMProviderName.MIS:
+        _say(out, "CRM_PROVIDER is not mis; nothing to do.")
+        return EXIT_FAILED
+    factory = get_session_factory()
+    async with factory() as session:
+        product = await product_repo.get_by_slug(session, slug)
+        if product is None:
+            _say(out, f"No product {slug}.")
+            return EXIT_FAILED
+        ids = (
+            await session.scalars(
+                select(Lead.id).where(
+                    Lead.product_id == product.id,
+                    Lead.archived_at.is_(None),
+                    Lead.status.in_(ENGAGED_STATUSES),
+                )
+            )
+        ).all()
+    if dry_run:
+        _say(out, f"{len(ids)} engaged leads in {slug} would be queued.")
+        return EXIT_OK
+    queue = build_queue_provider(settings)
+    for lead_id in ids:
+        await queue.enqueue(
+            TaskRequest(task_type=TaskType.SYNC_CRM_CONTACT, payload={"lead_id": str(lead_id)})
+        )
+    _say(out, f"Queued {len(ids)} engaged leads in {slug} for MIS sync.")
+    return EXIT_OK
+
+
 async def eval_replies(
     settings: Settings,
     *,
@@ -499,6 +542,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evals.add_argument("--only", default=None, help="run one case by id")
 
+    mis = commands.add_parser(
+        "sync-mis", help="queue every engaged lead of one product for MIS Tracker sync"
+    )
+    mis.add_argument("slug", help="the product slug")
+    mis.add_argument("--dry-run", action="store_true", help="count only, queue nothing")
+
     return parser
 
 
@@ -535,6 +584,8 @@ async def _run(args: argparse.Namespace) -> int:
                     catalog=args.catalog,
                     only=args.only,
                 )
+            case "sync-mis":
+                return await sync_mis(settings, args.slug, dry_run=args.dry_run)
             case _:
                 logger.error("unknown_command", command=args.command)
                 return EXIT_FAILED

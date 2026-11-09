@@ -321,7 +321,9 @@ def build_secret_store(settings: Settings) -> SecretStore:
 
 def build_crm_provider(settings: Settings) -> CRMProvider:
     match settings.crm_provider:
-        case CRMProviderName.FAKE:
+        case CRMProviderName.FAKE | CRMProviderName.MIS:
+            # MIS sync is product-aware and posts from the sync task itself
+            # (`crm_sync._sync_to_mis`); nothing goes through this interface.
             return FakeCRMProvider()
         case CRMProviderName.HUBSPOT:
             # Guaranteed present: configuration refuses to start without it.
