@@ -2,6 +2,7 @@
 #
 # Order matters and each step runs only if the one before it succeeded:
 #   images -> database migration -> worker -> API -> dashboard
+# Each part runs only when its files changed (see `changes`); a manual run does all.
 # The worker goes before the API so it already knows any new task type the API
 # starts enqueueing. The migration goes first so new code never meets an old schema.
 #
@@ -36,8 +37,36 @@ env:
   DEPLOYER_SA: wa-deployer@verdant-victory-508614-v8.iam.gserviceaccount.com
 
 jobs:
+  # What this push touched, so a backend fix does not rebuild the dashboard and a
+  # dashboard tweak does not rebuild 469 MB of worker image. A manual run deploys all.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.backend == 'true' }}
+      migrate: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.migrate == 'true' }}
+      frontend: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.frontend == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/deploy.yml'
+            migrate:
+              - 'backend/alembic/**'
+              - 'backend/config/**'
+              - 'backend/app/cli*'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/deploy.yml'
+
   backend:
     name: Backend (Cloud Run)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -50,18 +79,42 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build and push images
+      - name: Registry login
         run: |
-          TAG="${GITHUB_SHA::7}"
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "TAG=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
           gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet
-          docker build -f backend/Dockerfile.api -t "$REGISTRY/api:$TAG" backend
-          docker build -f backend/Dockerfile.worker -t "$REGISTRY/worker:$TAG" backend
-          docker push "$REGISTRY/api:$TAG"
-          docker push "$REGISTRY/worker:$TAG"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Layer cache lives in Artifact Registry next to the images (`:buildcache`), so
+      # an app-code change rebuilds and pushes only the final `COPY app` layer instead
+      # of reinstalling every dependency and re-downloading the embedding model.
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile.api
+          push: true
+          provenance: false
+          tags: ${{ env.REGISTRY }}/api:${{ env.TAG }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/api:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/api:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile.worker
+          push: true
+          provenance: false
+          tags: ${{ env.REGISTRY }}/worker:${{ env.TAG }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/worker:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/worker:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
 
       - name: Migrate the database
-        # `alembic upgrade head` is a no-op when nothing is new, so it runs every time.
+        # Only when a migration, the product catalog or the CLI changed: otherwise
+        # `alembic upgrade head` is a no-op that still costs a minute of job start-up.
+        if: needs.changes.outputs.migrate == 'true'
         run: |
           gcloud run jobs update wa-migrate --region "$REGION" --image "$REGISTRY/api:$TAG" --quiet
           gcloud run jobs execute wa-migrate --region "$REGION" --wait
@@ -74,7 +127,11 @@ jobs:
 
   frontend:
     name: Dashboard (Cloudflare Worker wa-web)
-    needs: backend
+    needs: [changes, backend]
+    # Still after the backend when both changed, but not blocked by a skipped backend.
+    if: |
+      always() && needs.changes.outputs.frontend == 'true' &&
+      (needs.backend.result == 'success' || needs.backend.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -92,6 +149,14 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - run: npm ci --no-audit --no-fund
+
+      - name: Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: frontend/.next/cache
+          key: nextjs-${{ hashFiles('frontend/package-lock.json') }}-${{ hashFiles('frontend/**/*.ts', 'frontend/**/*.tsx', 'frontend/**/*.css') }}
+          restore-keys: |
+            nextjs-${{ hashFiles('frontend/package-lock.json') }}-
 
       - uses: google-github-actions/auth@v2
         with:
