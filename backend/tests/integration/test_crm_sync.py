@@ -373,3 +373,108 @@ class TestDeferredWhileMoreThanOneProductExists:
 
         assert run_sync(lead_id)["synced"] is True
         assert len(crm_env.upserts) == 1
+
+
+class _RecordingMIS:
+    """Stands in for `MISClient`; answers like the MIS does."""
+
+    calls: list[dict[str, Any]] = []
+    answer: dict[str, Any] = {"ok": True, "lead_id": "mis-1", "created": True}
+    error: Exception | None = None
+
+    def __init__(self, **_kwargs: Any) -> None:
+        pass
+
+    async def post_event(
+        self, *, workspace: str, secret: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        if _RecordingMIS.error is not None:
+            raise _RecordingMIS.error
+        _RecordingMIS.calls.append({"workspace": workspace, "secret": secret, "data": data})
+        return _RecordingMIS.answer
+
+
+@pytest.fixture
+def mis_env(crm_env: FakeCRMProvider, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """CRM_PROVIDER=mis with the test product mapped to an MIS workspace."""
+    from app.core.config import reset_settings_cache
+
+    async def slug(session: AsyncSession) -> str:
+        product = await session.get(Product, await ensure_product_id(session))
+        assert product is not None
+        return product.slug
+
+    product_slug = run_db(slug)
+    monkeypatch.setenv("CRM_PROVIDER", "mis")
+    monkeypatch.setenv("MIS_EVENTS_URL", "https://mis.example/api/wa-event")
+    monkeypatch.setenv("MIS_WORKSPACES", f'{{"{product_slug}": "lifeherba"}}')
+    monkeypatch.setenv("MIS_SECRETS", f'{{"{product_slug}": "s3"}}')
+    reset_settings_cache()
+    _RecordingMIS.calls = []
+    _RecordingMIS.answer = {"ok": True, "lead_id": "mis-1", "created": True}
+    _RecordingMIS.error = None
+    monkeypatch.setattr("app.worker.handlers.crm_sync.MISClient", _RecordingMIS)
+    yield product_slug
+    reset_settings_cache()
+
+
+class TestMISSync:
+    def test_an_engaged_lead_reaches_its_workspace(self, mis_env: str) -> None:
+        lead_id = seed_lead(status=LeadStatus.INTERESTED)
+
+        result = run_sync(lead_id)
+
+        assert result["synced"] is True
+        [call] = _RecordingMIS.calls
+        assert call["workspace"] == "lifeherba"
+        assert call["secret"] == "s3"
+        assert call["data"]["ref"] == lead_id
+        assert call["data"]["status"] == "INTERESTED"
+        row = lead_row(lead_id)
+        assert row.crm_contact_id == "mis-1"
+        assert row.crm_synced_at is not None
+
+    def test_is_not_deferred_with_several_products(self, mis_env: str) -> None:
+        """One workspace per product, so the flat-property deferral does not apply."""
+
+        async def add_product(session: AsyncSession) -> None:
+            await ensure_product_id(session)
+            session.add(Product(slug=f"other-{uuid.uuid4().hex[:6]}", display_name="Other"))
+            await session.flush()
+
+        run_db(add_product)
+        lead_id = seed_lead()
+
+        assert run_sync(lead_id)["synced"] is True
+
+    def test_a_lead_that_never_replied_is_not_created(self, mis_env: str) -> None:
+        lead_id = seed_lead(status=LeadStatus.CONTACTED)
+
+        assert run_sync(lead_id)["result"] == "skipped"
+        assert _RecordingMIS.calls == []
+
+    def test_an_unmapped_product_is_skipped(
+        self, mis_env: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.core.config import reset_settings_cache
+
+        monkeypatch.setenv("MIS_WORKSPACES", "{}")
+        reset_settings_cache()
+        lead_id = seed_lead()
+
+        assert run_sync(lead_id)["result"] == "skipped"
+        assert _RecordingMIS.calls == []
+
+    def test_a_permanent_failure_is_recorded_not_raised(self, mis_env: str) -> None:
+        _RecordingMIS.error = NonRetryableProviderError("[401] Unauthorised", provider="mis")
+        lead_id = seed_lead()
+
+        assert run_sync(lead_id)["result"] == "failed"
+        assert "Unauthorised" in (lead_row(lead_id).crm_sync_error or "")
+
+    def test_an_outage_is_retried(self, mis_env: str) -> None:
+        _RecordingMIS.error = RetryableProviderError("down", provider="mis")
+        lead_id = seed_lead()
+
+        with pytest.raises(RetryableSendError):
+            run_sync(lead_id)

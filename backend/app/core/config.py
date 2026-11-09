@@ -72,6 +72,9 @@ class CalendarAuthMode(StrEnum):
 class CRMProviderName(StrEnum):
     FAKE = "fake"
     HUBSPOT = "hubspot"
+    # GlobalPact's MIS Tracker. Product-aware: each product maps to its own MIS
+    # workspace, so it is not subject to the multi-product deferral ([D58]).
+    MIS = "mis"
 
 
 class QueueProviderName(StrEnum):
@@ -245,6 +248,18 @@ class Settings(BaseSettings):
     # and a forgotten-off flag would silently stop that — so disabling is always
     # an explicit operator act, never a default.
     crm_sync_enabled: bool = True
+    # MIS Tracker (CRM_PROVIDER=mis). Engaged leads are posted to
+    # `<mis_events_url>` with the target workspace's webhook secret. Both maps are keyed
+    # by product slug; a product missing from either is simply not synchronized:
+    #   MIS_WORKSPACES='{"life-herba": "lifeherba"}'
+    #   MIS_SECRETS='{"life-herba": "<that workspace's webhook secret>"}'
+    mis_events_url: str | None = None
+    mis_workspaces: dict[str, str] = Field(default_factory=dict)
+    mis_secrets: dict[str, SecretStr] = Field(default_factory=dict)
+    mis_timeout_seconds: float = 15.0
+    # The dashboard's public origin, so an MIS record can link back to the lead's
+    # conversation. Unset means no link is sent.
+    mis_dashboard_url: str | None = None
 
     # ---------------------------------------------------------------- audience [D4][D20][D51]
     # Operational parsing limits, shared by every product. *Which* spreadsheet headers map
@@ -500,6 +515,9 @@ class Settings(BaseSettings):
 
         if self.crm_provider is CRMProviderName.HUBSPOT and not self.hubspot_access_token:
             missing.append("HUBSPOT_ACCESS_TOKEN")
+
+        if self.crm_provider is CRMProviderName.MIS and not self.mis_events_url:
+            missing.append("MIS_EVENTS_URL")
 
         if self.queue_provider is QueueProviderName.CLOUD_TASKS:
             if not self.google_cloud_project:

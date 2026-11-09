@@ -23,18 +23,20 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings, get_settings
+from app.core.config import CRMProviderName, Settings, get_settings
 from app.core.correlation import bind_log_context
 from app.core.errors import ProviderError
 from app.core.logging import get_logger
 from app.domain import crm as crm_domain
+from app.domain import mis as mis_domain
 from app.domain.enums import BookingStatus
 from app.domain.retry import RetryPolicy, backoff_seconds, classify, should_retry
 from app.integrations.crm import ContactUpsert
+from app.integrations.crm.mis import MISClient
 from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import build_crm_provider, build_queue_provider
 from app.persistence.database import get_session_factory
-from app.persistence.models import Audience, Booking, Campaign, CampaignRecipient, Lead
+from app.persistence.models import Audience, Booking, Campaign, CampaignRecipient, Lead, Product
 from app.persistence.repositories import products as product_repo
 from app.worker.handlers.campaign_send import RetryableSendError
 
@@ -91,6 +93,31 @@ async def sync_crm_contact(task: TaskRequest) -> dict[str, str | bool]:
 
         bind_log_context(lead_id=str(lead.id))
 
+        if settings.crm_provider is CRMProviderName.MIS:
+            # Product-aware (one MIS workspace per product), so the multi-product
+            # deferral below does not apply.
+            product = await session.get(Product, lead.product_id)
+            if product is None:
+                raise ValueError(f"Product {lead.product_id} not found")
+            mis_args = (
+                product.slug,
+                await _build_snapshot(session, lead),
+                lead.crm_contact_id is not None,
+            )
+        else:
+            mis_args = None
+
+    if mis_args is not None:
+        product_slug, mis_snapshot, existed = mis_args
+        return await _sync_to_mis(
+            settings, str(lead_id), product_slug, mis_snapshot, existed=existed
+        )
+
+    async with factory() as session:
+        lead = await session.get(Lead, uuid.UUID(str(lead_id)))
+        if lead is None:
+            raise ValueError(f"Lead {lead_id} not found")
+
         # Deferred while more than one product exists. The CRM properties are flat, so
         # one product's sync would overwrite another's state on the shared contact; the
         # redesign that fixes that is deferred, and until it lands nothing is written —
@@ -139,6 +166,74 @@ async def sync_crm_contact(task: TaskRequest) -> dict[str, str | bool]:
         created=contact_id != contact.provider_contact_id,
     )
     return {"result": "synced", "lead_id": str(lead_id), "synced": True}
+
+
+# ---------------------------------------------------------------- MIS Tracker
+
+
+async def _sync_to_mis(
+    settings: Settings,
+    lead_id: str,
+    product_slug: str,
+    snapshot: crm_domain.LeadSnapshot,
+    *,
+    existed: bool,
+) -> dict[str, str | bool]:
+    """Post one lead to the product's MIS workspace.
+
+    Product-aware, so unlike the flat HubSpot properties it is safe with several
+    products: each maps to its own workspace and secret. A product with no mapping is
+    skipped, and so is a lead that never engaged and is not in the MIS yet.
+    """
+    workspace = settings.mis_workspaces.get(product_slug)
+    secret = settings.mis_secrets.get(product_slug)
+    if not workspace or secret is None or not settings.mis_events_url:
+        logger.info("mis_sync_skipped", reason="product_not_mapped", product=product_slug)
+        return {"result": "skipped", "lead_id": lead_id, "synced": False}
+    if not existed and not mis_domain.is_engaged(snapshot.status):
+        logger.info("mis_sync_skipped", reason="not_engaged", status=snapshot.status)
+        return {"result": "skipped", "lead_id": lead_id, "synced": False}
+
+    client = MISClient(
+        events_url=settings.mis_events_url, timeout_seconds=settings.mis_timeout_seconds
+    )
+    synced_at = datetime.now(UTC)
+    try:
+        answer = await client.post_event(
+            workspace=workspace,
+            secret=secret.get_secret_value(),
+            data=mis_domain.build_event(
+                snapshot,
+                lead_id=lead_id,
+                product_slug=product_slug,
+                dashboard_url=settings.mis_dashboard_url,
+            ),
+        )
+    except ProviderError as exc:
+        await _record_failure(lead_id, str(exc))
+        _raise_if_retryable(settings, exc)
+        logger.warning("mis_sync_failed", error=str(exc))
+        return {"result": "failed", "lead_id": lead_id, "synced": False}
+
+    mis_lead_id = answer.get("lead_id")
+    factory = get_session_factory()
+    async with factory() as session:
+        lead = await session.get(Lead, uuid.UUID(lead_id))
+        if lead is not None:
+            # Only a lead the MIS actually holds gets an id; one it declined (not engaged,
+            # unknown there) stays unsynced so a later engagement still creates it.
+            if mis_lead_id:
+                lead.crm_contact_id = str(mis_lead_id)[:64]
+                lead.crm_synced_at = synced_at
+            lead.crm_sync_error = None
+            await session.commit()
+
+    logger.info("mis_sync_completed", created=bool(answer.get("created")), held=bool(mis_lead_id))
+    return {
+        "result": "synced" if mis_lead_id else "skipped",
+        "lead_id": lead_id,
+        "synced": bool(mis_lead_id),
+    }
 
 
 # ---------------------------------------------------------------- internals

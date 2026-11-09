@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.configuration.legacy import LegacyEnvironment
+from app.core.config import CRMProviderName
 from app.domain.crm import single_product_sync_is_safe
 from app.domain.readiness import ProductReadiness, Verdict
 
@@ -45,7 +46,11 @@ def platform_notes(
         )
     )
     crm = (
-        f"single-product synchronization ({settings.crm_provider.value})"
+        "MIS Tracker, per product ("
+        + (", ".join(sorted(settings.mis_workspaces)) or "none mapped")
+        + ")"
+        if settings.crm_provider is CRMProviderName.MIS
+        else f"single-product synchronization ({settings.crm_provider.value})"
         if single_product_sync_is_safe(product_count=product_count)
         else (
             "DEFERRED / DISABLED FOR MULTI-PRODUCT — synchronization is skipped while more "
