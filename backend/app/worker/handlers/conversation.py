@@ -75,7 +75,11 @@ from app.domain.enums import (
     MessageStatus,
 )
 from app.domain.product import ProductInactiveError, assert_accepts_new_activity
-from app.domain.qualification import rules_from_settings
+from app.domain.qualification import (
+    FIELD_INTERESTED,
+    rules_from_settings,
+    status_for_interest_reply,
+)
 from app.domain.rag import RetrievalPolicy, RetrievalResult, retrieve
 from app.domain.retry import RetryPolicy, backoff_seconds, classify, should_retry
 from app.domain.slots import SlotPolicy, SlotPolicyError, resolve_slot_policy
@@ -627,6 +631,16 @@ async def process_conversation_turn(task: TaskRequest) -> dict[str, str | bool]:
         # The AI extracted; the backend decides. `proposed_status` came from the
         # qualification rules reading the facts a tool recorded — never from the model
         # asserting a state ([D9], [D18]) — and it still goes through the §10 table.
+        # A tap on "Interested" is interest even when the model only sent the
+        # button script and recorded no facts, which left such leads at RESPONDED.
+        if outcome.proposed_status is None:
+            interest_status = status_for_interest_reply(lead.status, question)
+            if interest_status is not None:
+                await conversation_repo.merge_qualification_data(
+                    session, lead, {FIELD_INTERESTED: True}
+                )
+                outcome.proposed_status = interest_status
+
         if outcome.proposed_status is not None and outcome.proposed_status is not lead.status:
             try:
                 await conversation_repo.transition_lead(session, lead, outcome.proposed_status)

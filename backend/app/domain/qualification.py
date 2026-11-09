@@ -251,16 +251,17 @@ def _evaluate_ai_judgement(*, current: LeadStatus, data: dict[str, Any]) -> Qual
             reasons=("criteria met, but the lead must pass through QUALIFYING first",),
         )
 
-    needs_context = judgement == JUDGEMENT_NEEDS_MORE_CONTEXT or _is_true(
-        data.get(FIELD_INTERESTED)
-    )
+    # Interest on its own is INTERESTED: that is the state the team filters by to
+    # find warm leads. QUALIFYING is for a lead the AI judged needs more context.
+    needs_context = judgement == JUDGEMENT_NEEDS_MORE_CONTEXT
+    interested = _is_true(data.get(FIELD_INTERESTED))
     if needs_context and can_transition_lead(current, LeadStatus.QUALIFYING):
         return QualificationResult(
             status=LeadStatus.QUALIFYING,
-            reasons=("AI judgement mode: more context needed, or interest without demo intent",),
+            reasons=("AI judgement mode: more context needed",),
         )
     if (
-        needs_context
+        (needs_context or interested)
         and current is not LeadStatus.QUALIFYING
         and can_transition_lead(current, LeadStatus.INTERESTED)
     ):
@@ -329,3 +330,37 @@ __all__ = [
     "missing_required_fields",
     "rules_from_settings",
 ]
+
+
+# Quick-reply labels (and the same words typed) that say "I'm interested" outright.
+# A tap on one of these is interest whether or not the model records it as a fact.
+_INTEREST_REPLIES = frozenset(
+    {
+        "interested",
+        "i'm interested",
+        "im interested",
+        "i am interested",
+        "register now",
+    }
+)
+
+# States a direct "Interested" may lift a lead out of. Anything further along the
+# funnel (QUALIFYING, QUALIFIED, demo) is already past interest and stays put.
+_LIFTED_BY_INTEREST = frozenset(
+    {LeadStatus.NEW, LeadStatus.CONTACTED, LeadStatus.RESPONDED, LeadStatus.NOT_INTERESTED}
+)
+
+
+def is_interest_reply(text: str | None) -> bool:
+    """Whether an inbound message is a plain "Interested" reply (button tap or typed)."""
+    if not text:
+        return False
+    normalised = " ".join(text.replace("’", "'").lower().split()).strip(" .!")
+    return normalised in _INTEREST_REPLIES
+
+
+def status_for_interest_reply(current: LeadStatus, text: str | None) -> LeadStatus | None:
+    """INTERESTED for a lead that just said "Interested", if §10 allows the move."""
+    if not is_interest_reply(text) or current not in _LIFTED_BY_INTEREST:
+        return None
+    return LeadStatus.INTERESTED if can_transition_lead(current, LeadStatus.INTERESTED) else None

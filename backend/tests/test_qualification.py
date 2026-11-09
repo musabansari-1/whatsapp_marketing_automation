@@ -22,8 +22,10 @@ from app.domain.qualification import (
     QualificationMode,
     QualificationRules,
     evaluate,
+    is_interest_reply,
     missing_required_fields,
     rules_from_settings,
+    status_for_interest_reply,
 )
 
 CONFIGURED = QualificationRules(required_fields=frozenset({"team_size", "use_case"}))
@@ -236,7 +238,9 @@ class TestAIJudgementMode:
                 status = result.status
         assert status is LeadStatus.QUALIFIED
 
-    def test_interest_alone_does_not_flip_out_of_qualifying(self) -> None:
+    def test_interest_alone_settles_on_interested(self) -> None:
+        # Interest without demo or registration intent is INTERESTED, the state the
+        # team filters by, and it stays there over repeated turns.
         data = {FIELD_INTERESTED: True}
         seen = []
         status = LeadStatus.RESPONDED
@@ -245,7 +249,11 @@ class TestAIJudgementMode:
             if result.status is not None:
                 status = result.status
             seen.append(status)
-        assert seen[-2:] == [LeadStatus.QUALIFYING, LeadStatus.QUALIFYING]
+        assert seen == [LeadStatus.INTERESTED] * 4
+
+    def test_interest_alone_does_not_pull_a_lead_out_of_qualifying(self) -> None:
+        data = {FIELD_INTERESTED: True}
+        assert evaluate(current=LeadStatus.QUALIFYING, data=data, rules=self.AI).status is None
 
     def test_not_qualified_maps_to_not_interested(self) -> None:
         data = {FIELD_JUDGEMENT: JUDGEMENT_NOT_QUALIFIED}
@@ -261,3 +269,32 @@ class TestAIJudgementMode:
         )
         assert result.status is not LeadStatus.QUALIFIED
         assert not rules_from_settings([]).is_configured
+
+
+class TestInterestReply:
+    """A plain "Interested" reply moves a lead to INTERESTED without the model's help."""
+
+    @pytest.mark.parametrize(
+        "text",
+        ["Interested", "I'm Interested", "I’m interested", " interested! ", "Register Now"],
+    )
+    def test_interest_replies_are_recognised(self, text: str) -> None:
+        assert is_interest_reply(text)
+
+    @pytest.mark.parametrize(
+        "text", ["Not interested", "Learn More", "Talk to Us", "interested in price?", "", None]
+    )
+    def test_other_replies_are_not(self, text: str | None) -> None:
+        assert not is_interest_reply(text)
+
+    def test_responded_lead_becomes_interested(self) -> None:
+        assert status_for_interest_reply(LeadStatus.RESPONDED, "Interested") is (
+            LeadStatus.INTERESTED
+        )
+
+    def test_a_lead_further_along_is_left_alone(self) -> None:
+        for status in (LeadStatus.QUALIFYING, LeadStatus.QUALIFIED, LeadStatus.DEMO_BOOKED):
+            assert status_for_interest_reply(status, "Interested") is None
+
+    def test_other_text_changes_nothing(self) -> None:
+        assert status_for_interest_reply(LeadStatus.RESPONDED, "Learn More") is None
