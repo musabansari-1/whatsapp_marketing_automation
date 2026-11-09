@@ -172,14 +172,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-buildx-action@v3
+
+      # Built but not pushed (deployment is the Deploy workflow's job). The GitHub
+      # Actions cache keeps dependency and model layers between runs, so only
+      # changed code is rebuilt.
       - name: Build API image
-        # Built but not pushed. Pushing needs registry credentials, and §23's
-        # deployment is a deliberate act rather than something CI does on a merge.
-        run: docker build -f backend/Dockerfile.api -t wa-api:ci backend
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile.api
+          tags: wa-api:ci
+          load: true
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
 
       - name: Build worker image
         # Carries PyTorch and the embedding model weights, so this is the slow one.
-        run: docker build -f backend/Dockerfile.worker -t wa-worker:ci backend
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile.worker
+          tags: wa-worker:ci
+          load: true
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,scope=worker,mode=max
 
       - name: Verify the embedding model is baked in
         # [D1]: the weights must be present in the image, not downloaded on a cold
