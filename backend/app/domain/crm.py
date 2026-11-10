@@ -86,6 +86,9 @@ class LeadSnapshot:
     opted_out: bool = False
     source_audience_name: str | None = None
     last_campaign_name: str | None = None
+    # Which kind of partner this is (Life Herba: Healthcare Practitioners, Wellness
+    # Centres, Pharmacies, Consumers), so whoever calls knows before they dial.
+    segment_name: str | None = None
     demo_start: datetime | None = None
     demo_status: str | None = None
     demo_timezone: str | None = None

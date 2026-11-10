@@ -36,7 +36,16 @@ from app.integrations.crm.mis import MISClient
 from app.integrations.queue import TaskRequest, TaskType
 from app.integrations.registry import build_crm_provider, build_queue_provider
 from app.persistence.database import get_session_factory
-from app.persistence.models import Audience, Booking, Campaign, CampaignRecipient, Lead, Product
+from app.persistence.models import (
+    Audience,
+    Booking,
+    Campaign,
+    CampaignRecipient,
+    Conversation,
+    Lead,
+    Product,
+    Segment,
+)
 from app.persistence.repositories import products as product_repo
 from app.worker.handlers.campaign_send import RetryableSendError
 
@@ -263,6 +272,8 @@ async def _build_snapshot(session: AsyncSession, lead: Lead) -> crm_domain.LeadS
         .limit(1)
     )
 
+    segment_name = await _segment_name(session, lead)
+
     # Confirmed bookings only: a cancelled attempt in the CRM would have a salesperson
     # turning up to a demo nobody is attending.
     booking = (
@@ -290,10 +301,46 @@ async def _build_snapshot(session: AsyncSession, lead: Lead) -> crm_domain.LeadS
         opted_out=lead.opted_out,
         source_audience_name=audience_name,
         last_campaign_name=campaign_name,
+        segment_name=segment_name,
         demo_start=booking.start_time if booking else None,
         demo_status=booking.status.value if booking else None,
         demo_timezone=booking.timezone if booking else None,
     )
+
+
+async def _segment_name(session: AsyncSession, lead: Lead) -> str | None:
+    """The segment a person calling this lead should know about.
+
+    A lead has no segment column ([D48]), so it is read where it is recorded, most
+    specific first: the latest conversation (the operative segment for the AI), then the
+    latest campaign that messaged the lead, then the audience that introduced it.
+    """
+    candidates = (
+        select(Segment.display_name)
+        .join(Conversation, Conversation.segment_id == Segment.id)
+        .where(Conversation.lead_id == lead.id)
+        .order_by(Conversation.created_at.desc())
+        .limit(1),
+        select(Segment.display_name)
+        .join(Campaign, Campaign.segment_id == Segment.id)
+        .join(CampaignRecipient, CampaignRecipient.campaign_id == Campaign.id)
+        .where(CampaignRecipient.lead_id == lead.id)
+        .order_by(CampaignRecipient.created_at.desc())
+        .limit(1),
+    )
+    for query in candidates:
+        name = await session.scalar(query)
+        if name:
+            return str(name)
+    if lead.source_audience_id:
+        name = await session.scalar(
+            select(Segment.display_name)
+            .join(Audience, Audience.segment_id == Segment.id)
+            .where(Audience.id == lead.source_audience_id)
+        )
+        if name:
+            return str(name)
+    return None
 
 
 async def _record_failure(lead_id: str, reason: str) -> None:

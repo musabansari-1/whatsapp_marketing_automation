@@ -31,6 +31,7 @@ def a_snapshot(**overrides: Any) -> LeadSnapshot:
         "qualification_data": {"speciality": "Ayurveda", "city": ""},
         "source_audience_name": "Delhi doctors",
         "last_campaign_name": "Doctor onboarding",
+        "segment_name": "Healthcare Practitioners",
     }
     return LeadSnapshot(**{**defaults, **overrides})
 
@@ -61,18 +62,22 @@ class TestEvent:
         assert data["opted_out"] is False
         assert data["person_name"] == "Dr. Asha Rao"
         assert data["campaign"] == "Doctor onboarding"
+        assert data["segment"] == "Healthcare Practitioners"
         assert data["summary"] == "speciality: Ayurveda"
         assert data["link"] == "https://wa.example/p/life-herba/leads/L1"
 
     def test_omits_what_the_platform_does_not_know(self) -> None:
         data = mis_domain.build_event(
-            a_snapshot(company=None, qualification_data={}, last_campaign_name=None),
+            a_snapshot(
+                company=None, qualification_data={}, last_campaign_name=None, segment_name=None
+            ),
             lead_id="L1",
             product_slug="life-herba",
         )
         assert "organisation" not in data
         assert "summary" not in data
         assert "campaign" not in data
+        assert "segment" not in data
         assert "link" not in data
 
     def test_demo_time_is_iso(self) -> None:

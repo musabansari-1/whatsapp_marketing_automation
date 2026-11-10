@@ -76,6 +76,7 @@ def build_event(
         "city": snapshot.city,
         "audience": snapshot.source_audience_name,
         "campaign": snapshot.last_campaign_name,
+        "segment": snapshot.segment_name,
         "summary": format_qualification(snapshot.qualification_data),
         "demo_at": snapshot.demo_start.isoformat() if snapshot.demo_start else None,
         "link": lead_link(dashboard_url, product_slug, lead_id),
